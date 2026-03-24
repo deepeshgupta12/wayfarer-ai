@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
+// @ts-ignore
 import { motion } from 'framer-motion';
+// @ts-ignore
 import { Send, Sparkles, Plus } from 'lucide-react';
+import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
-import { generateDestinationGuide, streamDestinationGuide } from '@/api/wayfarerApi';
-import { getTravellerPersona } from '@/lib/travellerProfile';
+import { createTravellerMemory, generateDestinationGuide } from '@/api/wayfarerApi';
+import { getOrCreateTravellerId, getTravellerPersona } from '@/lib/travellerProfile';
 
 const suggestedChips = [
   '3 days in Kyoto for food and culture',
@@ -34,14 +37,14 @@ function deriveGuidePayload(rawInput, persona) {
   };
 }
 
-function buildAssistantMessageFromGuide(result, streamedContent) {
+function buildAssistantMessageFromGuide(result) {
   return {
     role: 'assistant',
-    content: streamedContent || result.overview,
+    content: result.overview,
     places:
       result.area_cards?.map((area) => ({
         name: area.name,
-        category: area.category,
+        category: area.category || 'area',
         rating: area.rating,
         description: area.summary,
         why_recommended: area.why_it_fits,
@@ -51,7 +54,6 @@ function buildAssistantMessageFromGuide(result, streamedContent) {
     reviewInsight: result.review_insight || null,
     reviewSignals: result.review_signals || {},
     reviewAuthenticity: result.review_authenticity || null,
-    isStreaming: false,
     timestamp: new Date().toISOString(),
   };
 }
@@ -61,24 +63,10 @@ export default function Assistant() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [persona, setPersona] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-
-  useEffect(() => {
-    const refreshPersona = () => {
-      setPersona(getTravellerPersona());
-    };
-
-    refreshPersona();
-    window.addEventListener('storage', refreshPersona);
-    window.addEventListener('focus', refreshPersona);
-
-    return () => {
-      window.removeEventListener('storage', refreshPersona);
-      window.removeEventListener('focus', refreshPersona);
-    };
-  }, []);
+  const persona = useMemo(() => getTravellerPersona(), []);
+  const travellerId = useMemo(() => getOrCreateTravellerId(), []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -91,76 +79,46 @@ export default function Assistant() {
     setInput('');
     setErrorMessage('');
 
+    const payload = deriveGuidePayload(msg, persona);
     const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() };
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
-    const payload = deriveGuidePayload(msg, persona);
-    const assistantIndexRef = { current: -1 };
-
     try {
-      setMessages((prev) => {
-        assistantIndexRef.current = prev.length;
-        return [
-          ...prev,
-          {
-            role: 'assistant',
-            content: '',
-            places: [],
-            chips: [],
-            reviewSummary: null,
-            reviewInsight: null,
-            reviewSignals: {},
-            reviewAuthenticity: null,
-            isStreaming: true,
-            timestamp: new Date().toISOString(),
-          },
-        ];
-      });
-
-      let streamedContent = '';
-
-      await streamDestinationGuide(payload, {
-        onContentDelta: (delta) => {
-          streamedContent = `${streamedContent}${streamedContent ? ' ' : ''}${delta}`;
-          setMessages((prev) =>
-            prev.map((message, index) =>
-              index === assistantIndexRef.current
-                ? { ...message, content: streamedContent.trim(), isStreaming: true }
-                : message
-            )
-          );
-        },
-        onFinal: (finalPayload) => {
-          const finalMessage = buildAssistantMessageFromGuide(finalPayload, streamedContent.trim());
-          setMessages((prev) =>
-            prev.map((message, index) =>
-              index === assistantIndexRef.current ? finalMessage : message
-            )
-          );
+      await createTravellerMemory({
+        traveller_id: travellerId,
+        event_type: 'destination_guide_requested',
+        source_surface: 'assistant',
+        payload: {
+          query: msg,
+          destination: payload.destination,
+          duration_days: payload.duration_days,
+          traveller_type: payload.traveller_type,
+          interests: payload.interests,
         },
       });
-    } catch (streamError) {
-      try {
-        const result = await generateDestinationGuide(payload);
-        const assistantMsg = buildAssistantMessageFromGuide(result, '');
 
-        setMessages((prev) => {
-          if (assistantIndexRef.current >= 0) {
-            return prev.map((message, index) =>
-              index === assistantIndexRef.current ? assistantMsg : message
-            );
-          }
-          return [...prev, assistantMsg];
-        });
-      } catch (fallbackError) {
-        setMessages((prev) =>
-          assistantIndexRef.current >= 0
-            ? prev.filter((_, index) => index !== assistantIndexRef.current)
-            : prev
-        );
-        setErrorMessage(fallbackError.message || 'Unable to generate a destination guide right now.');
-      }
+      const result = await generateDestinationGuide(payload);
+      const assistantMsg = buildAssistantMessageFromGuide(result);
+
+      setMessages((prev) => [...prev, assistantMsg]);
+
+      await createTravellerMemory({
+        traveller_id: travellerId,
+        event_type: 'destination_guide_generated',
+        source_surface: 'assistant',
+        payload: {
+          query: msg,
+          destination: result.destination,
+          duration_days: result.duration_days,
+          suggested_areas: result.suggested_areas || [],
+          highlights_count: (result.highlights || []).length,
+          review_authenticity: result.review_authenticity || null,
+          review_summary: result.review_summary || null,
+        },
+      });
+    } catch (error) {
+      setErrorMessage(error.message || 'Unable to generate a destination guide right now.');
     } finally {
       setIsLoading(false);
     }
@@ -177,7 +135,9 @@ export default function Assistant() {
           </div>
           <div>
             <h1 className="font-semibold text-sm">Wayfarer Assistant</h1>
-            <p className="text-xs text-muted-foreground">Persona-aware destination guide with streaming + review-backed intelligence</p>
+            <p className="text-xs text-muted-foreground">
+              Persona-aware destination guide powered by the V1 backend
+            </p>
           </div>
         </div>
         <button
@@ -199,6 +159,15 @@ export default function Assistant() {
             {messages.map((msg, i) => (
               <MessageBubble key={i} message={msg} onChipClick={handleSend} />
             ))}
+
+            {isLoading ? (
+              <div className="flex gap-3">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
+                  <Sparkles className="w-3.5 h-3.5 text-white" />
+                </div>
+                <LoadingState compact message="Building your destination guide..." />
+              </div>
+            ) : null}
 
             {errorMessage ? (
               <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -251,7 +220,7 @@ function EmptyChat({ onSuggestionClick, persona }) {
       </motion.div>
       <h2 className="font-serif text-2xl font-bold mb-2">Where to next?</h2>
       <p className="text-muted-foreground text-sm max-w-sm mb-4">
-        Ask for a destination guide and Wayfarer will stream back a structured, review-backed answer.
+        Ask for a destination guide and Wayfarer will use the current V1 backend contracts to build a structured response.
       </p>
       <p className="text-xs text-muted-foreground max-w-md mb-8">
         {persona?.summary
@@ -274,8 +243,8 @@ function EmptyChat({ onSuggestionClick, persona }) {
 }
 
 function InsightSection({ reviewInsight, chips, onChipClick }) {
-  const hasInsights = reviewInsight || chips?.length > 0;
-  if (!hasInsights) return null;
+  const hasInsight = Boolean(reviewInsight) || (chips?.length || 0) > 0;
+  if (!hasInsight) return null;
 
   return (
     <div className="mt-4 space-y-3">
@@ -288,7 +257,10 @@ function InsightSection({ reviewInsight, chips, onChipClick }) {
 
           {reviewInsight.standout_themes?.length > 0 ? (
             <div className="mt-2 text-xs text-muted-foreground">
-              Stands out for: <span className="font-medium">{reviewInsight.standout_themes.join(', ')}</span>
+              Stands out for:{' '}
+              <span className="font-medium">
+                {reviewInsight.standout_themes.join(', ')}
+              </span>
             </div>
           ) : null}
 
@@ -340,14 +312,7 @@ function MessageBubble({ message, onChipClick }) {
         <Sparkles className="w-3.5 h-3.5 text-white" />
       </div>
       <div className="flex-1 min-w-0">
-        {message.content ? (
-          <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
-        ) : message.isStreaming ? (
-          <div className="rounded-xl border border-border bg-card px-4 py-3">
-            <div className="text-xs text-muted-foreground mb-2">Thinking through your destination guide...</div>
-            <TypingDots />
-          </div>
-        ) : null}
+        <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
 
         {message.places?.length > 0 ? (
           <div className="mt-4 space-y-2">
@@ -358,12 +323,7 @@ function MessageBubble({ message, onChipClick }) {
                 category={place.category}
                 rating={place.rating}
                 description={place.description}
-                reason={place.why_recommended}
-                image={undefined}
-                distance={undefined}
-                onSave={undefined}
-                onClick={undefined}
-              />
+                reason={place.why_recommended} image={undefined} distance={undefined} onSave={undefined} onClick={undefined}              />
             ))}
           </div>
         ) : null}
@@ -375,15 +335,5 @@ function MessageBubble({ message, onChipClick }) {
         />
       </div>
     </motion.div>
-  );
-}
-
-function TypingDots() {
-  return (
-    <div className="flex items-center gap-1.5 py-1">
-      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.2s]" />
-      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.1s]" />
-      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce" />
-    </div>
   );
 }
