@@ -6,6 +6,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.models import (
     ReviewIntelligenceRecord,
+    TravellerMemoryRecord,
     TravellerPersonaEmbeddingRecord,
     TravellerPersonaRecord,
 )  # noqa: F401
@@ -42,10 +43,6 @@ def enable_pgvector_extension() -> None:
 def create_db_tables() -> None:
     enable_pgvector_extension()
     Base.metadata.create_all(bind=engine)
-
-
-def initialize_database() -> None:
-    create_db_tables()
 
 
 def get_db_session() -> Session:
