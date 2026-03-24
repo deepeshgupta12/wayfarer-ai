@@ -25,5 +25,12 @@ def test_google_places_client_context_returns_expected_shape_without_live_keys()
 def test_google_places_area_filter_rejects_hotel_like_names() -> None:
     client = GooglePlacesClient()
 
-    assert client._looks_like_area_name("Hotel Granvia Kyoto", "Kyoto") is False
-    assert client._looks_like_area_name("Gion District", "Kyoto") is True
+    assert client._is_blocked_area_name("Hotel Granvia Kyoto") is True
+    assert client._score_area_name("Gion District", "Kyoto") > 0
+
+
+def test_google_places_area_filter_rejects_market_like_names() -> None:
+    client = GooglePlacesClient()
+
+    assert client._is_blocked_area_name("Nishiki Market") is True
+    assert client._score_area_name("Higashiyama District", "Kyoto") > 0
