@@ -70,3 +70,10 @@
 - Persona embedding generate-and-save endpoint added
 - Persona embedding persistence service added
 - Persona embedding API test added
+
+## Step 11
+- Review intelligence schema foundation added
+- Review intelligence DB model added
+- Review analysis endpoint added
+- Review analyze-and-save endpoint added
+- Review intelligence API tests added
