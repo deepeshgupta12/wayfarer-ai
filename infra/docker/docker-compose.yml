@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: wayfarer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wayfarer
+      POSTGRES_PASSWORD: wayfarer
+      POSTGRES_DB: wayfarer
+    ports:
+      - "5433:5432"
+    volumes:
+      - wayfarer_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wayfarer -d wayfarer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: wayfarer-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - wayfarer_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  wayfarer_postgres_data:
+  wayfarer_redis_data:
