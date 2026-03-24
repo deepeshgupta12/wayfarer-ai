@@ -35,10 +35,67 @@ class GooglePlacesClient:
             },
         )
 
-    def _looks_like_area_name(self, text: str, destination: str) -> bool:
-        value = text.strip()
-        lowered = value.lower()
+    def _canonical_area_map(self, destination: str) -> dict[str, str]:
         destination_lower = destination.lower()
+
+        if destination_lower == "kyoto":
+            return {
+                "gion district": "Gion",
+                "gion": "Gion",
+                "higashiyama district": "Higashiyama",
+                "higashiyama ward": "Higashiyama",
+                "higashiyama": "Higashiyama",
+                "arashiyama district": "Arashiyama",
+                "arashiyama": "Arashiyama",
+                "downtown kyoto": "Downtown Kyoto",
+                "central kyoto": "Downtown Kyoto",
+                "kyoto downtown": "Downtown Kyoto",
+                "kyoto city downtown": "Downtown Kyoto",
+                "pontocho": "Pontocho",
+                "pontochō": "Pontocho",
+            }
+
+        if destination_lower == "lisbon":
+            return {
+                "alfama district": "Alfama",
+                "alfama": "Alfama",
+                "bairro alto": "Bairro Alto",
+                "chiado district": "Chiado",
+                "chiado": "Chiado",
+                "baixa": "Baixa",
+                "baixa-chiado": "Baixa/Chiado",
+            }
+
+        if destination_lower == "prague":
+            return {
+                "old town": "Old Town",
+                "staré město": "Old Town",
+                "mala strana": "Mala Strana",
+                "malá strana": "Mala Strana",
+                "vinohrady": "Vinohrady",
+                "new town": "New Town",
+            }
+
+        return {}
+
+    def _country_like_names(self) -> set[str]:
+        return {
+            "japan",
+            "portugal",
+            "czechia",
+            "czech republic",
+            "france",
+            "italy",
+            "spain",
+            "germany",
+            "india",
+            "usa",
+            "united states",
+            "united kingdom",
+        }
+
+    def _is_blocked_area_name(self, text: str) -> bool:
+        lowered = text.strip().lower()
 
         blocked_keywords = [
             "hotel",
@@ -52,52 +109,162 @@ class GooglePlacesClient:
             "experience",
             "museum",
             "temple",
+            "shrine",
             "station",
             "airport",
             "restaurant",
             "cafe",
             "bar",
+            "market",
+            "mall",
+            "park",
+            "tower",
+            "castle",
+            "palace",
+            "bridge",
+            "zoo",
+            "aquarium",
+            "intersection",
+            "crossing",
+            "bus stop",
+            "platform",
+            "terminal",
+            "ritz-carlton",
+            "four seasons",
+            "marriott",
+            "hilton",
+            "hyatt",
+            "forest",
+            "garden",
+            "bamboo grove",
+            "bamboo forest",
+            "viewpoint",
+            "observatory",
+            "river walk",
         ]
-        if any(keyword in lowered for keyword in blocked_keywords):
-            return False
+        return any(keyword in lowered for keyword in blocked_keywords)
 
-        preferred_area_keywords = [
+    def _is_country_like_name(self, text: str) -> bool:
+        return text.strip().lower() in self._country_like_names()
+
+    def _looks_too_granular(self, text: str, destination: str) -> bool:
+        value = text.strip()
+        lowered = value.lower()
+        destination_lower = destination.lower()
+
+        if len(value) <= 3:
+            return True
+
+        granular_suffixes = [
+            "cho",
+            "machi",
+            "dori",
+            "street",
+            "lane",
+            "road",
+            "avenue",
+            "intersection",
+        ]
+        if any(lowered.endswith(suffix) for suffix in granular_suffixes):
+            return True
+
+        words = value.split()
+        if len(words) == 1 and destination_lower not in lowered and len(value) > 12:
+            return True
+
+        return False
+
+    def _score_area_name(self, text: str, destination: str) -> int:
+        value = text.strip()
+        lowered = value.lower()
+        destination_lower = destination.lower()
+
+        if not value:
+            return -100
+        if self._is_country_like_name(value):
+            return -100
+        if self._is_blocked_area_name(value):
+            return -100
+        if self._looks_too_granular(value, destination):
+            return -40
+
+        score = 0
+
+        strong_area_keywords = [
             "district",
             "neighborhood",
             "quarter",
             "ward",
-            "town",
             "old town",
             "downtown",
         ]
-        if any(keyword in lowered for keyword in preferred_area_keywords):
-            return True
+        medium_area_keywords = [
+            "town",
+            "village",
+            "area",
+        ]
 
-        if destination_lower in lowered and len(value.split()) <= 4:
-            return True
+        if any(keyword in lowered for keyword in strong_area_keywords):
+            score += 10
+        if any(keyword in lowered for keyword in medium_area_keywords):
+            score += 5
 
-        return len(value.split()) <= 3
+        word_count = len(value.split())
+        if 1 <= word_count <= 3:
+            score += 4
+        elif word_count == 4:
+            score += 1
+        else:
+            score -= 4
 
-    def _normalize_area_candidate(self, place: dict[str, Any], destination: str) -> str | None:
+        if lowered == destination_lower:
+            score -= 8
+        elif destination_lower in lowered:
+            score += 1
+
+        canonical_map = self._canonical_area_map(destination)
+        if lowered in canonical_map:
+            score += 8
+
+        return score
+
+    def _canonicalize_area_candidate(self, candidate: str, destination: str) -> str:
+        canonical_map = self._canonical_area_map(destination)
+        lowered = candidate.strip().lower()
+        return canonical_map.get(lowered, candidate.strip())
+
+    def _normalize_area_candidate(self, place: dict[str, Any], destination: str) -> tuple[str | None, int]:
         display_name = str(place.get("displayName", {}).get("text", "")).strip()
         address = str(place.get("formattedAddress", "")).strip()
 
-        if display_name and self._looks_like_area_name(display_name, destination):
-            return display_name
+        candidates: list[tuple[str, int]] = []
+
+        if display_name:
+            canonical = self._canonicalize_area_candidate(display_name, destination)
+            score = self._score_area_name(canonical, destination)
+            if score > 0:
+                candidates.append((canonical, score))
 
         if address:
             first_part = address.split(",")[0].strip()
-            if first_part and self._looks_like_area_name(first_part, destination):
-                return first_part
+            if first_part:
+                canonical = self._canonicalize_area_candidate(first_part, destination)
+                score = self._score_area_name(canonical, destination)
+                if score > 0:
+                    candidates.append((canonical, score))
 
-        return None
+        if not candidates:
+            return None, -100
+
+        best_candidate = sorted(candidates, key=lambda item: item[1], reverse=True)[0]
+        return best_candidate
 
     def _extract_suggested_areas(self, payload: dict[str, Any], destination: str) -> list[str]:
-        suggestions: list[str] = []
+        ranked_candidates: list[tuple[str, int]] = []
         seen: set[str] = set()
 
         for place in payload.get("places", []) or []:
-            candidate = self._normalize_area_candidate(place, destination)
+            candidate, score = self._normalize_area_candidate(place, destination)
             if not candidate:
                 continue
 
@@ -106,12 +273,20 @@ class GooglePlacesClient:
                 continue
 
             seen.add(normalized_key)
-            suggestions.append(candidate)
+            ranked_candidates.append((candidate, score))
 
-            if len(suggestions) >= 3:
-                break
+        ranked_candidates = sorted(ranked_candidates, key=lambda item: item[1], reverse=True)
 
-        return suggestions
+        strong_candidates = [candidate for candidate, score in ranked_candidates if score >= 8]
+        medium_candidates = [candidate for candidate, score in ranked_candidates if score >= 4]
+
+        if len(strong_candidates) >= 2:
+            return strong_candidates[:3]
+
+        if len(medium_candidates) >= 3:
+            return medium_candidates[:3]
+
+        return []
 
     def _live_destination_context(self, destination: str) -> dict[str, object]:
         url = f"{self.settings.google_places_base_url}/places:searchText"
@@ -122,7 +297,7 @@ class GooglePlacesClient:
         }
         body = {
             "textQuery": f"best neighborhoods in {destination}",
-            "pageSize": 6,
+            "pageSize": 8,
         }
 
         with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
@@ -132,9 +307,15 @@ class GooglePlacesClient:
 
         suggested_areas = self._extract_suggested_areas(payload, destination)
 
+        if not suggested_areas:
+            return {
+                "suggested_areas": self._stub_destination_context(destination)["suggested_areas"],
+                "freshness_note": "Live Google Places candidates did not meet minimum area-quality thresholds, so curated destination defaults were used.",
+            }
+
         return {
-            "suggested_areas": suggested_areas or self._stub_destination_context(destination)["suggested_areas"],
-            "freshness_note": "Suggested areas were enriched from Google Places live text search with neighborhood-focused filtering.",
+            "suggested_areas": suggested_areas,
+            "freshness_note": "Suggested areas were enriched from Google Places live text search with canonicalization, POI suppression, and area-quality guardrails.",
         }
 
     def get_destination_context(self, destination: str) -> dict[str, object]:

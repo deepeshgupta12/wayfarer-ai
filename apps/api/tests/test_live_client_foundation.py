@@ -25,5 +25,46 @@ def test_google_places_client_context_returns_expected_shape_without_live_keys()
 def test_google_places_area_filter_rejects_hotel_like_names() -> None:
     client = GooglePlacesClient()
 
-    assert client._looks_like_area_name("Hotel Granvia Kyoto", "Kyoto") is False
-    assert client._looks_like_area_name("Gion District", "Kyoto") is True
+    assert client._is_blocked_area_name("Hotel Granvia Kyoto") is True
+    assert client._score_area_name("Gion District", "Kyoto") > 0
+
+
+def test_google_places_area_filter_rejects_market_like_names() -> None:
+    client = GooglePlacesClient()
+
+    assert client._is_blocked_area_name("Nishiki Market") is True
+    assert client._score_area_name("Higashiyama District", "Kyoto") > 0
+
+
+def test_google_places_area_filter_rejects_intersection_like_names() -> None:
+    client = GooglePlacesClient()
+
+    assert client._is_blocked_area_name("Kyoto Downtown Intersection (Shijo-Kawaramachi)") is True
+
+
+def test_google_places_area_canonicalizes_known_destination_subareas() -> None:
+    client = GooglePlacesClient()
+
+    assert client._canonicalize_area_candidate("Gion District", "Kyoto") == "Gion"
+    assert client._canonicalize_area_candidate("Higashiyama District", "Kyoto") == "Higashiyama"
+
+
+def test_google_places_area_filter_rejects_country_like_names() -> None:
+    client = GooglePlacesClient()
+
+    assert client._is_country_like_name("Japan") is True
+    assert client._score_area_name("Japan", "Kyoto") < 0
+
+
+def test_google_places_quality_guardrails_can_force_fallback() -> None:
+    client = GooglePlacesClient()
+
+    payload = {
+        "places": [
+            {"displayName": {"text": "Japan"}, "formattedAddress": "Japan"},
+            {"displayName": {"text": "Arashiyama Bamboo Forest"}, "formattedAddress": "Kyoto, Japan"},
+            {"displayName": {"text": "The Ritz-Carlton, Kyoto"}, "formattedAddress": "Kyoto, Japan"},
+        ]
+    }
+
+    assert client._extract_suggested_areas(payload, "Kyoto") == []
