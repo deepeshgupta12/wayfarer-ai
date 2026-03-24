@@ -77,3 +77,11 @@
 - Review analysis endpoint added
 - Review analyze-and-save endpoint added
 - Review intelligence API tests added
+
+## Step 12
+- Destination search schema foundation added
+- Tripadvisor client stub added
+- Google Places client stub added
+- Destination search endpoint added
+- Destination guide endpoint added
+- Destination API tests added

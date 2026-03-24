@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.routes.destinations import router as destinations_router
 from app.api.routes.embeddings import router as embeddings_router
 from app.api.routes.health import router as health_router
 from app.api.routes.persona import router as persona_router
@@ -29,6 +30,7 @@ app.include_router(embeddings_router)
 app.include_router(persona_router)
 app.include_router(persona_embeddings_router)
 app.include_router(review_intelligence_router)
+app.include_router(destinations_router)
 
 
 @app.get("/")
