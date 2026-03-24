@@ -13,6 +13,7 @@ def health_check() -> dict[str, str]:
         "status": "ok",
         "app_name": settings.app_name,
         "environment": settings.app_env,
+        "version": settings.app_version,
     }
 
 
@@ -26,5 +27,7 @@ def health_detailed() -> dict[str, object]:
         "status": "ok" if all_ok else "degraded",
         "app_name": settings.app_name,
         "environment": settings.app_env,
+        "version": settings.app_version,
         "services": infra_status,
+        "cors_origins": settings.frontend_cors_origins,
     }

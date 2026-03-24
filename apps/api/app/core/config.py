@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_debug: bool = Field(default=True, alias="APP_DEBUG")
     app_host: str = Field(default="0.0.0.0", alias="APP_HOST")
     app_port: int = Field(default=8000, alias="APP_PORT")
+    app_version: str = Field(default="0.1.0", alias="APP_VERSION")
 
     database_url: str = Field(
         default="postgresql+psycopg://wayfarer:wayfarer@localhost:5433/wayfarer",

@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,14 +11,22 @@ from app.api.routes.persona_embeddings import router as persona_embeddings_route
 from app.api.routes.providers import router as providers_router
 from app.api.routes.review_intelligence import router as review_intelligence_router
 from app.core.config import get_settings
-from app.db.session import create_db_tables
+from app.db.session import initialize_database
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    initialize_database()
+    yield
+
 
 app = FastAPI(
     title=settings.app_name,
     debug=settings.app_debug,
-    version="0.1.0",
+    version=settings.app_version,
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -26,12 +36,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    create_db_tables()
-
 
 app.include_router(health_router)
 app.include_router(providers_router)
@@ -47,4 +51,5 @@ def root() -> dict[str, str]:
     return {
         "message": f"Welcome to {settings.app_name}",
         "environment": settings.app_env,
+        "version": settings.app_version,
     }
