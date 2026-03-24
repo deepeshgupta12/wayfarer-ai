@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, Plus } from 'lucide-react';
-import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
-import { generateDestinationGuide } from '@/api/wayfarerApi';
+import { generateDestinationGuide, streamDestinationGuide } from '@/api/wayfarerApi';
 import { getTravellerPersona } from '@/lib/travellerProfile';
 
 const suggestedChips = [
@@ -32,6 +31,28 @@ function deriveGuidePayload(rawInput, persona) {
     interests: persona?.signals?.interests || ['culture'],
     pace_preference: persona?.signals?.pace_preference || 'balanced',
     budget: persona?.signals?.travel_style || 'midrange',
+  };
+}
+
+function buildAssistantMessageFromGuide(result, streamedContent) {
+  return {
+    role: 'assistant',
+    content: streamedContent || result.overview,
+    places:
+      result.area_cards?.map((area) => ({
+        name: area.name,
+        category: area.category,
+        rating: area.rating,
+        description: area.summary,
+        why_recommended: area.why_it_fits,
+      })) || [],
+    chips: result.highlights || [],
+    reviewSummary: result.review_summary || null,
+    reviewInsight: result.review_insight || null,
+    reviewSignals: result.review_signals || {},
+    reviewAuthenticity: result.review_authenticity || null,
+    isStreaming: false,
+    timestamp: new Date().toISOString(),
   };
 }
 
@@ -74,27 +95,72 @@ export default function Assistant() {
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
+    const payload = deriveGuidePayload(msg, persona);
+    const assistantIndexRef = { current: -1 };
+
     try {
-      const payload = deriveGuidePayload(msg, persona);
-      const result = await generateDestinationGuide(payload);
+      setMessages((prev) => {
+        assistantIndexRef.current = prev.length;
+        return [
+          ...prev,
+          {
+            role: 'assistant',
+            content: '',
+            places: [],
+            chips: [],
+            reviewSummary: null,
+            reviewInsight: null,
+            reviewSignals: {},
+            reviewAuthenticity: null,
+            isStreaming: true,
+            timestamp: new Date().toISOString(),
+          },
+        ];
+      });
 
-      const assistantMsg = {
-        role: 'assistant',
-        content: result.overview,
-        places: result.suggested_areas.map((area) => ({
-          name: area,
-          category: 'suggested area',
-          rating: 4.7,
-          description: `A strong area to explore in ${result.destination}.`,
-          why_recommended: result.reasoning[0] || 'Recommended by the Wayfarer destination guide.',
-        })),
-        chips: result.highlights || [],
-        timestamp: new Date().toISOString(),
-      };
+      let streamedContent = '';
 
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (error) {
-      setErrorMessage(error.message || 'Unable to generate a destination guide right now.');
+      await streamDestinationGuide(payload, {
+        onContentDelta: (delta) => {
+          streamedContent = `${streamedContent}${streamedContent ? ' ' : ''}${delta}`;
+          setMessages((prev) =>
+            prev.map((message, index) =>
+              index === assistantIndexRef.current
+                ? { ...message, content: streamedContent.trim(), isStreaming: true }
+                : message
+            )
+          );
+        },
+        onFinal: (finalPayload) => {
+          const finalMessage = buildAssistantMessageFromGuide(finalPayload, streamedContent.trim());
+          setMessages((prev) =>
+            prev.map((message, index) =>
+              index === assistantIndexRef.current ? finalMessage : message
+            )
+          );
+        },
+      });
+    } catch (streamError) {
+      try {
+        const result = await generateDestinationGuide(payload);
+        const assistantMsg = buildAssistantMessageFromGuide(result, '');
+
+        setMessages((prev) => {
+          if (assistantIndexRef.current >= 0) {
+            return prev.map((message, index) =>
+              index === assistantIndexRef.current ? assistantMsg : message
+            );
+          }
+          return [...prev, assistantMsg];
+        });
+      } catch (fallbackError) {
+        setMessages((prev) =>
+          assistantIndexRef.current >= 0
+            ? prev.filter((_, index) => index !== assistantIndexRef.current)
+            : prev
+        );
+        setErrorMessage(fallbackError.message || 'Unable to generate a destination guide right now.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -111,7 +177,7 @@ export default function Assistant() {
           </div>
           <div>
             <h1 className="font-semibold text-sm">Wayfarer Assistant</h1>
-            <p className="text-xs text-muted-foreground">Persona-aware destination guide powered by the V1 backend</p>
+            <p className="text-xs text-muted-foreground">Persona-aware destination guide with streaming + review-backed intelligence</p>
           </div>
         </div>
         <button
@@ -133,15 +199,6 @@ export default function Assistant() {
             {messages.map((msg, i) => (
               <MessageBubble key={i} message={msg} onChipClick={handleSend} />
             ))}
-
-            {isLoading && (
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
-                  <Sparkles className="w-3.5 h-3.5 text-white" />
-                </div>
-                <LoadingState compact message="Building your destination guide..." />
-              </div>
-            )}
 
             {errorMessage ? (
               <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -194,7 +251,7 @@ function EmptyChat({ onSuggestionClick, persona }) {
       </motion.div>
       <h2 className="font-serif text-2xl font-bold mb-2">Where to next?</h2>
       <p className="text-muted-foreground text-sm max-w-sm mb-4">
-        Ask for a destination guide and Wayfarer will use the current V1 backend contracts to build a structured response.
+        Ask for a destination guide and Wayfarer will stream back a structured, review-backed answer.
       </p>
       <p className="text-xs text-muted-foreground max-w-md mb-8">
         {persona?.summary
@@ -213,6 +270,48 @@ function EmptyChat({ onSuggestionClick, persona }) {
         ))}
       </div>
     </motion.div>
+  );
+}
+
+function InsightSection({ reviewInsight, chips, onChipClick }) {
+  const hasInsights = reviewInsight || chips?.length > 0;
+  if (!hasInsights) return null;
+
+  return (
+    <div className="mt-4 space-y-3">
+      {reviewInsight ? (
+        <div className="rounded-xl border border-border bg-secondary/40 px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Review insight
+          </div>
+          <div className="text-sm text-foreground">{reviewInsight.overall_vibe}</div>
+
+          {reviewInsight.standout_themes?.length > 0 ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Stands out for: <span className="font-medium">{reviewInsight.standout_themes.join(', ')}</span>
+            </div>
+          ) : null}
+
+          <div className="mt-2 text-xs text-muted-foreground">
+            Confidence: <span className="font-medium">{reviewInsight.confidence}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {chips?.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {chips.map((chip, i) => (
+            <button
+              key={i}
+              onClick={() => onChipClick(chip)}
+              className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -241,9 +340,16 @@ function MessageBubble({ message, onChipClick }) {
         <Sparkles className="w-3.5 h-3.5 text-white" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
+        {message.content ? (
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
+        ) : message.isStreaming ? (
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground mb-2">Thinking through your destination guide...</div>
+            <TypingDots />
+          </div>
+        ) : null}
 
-        {message.places?.length > 0 && (
+        {message.places?.length > 0 ? (
           <div className="mt-4 space-y-2">
             {message.places.map((place, i) => (
               <PlaceCard
@@ -260,22 +366,24 @@ function MessageBubble({ message, onChipClick }) {
               />
             ))}
           </div>
-        )}
+        ) : null}
 
-        {message.chips?.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-4">
-            {message.chips.map((chip, i) => (
-              <button
-                key={i}
-                onClick={() => onChipClick(chip)}
-                className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
-              >
-                {chip}
-              </button>
-            ))}
-          </div>
-        )}
+        <InsightSection
+          reviewInsight={message.reviewInsight}
+          chips={message.chips}
+          onChipClick={onChipClick}
+        />
       </div>
     </motion.div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div className="flex items-center gap-1.5 py-1">
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.2s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.1s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce" />
+    </div>
   );
 }
