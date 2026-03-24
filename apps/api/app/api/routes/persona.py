@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.db.session import get_db_session
 from app.schemas.persona import (
     TravellerPersonaInitializeRequest,
+    TravellerPersonaInput,
     TravellerPersonaOutput,
     TravellerPersonaPersistedOutput,
 )
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/persona", tags=["persona"])
 
 
 @router.post("/initialize", response_model=TravellerPersonaOutput)
-def initialize_persona(payload: TravellerPersonaInitializeRequest) -> TravellerPersonaOutput:
+def initialize_persona(payload: TravellerPersonaInput) -> TravellerPersonaOutput:
     return build_initial_persona(payload)
 
 
