@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.db.base import Base
-from app.models import TravellerPersonaRecord  # noqa: F401
+from app.models import TravellerPersonaEmbeddingRecord, TravellerPersonaRecord  # noqa: F401
 
 settings = get_settings()
 
@@ -30,7 +30,13 @@ def check_database_connection() -> bool:
         return False
 
 
+def enable_pgvector_extension() -> None:
+    with engine.begin() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+
 def create_db_tables() -> None:
+    enable_pgvector_extension()
     Base.metadata.create_all(bind=engine)
 
 
