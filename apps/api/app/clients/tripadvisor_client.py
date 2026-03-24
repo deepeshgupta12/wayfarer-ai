@@ -43,6 +43,92 @@ class TripadvisorClient:
             ),
         ]
 
+    def _stub_reviews(self, destination: str) -> dict[str, object]:
+        destination_lower = destination.lower()
+
+        if destination_lower == "kyoto":
+            return {
+                "location_id": "ta_kyoto_001",
+                "location_name": "Kyoto",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Beautiful atmosphere, incredibly helpful locals, and rich cultural experiences across the city.",
+                    },
+                    {
+                        "rating": 5,
+                        "text": "Food quality was excellent and the historic neighborhoods felt calm, walkable, and worth the time.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Very strong value for a culture-heavy trip, especially with scenic areas and memorable ambience.",
+                    },
+                ],
+                "source": "stub",
+            }
+
+        if destination_lower == "lisbon":
+            return {
+                "location_id": "ta_lisbon_001",
+                "location_name": "Lisbon",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Friendly service almost everywhere, great food, and charming neighborhoods with strong ambience.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Worth the price for couples and food lovers, with lively evenings and scenic viewpoints.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Good value destination with delicious local cuisine and vibrant atmosphere.",
+                    },
+                ],
+                "source": "stub",
+            }
+
+        if destination_lower == "prague":
+            return {
+                "location_id": "ta_prague_001",
+                "location_name": "Prague",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Beautiful city with excellent ambience, strong value, and plenty of history to explore.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Very walkable with scenic districts, memorable service, and worthwhile cultural stops.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Strong overall experience for couples with cozy atmosphere and solid food options.",
+                    },
+                ],
+                "source": "stub",
+            }
+
+        return {
+            "location_id": f"ta_{destination_lower}_001",
+            "location_name": destination,
+            "reviews": [
+                {
+                    "rating": 4,
+                    "text": f"Travellers describe {destination} as enjoyable, with solid atmosphere and worthwhile local exploration.",
+                },
+                {
+                    "rating": 4,
+                    "text": f"{destination} offers generally good value with memorable neighborhoods and positive travel experiences.",
+                },
+                {
+                    "rating": 4,
+                    "text": f"Visitors report helpful local experiences and a strong sense of place in {destination}.",
+                },
+            ],
+            "source": "stub",
+        }
+
     def _filter_stub_results(
         self,
         query: str,
@@ -117,7 +203,10 @@ class TripadvisorClient:
             for keyword in ["geographic", "municipality", "city", "district", "neighborhood"]
         ) else 0
 
-        return (exact_name + exact_city + geographic_bias, 1 if self._is_destination_like_result(item, query) else 0)
+        return (
+            exact_name + exact_city + geographic_bias,
+            1 if self._is_destination_like_result(item, query) else 0,
+        )
 
     def _parse_live_search_results(
         self,
@@ -184,6 +273,42 @@ class TripadvisorClient:
 
         return self._parse_live_search_results(payload, query)
 
+    def _live_location_reviews(
+        self,
+        location_id: str,
+    ) -> list[dict[str, object]]:
+        url = f"{self.settings.tripadvisor_base_url}/location/{location_id}/reviews"
+        params = {
+            "key": self.settings.tripadvisor_api_key,
+            "language": "en",
+        }
+
+        with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
+            response = client.get(url, params=params)
+            response.raise_for_status()
+            payload = response.json()
+
+        reviews: list[dict[str, object]] = []
+
+        for item in payload.get("data", []) or []:
+            text = str(item.get("text", "")).strip()
+            rating = item.get("rating")
+
+            if not text or rating is None:
+                continue
+
+            reviews.append(
+                {
+                    "rating": float(rating),
+                    "text": text,
+                }
+            )
+
+            if len(reviews) >= 5:
+                break
+
+        return reviews
+
     def search_locations(
         self,
         query: str,
@@ -206,3 +331,32 @@ class TripadvisorClient:
             pass
 
         return self._filter_stub_results(query, stub_results)
+
+    def get_destination_reviews(
+        self,
+        destination: str,
+    ) -> dict[str, object]:
+        stub_bundle = self._stub_reviews(destination)
+
+        if not self.settings.tripadvisor_api_key_configured:
+            return stub_bundle
+
+        try:
+            live_results = self._live_search_locations(destination)
+            if not live_results:
+                return stub_bundle
+
+            top_result = live_results[0]
+            live_reviews = self._live_location_reviews(top_result.location_id)
+
+            if len(live_reviews) < 2:
+                return stub_bundle
+
+            return {
+                "location_id": top_result.location_id,
+                "location_name": top_result.name,
+                "reviews": live_reviews,
+                "source": "live",
+            }
+        except Exception:
+            return stub_bundle
