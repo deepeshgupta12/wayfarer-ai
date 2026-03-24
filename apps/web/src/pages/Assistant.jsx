@@ -34,61 +34,26 @@ function deriveGuidePayload(rawInput, persona) {
   };
 }
 
-function buildAreaDescription(area, destination) {
-  return `A good base for exploring ${destination}, with strong local character and easy access to key experiences.`;
-}
-
-function buildAreaReason(area, result) {
-  const interestText =
-    result?.highlights?.[1]?.toLowerCase().includes('food') ? 'Great for food-led exploration.' : 'A strong fit for the way this guide is structured.';
-
-  const areaMap = {
-    Gion: 'Best if you want heritage streets, atmosphere, and evening walks.',
-    Higashiyama: 'Strong for temples, traditional character, and slower cultural exploration.',
-    Arashiyama: 'Ideal for scenic stretches, nature, and a lighter-paced half day.',
-    Alfama: 'Great for old-city character, viewpoints, and local atmosphere.',
-    'Bairro Alto': 'Best for lively evenings and central access.',
-    Chiado: 'A balanced base for cafés, culture, and walkability.',
-    'Old Town': 'Best for first-time coverage of major sights.',
-    'Mala Strana': 'Great for charm, quieter streets, and classic city views.',
-    Vinohrady: 'A stronger fit for a more local, relaxed city feel.',
-  };
-
-  return areaMap[area] || interestText;
-}
-
 function buildAssistantMessageFromGuide(result, streamedContent) {
-  const insightChips = [
-    ...(result.highlights?.slice(1) || []),
-  ];
-
   return {
     role: 'assistant',
     content: streamedContent || result.overview,
-    places: result.suggested_areas.map((area) => ({
-      name: area,
-      category: 'area',
-      rating: 4.7,
-      description: buildAreaDescription(area, result.destination),
-      why_recommended: buildAreaReason(area, result),
-    })),
-    chips: insightChips,
+    places:
+      result.area_cards?.map((area) => ({
+        name: area.name,
+        category: area.category,
+        rating: area.rating,
+        description: area.summary,
+        why_recommended: area.why_it_fits,
+      })) || [],
+    chips: result.highlights || [],
     reviewSummary: result.review_summary || null,
+    reviewInsight: result.review_insight || null,
     reviewSignals: result.review_signals || {},
     reviewAuthenticity: result.review_authenticity || null,
     isStreaming: false,
     timestamp: new Date().toISOString(),
   };
-}
-
-function TypingDots() {
-  return (
-    <div className="flex items-center gap-1.5 py-1">
-      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.2s]" />
-      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.1s]" />
-      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce" />
-    </div>
-  );
 }
 
 export default function Assistant() {
@@ -144,6 +109,7 @@ export default function Assistant() {
             places: [],
             chips: [],
             reviewSummary: null,
+            reviewInsight: null,
             reviewSignals: {},
             reviewAuthenticity: null,
             isStreaming: true,
@@ -307,23 +273,28 @@ function EmptyChat({ onSuggestionClick, persona }) {
   );
 }
 
-function InsightSection({ reviewSummary, reviewAuthenticity, chips, onChipClick }) {
-  const hasInsights = reviewSummary || reviewAuthenticity || chips?.length > 0;
+function InsightSection({ reviewInsight, chips, onChipClick }) {
+  const hasInsights = reviewInsight || chips?.length > 0;
   if (!hasInsights) return null;
 
   return (
     <div className="mt-4 space-y-3">
-      {reviewSummary ? (
+      {reviewInsight ? (
         <div className="rounded-xl border border-border bg-secondary/40 px-4 py-3">
           <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
             Review insight
           </div>
-          <div className="text-sm text-foreground">{reviewSummary}</div>
-          {reviewAuthenticity ? (
+          <div className="text-sm text-foreground">{reviewInsight.overall_vibe}</div>
+
+          {reviewInsight.standout_themes?.length > 0 ? (
             <div className="mt-2 text-xs text-muted-foreground">
-              Confidence: <span className="font-medium capitalize">{reviewAuthenticity}</span>
+              Stands out for: <span className="font-medium">{reviewInsight.standout_themes.join(', ')}</span>
             </div>
           ) : null}
+
+          <div className="mt-2 text-xs text-muted-foreground">
+            Confidence: <span className="font-medium">{reviewInsight.confidence}</span>
+          </div>
         </div>
       ) : null}
 
@@ -398,12 +369,21 @@ function MessageBubble({ message, onChipClick }) {
         ) : null}
 
         <InsightSection
-          reviewSummary={message.reviewSummary}
-          reviewAuthenticity={message.reviewAuthenticity}
+          reviewInsight={message.reviewInsight}
           chips={message.chips}
           onChipClick={onChipClick}
         />
       </div>
     </motion.div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div className="flex items-center gap-1.5 py-1">
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.2s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.1s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce" />
+    </div>
   );
 }
