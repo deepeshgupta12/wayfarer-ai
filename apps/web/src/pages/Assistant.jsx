@@ -101,7 +101,7 @@ export default function Assistant() {
 
     try {
       setMessages((prev) => {
-        assistantIndexRef.current = prev.length + 1;
+        assistantIndexRef.current = prev.length;
         return [
           ...prev,
           {
@@ -120,7 +120,7 @@ export default function Assistant() {
 
       await streamDestinationGuide(payload, {
         onContentDelta: (delta) => {
-          streamedContent += `${delta} `;
+          streamedContent = `${streamedContent}${streamedContent ? ' ' : ''}${delta}`;
           setMessages((prev) =>
             prev.map((message, index) =>
               index === assistantIndexRef.current
