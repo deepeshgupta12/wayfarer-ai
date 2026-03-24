@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, Plus } from 'lucide-react';
-import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
 import { generateDestinationGuide, streamDestinationGuide } from '@/api/wayfarerApi';
 import { getTravellerPersona } from '@/lib/travellerProfile';
@@ -35,26 +34,61 @@ function deriveGuidePayload(rawInput, persona) {
   };
 }
 
+function buildAreaDescription(area, destination) {
+  return `A good base for exploring ${destination}, with strong local character and easy access to key experiences.`;
+}
+
+function buildAreaReason(area, result) {
+  const interestText =
+    result?.highlights?.[1]?.toLowerCase().includes('food') ? 'Great for food-led exploration.' : 'A strong fit for the way this guide is structured.';
+
+  const areaMap = {
+    Gion: 'Best if you want heritage streets, atmosphere, and evening walks.',
+    Higashiyama: 'Strong for temples, traditional character, and slower cultural exploration.',
+    Arashiyama: 'Ideal for scenic stretches, nature, and a lighter-paced half day.',
+    Alfama: 'Great for old-city character, viewpoints, and local atmosphere.',
+    'Bairro Alto': 'Best for lively evenings and central access.',
+    Chiado: 'A balanced base for cafés, culture, and walkability.',
+    'Old Town': 'Best for first-time coverage of major sights.',
+    'Mala Strana': 'Great for charm, quieter streets, and classic city views.',
+    Vinohrady: 'A stronger fit for a more local, relaxed city feel.',
+  };
+
+  return areaMap[area] || interestText;
+}
+
 function buildAssistantMessageFromGuide(result, streamedContent) {
-  const reviewSummary = result.review_summary
-    ? `\n\nReview summary: ${result.review_summary}`
-    : '';
+  const insightChips = [
+    ...(result.highlights?.slice(1) || []),
+  ];
 
   return {
     role: 'assistant',
-    content: streamedContent || `${result.overview}${reviewSummary}`,
+    content: streamedContent || result.overview,
     places: result.suggested_areas.map((area) => ({
       name: area,
-      category: 'suggested area',
+      category: 'area',
       rating: 4.7,
-      description: `A strong area to explore in ${result.destination}.`,
-      why_recommended: result.reasoning[0] || 'Recommended by the Wayfarer destination guide.',
+      description: buildAreaDescription(area, result.destination),
+      why_recommended: buildAreaReason(area, result),
     })),
-    chips: result.highlights || [],
+    chips: insightChips,
+    reviewSummary: result.review_summary || null,
     reviewSignals: result.review_signals || {},
     reviewAuthenticity: result.review_authenticity || null,
+    isStreaming: false,
     timestamp: new Date().toISOString(),
   };
+}
+
+function TypingDots() {
+  return (
+    <div className="flex items-center gap-1.5 py-1">
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.2s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.1s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce" />
+    </div>
+  );
 }
 
 export default function Assistant() {
@@ -109,8 +143,10 @@ export default function Assistant() {
             content: '',
             places: [],
             chips: [],
+            reviewSummary: null,
             reviewSignals: {},
             reviewAuthenticity: null,
+            isStreaming: true,
             timestamp: new Date().toISOString(),
           },
         ];
@@ -124,7 +160,7 @@ export default function Assistant() {
           setMessages((prev) =>
             prev.map((message, index) =>
               index === assistantIndexRef.current
-                ? { ...message, content: streamedContent.trim() }
+                ? { ...message, content: streamedContent.trim(), isStreaming: true }
                 : message
             )
           );
@@ -197,15 +233,6 @@ export default function Assistant() {
             {messages.map((msg, i) => (
               <MessageBubble key={i} message={msg} onChipClick={handleSend} />
             ))}
-
-            {isLoading && (
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
-                  <Sparkles className="w-3.5 h-3.5 text-white" />
-                </div>
-                <LoadingState compact message="Streaming your destination guide..." />
-              </div>
-            )}
 
             {errorMessage ? (
               <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -280,6 +307,43 @@ function EmptyChat({ onSuggestionClick, persona }) {
   );
 }
 
+function InsightSection({ reviewSummary, reviewAuthenticity, chips, onChipClick }) {
+  const hasInsights = reviewSummary || reviewAuthenticity || chips?.length > 0;
+  if (!hasInsights) return null;
+
+  return (
+    <div className="mt-4 space-y-3">
+      {reviewSummary ? (
+        <div className="rounded-xl border border-border bg-secondary/40 px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Review insight
+          </div>
+          <div className="text-sm text-foreground">{reviewSummary}</div>
+          {reviewAuthenticity ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Confidence: <span className="font-medium capitalize">{reviewAuthenticity}</span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {chips?.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {chips.map((chip, i) => (
+            <button
+              key={i}
+              onClick={() => onChipClick(chip)}
+              className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageBubble({ message, onChipClick }) {
   if (message.role === 'user') {
     return (
@@ -305,15 +369,16 @@ function MessageBubble({ message, onChipClick }) {
         <Sparkles className="w-3.5 h-3.5 text-white" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
-
-        {message.reviewAuthenticity ? (
-          <div className="mt-3 text-xs text-muted-foreground">
-            Review authenticity: <span className="font-medium">{message.reviewAuthenticity}</span>
+        {message.content ? (
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
+        ) : message.isStreaming ? (
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground mb-2">Thinking through your destination guide...</div>
+            <TypingDots />
           </div>
         ) : null}
 
-        {message.places?.length > 0 && (
+        {message.places?.length > 0 ? (
           <div className="mt-4 space-y-2">
             {message.places.map((place, i) => (
               <PlaceCard
@@ -330,21 +395,14 @@ function MessageBubble({ message, onChipClick }) {
               />
             ))}
           </div>
-        )}
+        ) : null}
 
-        {message.chips?.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-4">
-            {message.chips.map((chip, i) => (
-              <button
-                key={i}
-                onClick={() => onChipClick(chip)}
-                className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
-              >
-                {chip}
-              </button>
-            ))}
-          </div>
-        )}
+        <InsightSection
+          reviewSummary={message.reviewSummary}
+          reviewAuthenticity={message.reviewAuthenticity}
+          chips={message.chips}
+          onChipClick={onChipClick}
+        />
       </div>
     </motion.div>
   );
