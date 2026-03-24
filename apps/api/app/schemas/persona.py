@@ -44,7 +44,15 @@ class TravellerPersonaInput(BaseModel):
     )
 
 
+class TravellerPersonaInitializeRequest(TravellerPersonaInput):
+    traveller_id: str = Field(..., min_length=1, description="Temporary traveller identifier.")
+
+
 class TravellerPersonaOutput(BaseModel):
     archetype: str
     summary: str
     signals: dict[str, object]
+
+
+class TravellerPersonaPersistedOutput(TravellerPersonaOutput):
+    traveller_id: str

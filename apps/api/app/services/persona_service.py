@@ -1,4 +1,12 @@
-from app.schemas.persona import TravellerPersonaInput, TravellerPersonaOutput
+from sqlalchemy.orm import Session
+
+from app.models.persona import TravellerPersonaRecord
+from app.schemas.persona import (
+    TravellerPersonaInitializeRequest,
+    TravellerPersonaInput,
+    TravellerPersonaOutput,
+    TravellerPersonaPersistedOutput,
+)
 
 
 def _detect_archetype(payload: TravellerPersonaInput) -> str:
@@ -45,4 +53,31 @@ def build_initial_persona(payload: TravellerPersonaInput) -> TravellerPersonaOut
             "group_type": payload.group_type,
             "interests": payload.interests,
         },
+    )
+
+
+def initialize_and_persist_persona(
+    db: Session,
+    payload: TravellerPersonaInitializeRequest,
+) -> TravellerPersonaPersistedOutput:
+    persona = build_initial_persona(payload)
+
+    record = TravellerPersonaRecord(
+        traveller_id=payload.traveller_id,
+        archetype=persona.archetype,
+        summary=persona.summary,
+        travel_style=payload.travel_style,
+        pace_preference=payload.pace_preference,
+        group_type=payload.group_type,
+        interests=list(payload.interests),
+    )
+
+    db.merge(record)
+    db.commit()
+
+    return TravellerPersonaPersistedOutput(
+        traveller_id=payload.traveller_id,
+        archetype=persona.archetype,
+        summary=persona.summary,
+        signals=persona.signals,
     )
