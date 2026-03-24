@@ -1,12 +1,21 @@
-import { useMemo, useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
 // @ts-ignore
 import { motion } from 'framer-motion';
 // @ts-ignore
 import { Send, Sparkles, Plus } from 'lucide-react';
 import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
-import { createTravellerMemory, generateDestinationGuide } from '@/api/wayfarerApi';
-import { getOrCreateTravellerId, getTravellerPersona } from '@/lib/travellerProfile';
+import {
+  createTravellerMemory,
+  generateDestinationGuide,
+  refreshTravellerPersonaFromMemory,
+} from '@/api/wayfarerApi';
+import {
+  getOrCreateTravellerId,
+  getTravellerPersona,
+  getPersonaUpdatedEventName,
+  replaceTravellerPersona,
+} from '@/lib/travellerProfile';
 
 const suggestedChips = [
   '3 days in Kyoto for food and culture',
@@ -63,10 +72,29 @@ export default function Assistant() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [persona, setPersona] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-  const persona = useMemo(() => getTravellerPersona(), []);
-  const travellerId = useMemo(() => getOrCreateTravellerId(), []);
+  const travellerId = getOrCreateTravellerId();
+
+  useEffect(() => {
+    const refreshPersona = () => {
+      setPersona(getTravellerPersona());
+    };
+
+    refreshPersona();
+
+    const personaEventName = getPersonaUpdatedEventName();
+    window.addEventListener('storage', refreshPersona);
+    window.addEventListener('focus', refreshPersona);
+    window.addEventListener(personaEventName, refreshPersona);
+
+    return () => {
+      window.removeEventListener('storage', refreshPersona);
+      window.removeEventListener('focus', refreshPersona);
+      window.removeEventListener(personaEventName, refreshPersona);
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -95,6 +123,7 @@ export default function Assistant() {
           duration_days: payload.duration_days,
           traveller_type: payload.traveller_type,
           interests: payload.interests,
+          budget: payload.budget,
         },
       });
 
@@ -115,8 +144,19 @@ export default function Assistant() {
           highlights_count: (result.highlights || []).length,
           review_authenticity: result.review_authenticity || null,
           review_summary: result.review_summary || null,
+          traveller_type: payload.traveller_type,
+          interests: payload.interests,
+          budget: payload.budget,
         },
       });
+
+      try {
+        const refreshedPersona = await refreshTravellerPersonaFromMemory(travellerId);
+        replaceTravellerPersona(refreshedPersona);
+        setPersona(refreshedPersona);
+      } catch {
+        // Non-blocking. The guide already succeeded.
+      }
     } catch (error) {
       setErrorMessage(error.message || 'Unable to generate a destination guide right now.');
     } finally {
@@ -258,9 +298,7 @@ function InsightSection({ reviewInsight, chips, onChipClick }) {
           {reviewInsight.standout_themes?.length > 0 ? (
             <div className="mt-2 text-xs text-muted-foreground">
               Stands out for:{' '}
-              <span className="font-medium">
-                {reviewInsight.standout_themes.join(', ')}
-              </span>
+              <span className="font-medium">{reviewInsight.standout_themes.join(', ')}</span>
             </div>
           ) : null}
 
@@ -323,7 +361,12 @@ function MessageBubble({ message, onChipClick }) {
                 category={place.category}
                 rating={place.rating}
                 description={place.description}
-                reason={place.why_recommended} image={undefined} distance={undefined} onSave={undefined} onClick={undefined}              />
+                reason={place.why_recommended}
+                image={undefined}
+                distance={undefined}
+                onSave={undefined}
+                onClick={undefined}
+              />
             ))}
           </div>
         ) : null}

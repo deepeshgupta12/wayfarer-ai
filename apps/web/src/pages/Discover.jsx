@@ -4,7 +4,7 @@ import { Search, Filter, Sparkles, TrendingUp, Gem, Globe, ArrowRight } from 'lu
 import { Link } from 'react-router-dom';
 import DestinationCard from '../components/cards/DestinationCard';
 import { searchDestinations } from '@/api/wayfarerApi';
-import { getTravellerPersona } from '@/lib/travellerProfile';
+import { getPersonaUpdatedEventName, getTravellerPersona } from '@/lib/travellerProfile';
 
 const trendingDestinations = [
   { name: 'Kyoto', country: 'Japan', image: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=600&h=400&fit=crop', matchScore: 94, rating: 4.8, tags: ['Culture', 'Temples', 'Food', 'Gardens'] },
@@ -48,12 +48,16 @@ export default function Discover() {
     };
 
     refreshPersona();
+
+    const personaEventName = getPersonaUpdatedEventName();
     window.addEventListener('storage', refreshPersona);
     window.addEventListener('focus', refreshPersona);
+    window.addEventListener(personaEventName, refreshPersona);
 
     return () => {
       window.removeEventListener('storage', refreshPersona);
       window.removeEventListener('focus', refreshPersona);
+      window.removeEventListener(personaEventName, refreshPersona);
     };
   }, []);
 

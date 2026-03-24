@@ -8,13 +8,42 @@ from app.schemas.review_intelligence import (
 )
 
 
-def _classify_theme(combined_text: str, keywords: list[str]) -> str:
-    lowered = combined_text.lower()
-    hits = sum(1 for keyword in keywords if keyword in lowered)
+THEME_KEYWORDS: dict[str, dict[str, list[str]]] = {
+    "service": {
+        "positive": ["friendly", "helpful", "staff", "service", "welcoming", "kind", "attentive"],
+        "negative": ["rude", "slow service", "unhelpful", "ignored", "hostile", "poor service"],
+    },
+    "food_quality": {
+        "positive": ["tasty", "delicious", "fresh", "flavor", "excellent food", "great food"],
+        "negative": ["bland", "cold food", "overcooked", "bad food", "stale", "flavourless"],
+    },
+    "value": {
+        "positive": ["value", "worth", "fair price", "reasonable", "good price"],
+        "negative": ["expensive", "overpriced", "not worth", "too pricey", "poor value"],
+    },
+    "ambience": {
+        "positive": ["beautiful", "cozy", "ambience", "atmosphere", "charming", "lovely"],
+        "negative": ["noisy", "crowded", "dirty", "chaotic", "uncomfortable", "soulless"],
+    },
+}
 
-    if hits >= 2:
+
+def _count_keyword_hits(text: str, keywords: list[str]) -> int:
+    lowered = text.lower()
+    return sum(1 for keyword in keywords if keyword in lowered)
+
+
+def _classify_theme(combined_text: str, positive_keywords: list[str], negative_keywords: list[str]) -> str:
+    positive_hits = _count_keyword_hits(combined_text, positive_keywords)
+    negative_hits = _count_keyword_hits(combined_text, negative_keywords)
+
+    if positive_hits >= 2 and negative_hits == 0:
         return "positive"
-    if hits == 1:
+    if positive_hits > negative_hits:
+        return "positive"
+    if positive_hits == 0 and negative_hits == 0:
+        return "neutral"
+    if positive_hits == negative_hits:
         return "neutral"
     return "caution"
 
@@ -23,10 +52,15 @@ def _compute_trust_score(reviews: list[dict[str, object]]) -> float:
     review_count = len(reviews)
     short_review_count = sum(1 for review in reviews if len(str(review["text"]).strip()) < 20)
 
-    base_score = min(0.95, 0.55 + (review_count * 0.07))
-    penalty = 0.08 if short_review_count > review_count / 2 else 0.0
+    ratings = [float(review["rating"]) for review in reviews]
+    average_rating = sum(ratings) / review_count
+    spread_penalty = 0.05 if max(ratings) - min(ratings) >= 3 else 0.0
 
-    return round(max(0.2, base_score - penalty), 2)
+    base_score = min(0.95, 0.55 + (review_count * 0.07))
+    brevity_penalty = 0.08 if short_review_count > review_count / 2 else 0.0
+    rating_penalty = 0.05 if average_rating < 3.5 else 0.0
+
+    return round(max(0.2, base_score - brevity_penalty - spread_penalty - rating_penalty), 2)
 
 
 def _label_authenticity(trust_score: float) -> str:
@@ -46,16 +80,18 @@ def analyze_review_bundle(
     average_rating = sum(float(review["rating"]) for review in reviews) / len(reviews)
 
     themes = {
-        "service": _classify_theme(combined_text, ["friendly", "helpful", "staff", "service"]),
-        "food_quality": _classify_theme(combined_text, ["tasty", "delicious", "fresh", "flavor"]),
-        "value": _classify_theme(combined_text, ["value", "worth", "price", "expensive"]),
-        "ambience": _classify_theme(combined_text, ["beautiful", "cozy", "ambience", "atmosphere"]),
+        theme_name: _classify_theme(
+            combined_text=combined_text,
+            positive_keywords=theme_keywords["positive"],
+            negative_keywords=theme_keywords["negative"],
+        )
+        for theme_name, theme_keywords in THEME_KEYWORDS.items()
     }
 
     if average_rating >= 4.3:
         verdict_prefix = "Travellers consistently rate this place highly."
     elif average_rating >= 3.5:
-        verdict_prefix = "Travellers generally like this place with a few mixed signals."
+        verdict_prefix = "Travellers generally like this place, though some signals are mixed."
     else:
         verdict_prefix = "Travellers report a mixed-to-cautious experience here."
 

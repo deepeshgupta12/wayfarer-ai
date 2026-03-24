@@ -54,3 +54,26 @@ def test_review_intelligence_analyze_and_save_returns_saved_payload() -> None:
     assert payload["location_id"] == "loc_lisbon_002"
     assert payload["saved"] is True
     assert payload["review_count"] == 2
+
+
+def test_review_intelligence_marks_negative_food_signal_as_caution() -> None:
+    client = get_test_client()
+
+    response = client.post(
+        "/review-intelligence/analyze",
+        json={
+            "location_id": "loc_test_003",
+            "location_name": "Mixed Signal Diner",
+            "reviews": [
+                {"rating": 2, "text": "Friendly staff but bland food and poor value."},
+                {"rating": 3, "text": "Helpful service, but the food was cold and overpriced."},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["themes"]["service"] in ["positive", "neutral"]
+    assert payload["themes"]["food_quality"] == "caution"
+    assert payload["themes"]["value"] == "caution"
