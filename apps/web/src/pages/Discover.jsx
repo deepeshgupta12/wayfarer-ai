@@ -1,16 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Search, Filter, Sparkles, TrendingUp, Gem, Globe, ArrowRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import DestinationCard from '../components/cards/DestinationCard';
+import { searchDestinations } from '@/api/wayfarerApi';
+import { getTravellerPersona } from '@/lib/travellerProfile';
 
 const trendingDestinations = [
   { name: 'Kyoto', country: 'Japan', image: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=600&h=400&fit=crop', matchScore: 94, rating: 4.8, tags: ['Culture', 'Temples', 'Food', 'Gardens'] },
   { name: 'Lisbon', country: 'Portugal', image: 'https://images.unsplash.com/photo-1585208798174-6cedd86e019a?w=600&h=400&fit=crop', matchScore: 91, rating: 4.7, tags: ['Coastal', 'Food', 'Nightlife', 'History'] },
   { name: 'Medellín', country: 'Colombia', image: 'https://images.unsplash.com/photo-1583997052103-b4a1cb974ce5?w=600&h=400&fit=crop', matchScore: 88, rating: 4.6, tags: ['Spring City', 'Culture', 'Cafes', 'Nature'] },
-  { name: 'Dubrovnik', country: 'Croatia', image: 'https://images.unsplash.com/photo-1555990538-1e15fdf2c512?w=600&h=400&fit=crop', matchScore: 86, rating: 4.7, tags: ['Old Town', 'Coast', 'History', 'Views'] },
-  { name: 'Marrakech', country: 'Morocco', image: 'https://images.unsplash.com/photo-1597212618440-806262de4f6b?w=600&h=400&fit=crop', matchScore: 84, rating: 4.5, tags: ['Souks', 'Riads', 'Spice', 'Desert'] },
-  { name: 'Cape Town', country: 'South Africa', image: 'https://images.unsplash.com/photo-1580060839134-75a5edca2e99?w=600&h=400&fit=crop', matchScore: 82, rating: 4.8, tags: ['Nature', 'Wine', 'Beach', 'Adventure'] },
 ];
 
 const hiddenGems = [
@@ -26,19 +25,68 @@ const categories = [
   { label: 'Hidden Gems', icon: Gem },
 ];
 
+function deriveSearchSeed(persona) {
+  if (!persona?.signals?.interests?.length) return 'Kyoto';
+  const interests = persona.signals.interests;
+  if (interests.includes('food') && interests.includes('culture')) return 'Kyoto';
+  if (interests.includes('nightlife')) return 'Lisbon';
+  if (interests.includes('nature')) return 'Cape Town';
+  return 'Kyoto';
+}
+
 export default function Discover() {
   const [activeCategory, setActiveCategory] = useState('For You');
   const [searchQuery, setSearchQuery] = useState('');
+  const [liveResults, setLiveResults] = useState([]);
+  const [isLoadingResults, setIsLoadingResults] = useState(false);
+  const [resultsError, setResultsError] = useState('');
+
+  const persona = useMemo(() => getTravellerPersona(), []);
+  const seededQuery = useMemo(() => deriveSearchSeed(persona), [persona]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadDestinations() {
+      setIsLoadingResults(true);
+      setResultsError('');
+
+      try {
+        const response = await searchDestinations({
+          query: searchQuery.trim() || seededQuery,
+          traveller_type: persona?.signals?.group_type || 'solo',
+          interests: persona?.signals?.interests || [],
+        });
+
+        if (active) {
+          setLiveResults(response.results || []);
+        }
+      } catch (error) {
+        if (active) {
+          setResultsError(error.message || 'Unable to fetch live destination matches right now.');
+          setLiveResults([]);
+        }
+      } finally {
+        if (active) {
+          setIsLoadingResults(false);
+        }
+      }
+    }
+
+    loadDestinations();
+
+    return () => {
+      active = false;
+    };
+  }, [searchQuery, seededQuery, persona]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
-      {/* Header */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
         <h1 className="font-serif text-3xl sm:text-4xl font-bold mb-2">Discover</h1>
         <p className="text-muted-foreground">Destinations matched to your travel style</p>
       </motion.div>
 
-      {/* Search */}
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6">
         <div className="relative max-w-xl">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-muted-foreground" />
@@ -55,7 +103,6 @@ export default function Discover() {
         </div>
       </motion.div>
 
-      {/* Categories */}
       <div className="flex gap-2 mb-8 overflow-x-auto pb-2 scrollbar-hide">
         {categories.map((cat) => {
           const Icon = cat.icon;
@@ -76,7 +123,6 @@ export default function Discover() {
         })}
       </div>
 
-      {/* AI Recommendation Banner */}
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -90,7 +136,9 @@ export default function Discover() {
           <div className="flex-1">
             <h3 className="font-semibold text-sm mb-1">Personalized for you</h3>
             <p className="text-sm text-muted-foreground">
-              Based on your love for food, culture, and walkable cities at a moderate pace — here are destinations you'll love this season.
+              {persona?.summary
+                ? persona.summary
+                : 'Complete onboarding to get stronger destination matches tailored to your travel style.'}
             </p>
           </div>
           <Link to="/assistant" className="flex items-center gap-1 text-sm font-medium text-accent hover:gap-2 transition-all whitespace-nowrap">
@@ -99,7 +147,48 @@ export default function Discover() {
         </div>
       </motion.div>
 
-      {/* Trending Destinations */}
+      <section className="mb-12">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="font-semibold text-xl mb-0.5">Live Destination Matches</h2>
+            <p className="text-sm text-muted-foreground">Results from the current Wayfarer backend destination search contract</p>
+          </div>
+        </div>
+
+        {isLoadingResults ? (
+          <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
+            Loading destination matches...
+          </div>
+        ) : resultsError ? (
+          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 p-5 text-sm text-destructive">
+            {resultsError}
+          </div>
+        ) : (
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {liveResults.map((result) => (
+              <div key={result.location_id} className="rounded-2xl border border-border bg-card p-5">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <h3 className="font-semibold text-base">{result.name}</h3>
+                    <p className="text-sm text-muted-foreground">
+                      {result.city}, {result.country}
+                    </p>
+                  </div>
+                  <div className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
+                    {result.category}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                  <span>Rating: {result.rating}</span>
+                  <span>Reviews: {result.review_count}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       <section className="mb-12">
         <div className="flex items-center justify-between mb-5">
           <div>
@@ -122,7 +211,6 @@ export default function Discover() {
         </div>
       </section>
 
-      {/* Hidden Gems */}
       <section className="mb-12">
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2">
