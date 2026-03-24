@@ -34,6 +34,19 @@ class Settings(BaseSettings):
         alias="GOOGLE_PLACES_API_KEY",
     )
 
+    tripadvisor_base_url: str = Field(
+        default="https://api.content.tripadvisor.com/api/v1",
+        alias="TRIPADVISOR_BASE_URL",
+    )
+    google_places_base_url: str = Field(
+        default="https://places.googleapis.com/v1",
+        alias="GOOGLE_PLACES_BASE_URL",
+    )
+    external_api_timeout_seconds: float = Field(
+        default=8.0,
+        alias="EXTERNAL_API_TIMEOUT_SECONDS",
+    )
+
     default_llm_provider: str = Field(default="openai", alias="DEFAULT_LLM_PROVIDER")
     default_embed_provider: str = Field(default="ollama", alias="DEFAULT_EMBED_PROVIDER")
 
@@ -56,6 +69,14 @@ class Settings(BaseSettings):
             for origin in self.frontend_cors_origins_raw.split(",")
             if origin.strip()
         ]
+
+    @property
+    def tripadvisor_api_key_configured(self) -> bool:
+        return bool(self.tripadvisor_api_key) and self.tripadvisor_api_key != "YOUR_TRIPADVISOR_API_KEY"
+
+    @property
+    def google_places_api_key_configured(self) -> bool:
+        return bool(self.google_places_api_key) and self.google_places_api_key != "YOUR_GOOGLE_PLACES_API_KEY"
 
 
 @lru_cache

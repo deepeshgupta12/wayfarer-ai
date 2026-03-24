@@ -26,7 +26,6 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
 
 def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuideResponse:
     context = google_places_client.get_destination_context(payload.destination)
-
     interests_text = ", ".join(payload.interests) if payload.interests else "general exploration"
 
     overview = (
