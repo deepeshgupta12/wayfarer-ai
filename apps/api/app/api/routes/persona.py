@@ -1,11 +1,27 @@
 from fastapi import APIRouter
 
-from app.schemas.persona import TravellerPersonaInput, TravellerPersonaOutput
-from app.services.persona_service import build_initial_persona
+from app.db.session import get_db_session
+from app.schemas.persona import (
+    TravellerPersonaInitializeRequest,
+    TravellerPersonaOutput,
+    TravellerPersonaPersistedOutput,
+)
+from app.services.persona_service import build_initial_persona, initialize_and_persist_persona
 
 router = APIRouter(prefix="/persona", tags=["persona"])
 
 
 @router.post("/initialize", response_model=TravellerPersonaOutput)
-def initialize_persona(payload: TravellerPersonaInput) -> TravellerPersonaOutput:
+def initialize_persona(payload: TravellerPersonaInitializeRequest) -> TravellerPersonaOutput:
     return build_initial_persona(payload)
+
+
+@router.post("/initialize-and-save", response_model=TravellerPersonaPersistedOutput)
+def initialize_and_save_persona(
+    payload: TravellerPersonaInitializeRequest,
+) -> TravellerPersonaPersistedOutput:
+    db = get_db_session()
+    try:
+        return initialize_and_persist_persona(db, payload)
+    finally:
+        db.close()
