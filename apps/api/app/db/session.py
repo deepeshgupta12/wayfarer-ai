@@ -4,7 +4,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.db.base import Base
-from app.models import TravellerPersonaEmbeddingRecord, TravellerPersonaRecord  # noqa: F401
+from app.models import (
+    ReviewIntelligenceRecord,
+    TravellerPersonaEmbeddingRecord,
+    TravellerPersonaRecord,
+)  # noqa: F401
 
 settings = get_settings()
 
