@@ -31,6 +31,17 @@ export async function initializeAndSavePersona(payload) {
   return parseJsonResponse(response);
 }
 
+export async function refreshTravellerPersonaFromMemory(travellerId) {
+  const response = await fetch(
+    `${API_BASE_URL}/persona/refresh-from-memory/${encodeURIComponent(travellerId)}`,
+    {
+      method: 'POST',
+    }
+  );
+
+  return parseJsonResponse(response);
+}
+
 export async function searchDestinations(payload) {
   const response = await fetch(`${API_BASE_URL}/destinations/search`, {
     method: 'POST',
