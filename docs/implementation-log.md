@@ -42,3 +42,9 @@
 - Ollama provider stub added
 - Provider status service added
 - Provider status endpoint added
+
+## Step 7
+- Traveller persona schema foundation added
+- Initial persona classification logic added
+- Persona initialization endpoint added
+- Persona API tests added
