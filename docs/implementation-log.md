@@ -48,3 +48,10 @@
 - Initial persona classification logic added
 - Persona initialization endpoint added
 - Persona API tests added
+
+## Step 8
+- SQLAlchemy base added
+- Traveller persona DB model added
+- DB table creation on startup added
+- Persona initialize-and-save endpoint added
+- Persona persistence test added
