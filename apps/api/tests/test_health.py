@@ -11,4 +11,5 @@ def test_health_endpoint_returns_expected_payload() -> None:
         "status": "ok",
         "app_name": "Wayfarer API",
         "environment": "development",
+        "version": "0.1.0",
     }

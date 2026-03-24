@@ -10,4 +10,5 @@ def test_root_endpoint_returns_expected_payload() -> None:
     assert response.json() == {
         "message": "Welcome to Wayfarer API",
         "environment": "development",
+        "version": "0.1.0",
     }
