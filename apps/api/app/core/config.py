@@ -36,12 +36,25 @@ class Settings(BaseSettings):
     default_llm_provider: str = Field(default="openai", alias="DEFAULT_LLM_PROVIDER")
     default_embed_provider: str = Field(default="ollama", alias="DEFAULT_EMBED_PROVIDER")
 
+    frontend_cors_origins_raw: str = Field(
+        default="http://localhost:5173,http://127.0.0.1:5173",
+        alias="FRONTEND_CORS_ORIGINS",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
     )
+
+    @property
+    def frontend_cors_origins(self) -> list[str]:
+        return [
+            origin.strip()
+            for origin in self.frontend_cors_origins_raw.split(",")
+            if origin.strip()
+        ]
 
 
 @lru_cache
