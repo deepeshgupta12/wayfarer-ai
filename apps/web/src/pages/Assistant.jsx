@@ -37,6 +37,27 @@ function deriveGuidePayload(rawInput, persona) {
   };
 }
 
+function buildAssistantMessageFromGuide(result) {
+  return {
+    role: 'assistant',
+    content: result.overview,
+    places:
+      result.area_cards?.map((area) => ({
+        name: area.name,
+        category: area.category || 'area',
+        rating: area.rating,
+        description: area.summary,
+        why_recommended: area.why_it_fits,
+      })) || [],
+    chips: result.highlights || [],
+    reviewSummary: result.review_summary || null,
+    reviewInsight: result.review_insight || null,
+    reviewSignals: result.review_signals || {},
+    reviewAuthenticity: result.review_authenticity || null,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 export default function Assistant() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -78,20 +99,7 @@ export default function Assistant() {
       });
 
       const result = await generateDestinationGuide(payload);
-
-      const assistantMsg = {
-        role: 'assistant',
-        content: result.overview,
-        places: result.suggested_areas.map((area) => ({
-          name: area,
-          category: 'suggested area',
-          rating: 4.7,
-          description: `A strong area to explore in ${result.destination}.`,
-          why_recommended: result.reasoning[0] || 'Recommended by the Wayfarer destination guide.',
-        })),
-        chips: result.highlights || [],
-        timestamp: new Date().toISOString(),
-      };
+      const assistantMsg = buildAssistantMessageFromGuide(result);
 
       setMessages((prev) => [...prev, assistantMsg]);
 
@@ -103,9 +111,10 @@ export default function Assistant() {
           query: msg,
           destination: result.destination,
           duration_days: result.duration_days,
-          suggested_areas: result.suggested_areas,
-          review_authenticity: result.review_authenticity || null,
+          suggested_areas: result.suggested_areas || [],
           highlights_count: (result.highlights || []).length,
+          review_authenticity: result.review_authenticity || null,
+          review_summary: result.review_summary || null,
         },
       });
     } catch (error) {
@@ -126,7 +135,9 @@ export default function Assistant() {
           </div>
           <div>
             <h1 className="font-semibold text-sm">Wayfarer Assistant</h1>
-            <p className="text-xs text-muted-foreground">Persona-aware destination guide powered by the V1 backend</p>
+            <p className="text-xs text-muted-foreground">
+              Persona-aware destination guide powered by the V1 backend
+            </p>
           </div>
         </div>
         <button
@@ -149,14 +160,14 @@ export default function Assistant() {
               <MessageBubble key={i} message={msg} onChipClick={handleSend} />
             ))}
 
-            {isLoading && (
+            {isLoading ? (
               <div className="flex gap-3">
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
                   <Sparkles className="w-3.5 h-3.5 text-white" />
                 </div>
                 <LoadingState compact message="Building your destination guide..." />
               </div>
-            )}
+            ) : null}
 
             {errorMessage ? (
               <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -231,6 +242,51 @@ function EmptyChat({ onSuggestionClick, persona }) {
   );
 }
 
+function InsightSection({ reviewInsight, chips, onChipClick }) {
+  const hasInsight = Boolean(reviewInsight) || (chips?.length || 0) > 0;
+  if (!hasInsight) return null;
+
+  return (
+    <div className="mt-4 space-y-3">
+      {reviewInsight ? (
+        <div className="rounded-xl border border-border bg-secondary/40 px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Review insight
+          </div>
+          <div className="text-sm text-foreground">{reviewInsight.overall_vibe}</div>
+
+          {reviewInsight.standout_themes?.length > 0 ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Stands out for:{' '}
+              <span className="font-medium">
+                {reviewInsight.standout_themes.join(', ')}
+              </span>
+            </div>
+          ) : null}
+
+          <div className="mt-2 text-xs text-muted-foreground">
+            Confidence: <span className="font-medium">{reviewInsight.confidence}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {chips?.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {chips.map((chip, i) => (
+            <button
+              key={i}
+              onClick={() => onChipClick(chip)}
+              className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageBubble({ message, onChipClick }) {
   if (message.role === 'user') {
     return (
@@ -258,35 +314,25 @@ function MessageBubble({ message, onChipClick }) {
       <div className="flex-1 min-w-0">
         <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
 
-        {message.places?.length > 0 && (
+        {message.places?.length > 0 ? (
           <div className="mt-4 space-y-2">
             {message.places.map((place, i) => (
-              // @ts-ignore
               <PlaceCard
                 key={i}
                 name={place.name}
                 category={place.category}
                 rating={place.rating}
                 description={place.description}
-                reason={place.why_recommended}
-              />
+                reason={place.why_recommended} image={undefined} distance={undefined} onSave={undefined} onClick={undefined}              />
             ))}
           </div>
-        )}
+        ) : null}
 
-        {message.chips?.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-4">
-            {message.chips.map((chip, i) => (
-              <button
-                key={i}
-                onClick={() => onChipClick(chip)}
-                className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
-              >
-                {chip}
-              </button>
-            ))}
-          </div>
-        )}
+        <InsightSection
+          reviewInsight={message.reviewInsight}
+          chips={message.chips}
+          onChipClick={onChipClick}
+        />
       </div>
     </motion.div>
   );
