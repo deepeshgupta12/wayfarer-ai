@@ -44,5 +44,9 @@ def create_db_tables() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+def initialize_database() -> None:
+    create_db_tables()
+
+
 def get_db_session() -> Session:
     return SessionLocal()
