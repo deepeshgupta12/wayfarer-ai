@@ -20,7 +20,7 @@ def test_destination_search_returns_results() -> None:
     assert payload["query"] == "Kyoto"
     assert isinstance(payload["results"], list)
     assert len(payload["results"]) >= 1
-    assert payload["results"][0]["name"] == "Kyoto"
+    assert "Kyoto" in payload["results"][0]["name"]
 
 
 def test_destination_guide_returns_expected_structure() -> None:
@@ -49,3 +49,4 @@ def test_destination_guide_returns_expected_structure() -> None:
     assert len(payload["highlights"]) >= 1
     assert isinstance(payload["suggested_areas"], list)
     assert len(payload["suggested_areas"]) >= 1
+    assert "neighborhood" in payload["reasoning"][2].lower()

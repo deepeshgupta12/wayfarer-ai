@@ -56,18 +56,101 @@ class TripadvisorClient:
         ]
         return filtered or stub_results[:2]
 
-    def _parse_live_search_results(self, payload: dict[str, Any]) -> list[DestinationSearchResult]:
+    def _is_destination_like_result(
+        self,
+        item: dict[str, Any],
+        query: str,
+    ) -> bool:
+        name = str(item.get("name", "")).strip().lower()
+        category_name = str(item.get("category", {}).get("name", "")).strip().lower()
+        address_obj = item.get("address_obj") or {}
+        city = str(address_obj.get("city", "")).strip().lower()
+        query_lower = query.strip().lower()
+
+        if not name:
+            return False
+
+        blocked_keywords = [
+            "hotel",
+            "tour",
+            "experience",
+            "bus",
+            "samurai",
+            "resort",
+            "hostel",
+            "inn",
+            "apartment",
+            "museum ticket",
+        ]
+        if any(keyword in name for keyword in blocked_keywords):
+            return False
+
+        preferred_category_keywords = [
+            "geographic",
+            "municipality",
+            "city",
+            "neighborhood",
+            "district",
+            "province",
+            "island",
+        ]
+        if any(keyword in category_name for keyword in preferred_category_keywords):
+            return True
+
+        return name == query_lower or city == query_lower
+
+    def _score_live_result(
+        self,
+        item: dict[str, Any],
+        query: str,
+    ) -> tuple[int, int]:
+        name = str(item.get("name", "")).strip().lower()
+        category_name = str(item.get("category", {}).get("name", "")).strip().lower()
+        address_obj = item.get("address_obj") or {}
+        city = str(address_obj.get("city", "")).strip().lower()
+        query_lower = query.strip().lower()
+
+        exact_name = 1 if name == query_lower else 0
+        exact_city = 1 if city == query_lower else 0
+        geographic_bias = 1 if any(
+            keyword in category_name
+            for keyword in ["geographic", "municipality", "city", "district", "neighborhood"]
+        ) else 0
+
+        return (exact_name + exact_city + geographic_bias, 1 if self._is_destination_like_result(item, query) else 0)
+
+    def _parse_live_search_results(
+        self,
+        payload: dict[str, Any],
+        query: str,
+    ) -> list[DestinationSearchResult]:
+        raw_items = payload.get("data", []) or []
+
+        filtered_items = [
+            item for item in raw_items
+            if item.get("name") and item.get("location_id")
+        ]
+
+        destination_like_items = [
+            item for item in filtered_items
+            if self._is_destination_like_result(item, query)
+        ]
+
+        candidate_items = destination_like_items or filtered_items
+        candidate_items = sorted(
+            candidate_items,
+            key=lambda item: self._score_live_result(item, query),
+            reverse=True,
+        )
+
         results: list[DestinationSearchResult] = []
 
-        for item in payload.get("data", []) or []:
+        for item in candidate_items[:10]:
             name = item.get("name")
             location_id = item.get("location_id")
             address_obj = item.get("address_obj") or {}
             city = address_obj.get("city") or item.get("city") or name or "Unknown"
             country = address_obj.get("country") or item.get("country") or "Unknown"
-
-            if not name or not location_id:
-                continue
 
             results.append(
                 DestinationSearchResult(
@@ -99,7 +182,7 @@ class TripadvisorClient:
             response.raise_for_status()
             payload = response.json()
 
-        return self._parse_live_search_results(payload)
+        return self._parse_live_search_results(payload, query)
 
     def search_locations(
         self,
