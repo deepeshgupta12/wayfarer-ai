@@ -36,6 +36,21 @@ class DestinationGuideRequest(BaseModel):
     budget: str = Field(default="midrange")
 
 
+class DestinationAreaCard(BaseModel):
+    name: str
+    category: str = "area"
+    rating: float | None = None
+    summary: str
+    why_it_fits: str
+
+
+class DestinationReviewInsight(BaseModel):
+    overall_vibe: str
+    standout_themes: list[str] = Field(default_factory=list)
+    confidence: str
+    raw_summary: str | None = None
+
+
 class DestinationGuideResponse(BaseModel):
     destination: str
     traveller_type: str
@@ -43,10 +58,12 @@ class DestinationGuideResponse(BaseModel):
     overview: str
     highlights: list[str]
     suggested_areas: list[str]
+    area_cards: list[DestinationAreaCard] = Field(default_factory=list)
     reasoning: list[str]
     review_summary: str | None = None
     review_signals: dict[str, str] = Field(default_factory=dict)
     review_authenticity: str | None = None
+    review_insight: DestinationReviewInsight | None = None
 
 
 class DestinationPlaceIndexRequest(BaseModel):

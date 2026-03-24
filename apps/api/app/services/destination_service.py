@@ -9,11 +9,13 @@ from app.clients.google_places_client import GooglePlacesClient
 from app.clients.tripadvisor_client import TripadvisorClient
 from app.models.place_embedding import PlaceEmbeddingRecord
 from app.schemas.destination import (
+    DestinationAreaCard,
     DestinationGuideRequest,
     DestinationGuideResponse,
     DestinationPlaceIndexItem,
     DestinationPlaceIndexRequest,
     DestinationPlaceIndexResponse,
+    DestinationReviewInsight,
     DestinationSearchRequest,
     DestinationSearchResponse,
     SimilarPlaceMatch,
@@ -61,6 +63,92 @@ def _cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
         return 0.0
 
     return round(dot_product / (magnitude_a * magnitude_b), 4)
+
+
+def _build_area_card(area: str, destination: str) -> DestinationAreaCard:
+    area_map = {
+        "Gion": {
+            "summary": f"A classic base in {destination} for heritage lanes, evening atmosphere, and traditional character.",
+            "why_it_fits": "Best if you want charm, walkable evenings, and a strong sense of place.",
+        },
+        "Higashiyama": {
+            "summary": f"One of the strongest parts of {destination} for temples, old streets, and slower cultural exploration.",
+            "why_it_fits": "A better fit when culture and traditional character matter more than speed.",
+        },
+        "Arashiyama": {
+            "summary": f"A scenic side of {destination} that works well for nature, riverfront walks, and a lighter-paced half day.",
+            "why_it_fits": "Ideal if you want a softer, more spacious contrast to denser city exploration.",
+        },
+        "Alfama": {
+            "summary": f"A character-rich area in {destination} known for old lanes, viewpoints, and local atmosphere.",
+            "why_it_fits": "Great when you want city texture, walking, and a more historic base.",
+        },
+        "Bairro Alto": {
+            "summary": f"A livelier part of {destination} with stronger evening energy and central access.",
+            "why_it_fits": "A stronger choice if nightlife and late-evening energy matter.",
+        },
+        "Chiado": {
+            "summary": f"A balanced base in {destination} for cafés, culture, and easy movement across the city.",
+            "why_it_fits": "Works well when you want convenience without losing city character.",
+        },
+        "Old Town": {
+            "summary": f"A central area in {destination} that gives fast access to major first-time highlights.",
+            "why_it_fits": "Best when your priority is broad city coverage in limited time.",
+        },
+        "Mala Strana": {
+            "summary": f"A more atmospheric side of {destination} with classic views and calmer streets.",
+            "why_it_fits": "A good fit if you prefer charm and pacing over maximum sightseeing density.",
+        },
+        "Vinohrady": {
+            "summary": f"A more local-feeling part of {destination} with a relaxed rhythm and neighborhood vibe.",
+            "why_it_fits": "Better when you want a softer, more resident-like city experience.",
+        },
+    }
+
+    mapped = area_map.get(
+        area,
+        {
+            "summary": f"A strong area to explore within {destination}, with good character and access to key experiences.",
+            "why_it_fits": "A balanced fit for the way this guide is structured.",
+        },
+    )
+
+    return DestinationAreaCard(
+        name=area,
+        summary=mapped["summary"],
+        why_it_fits=mapped["why_it_fits"],
+        rating=4.7,
+    )
+
+
+def _build_review_insight(review_summary: str, review_signals: dict[str, str], authenticity: str | None) -> DestinationReviewInsight:
+    standout = []
+
+    for label, value in review_signals.items():
+        if value == "positive":
+            standout.append(label.replace("_", " "))
+
+    overall_vibe = "Well-liked by travellers overall."
+    lowered = review_summary.lower()
+
+    if "consistently rate this place highly" in lowered:
+        overall_vibe = "Travellers speak positively about the destination overall."
+    elif "mixed" in lowered:
+        overall_vibe = "Traveller sentiment is mixed, with some clear strengths."
+
+    confidence = {
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low",
+        None: "Unknown",
+    }.get(authenticity, "Unknown")
+
+    return DestinationReviewInsight(
+        overall_vibe=overall_vibe,
+        standout_themes=standout[:3],
+        confidence=confidence,
+        raw_summary=review_summary,
+    )
 
 
 def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchResponse:
@@ -191,25 +279,30 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
 
     interests_text = ", ".join(payload.interests) if payload.interests else "general exploration"
     suggested_areas = list(context["suggested_areas"])
+    area_cards = [_build_area_card(area, payload.destination) for area in suggested_areas]
+    review_insight = _build_review_insight(
+        review_summary=review_analysis.quick_verdict,
+        review_signals=review_analysis.themes,
+        authenticity=review_analysis.authenticity_label,
+    )
 
     overview = (
-        f"{payload.destination} is a strong fit for a {payload.traveller_type} traveller over "
-        f"{payload.duration_days} days, especially if you enjoy {interests_text}. "
-        f"This guide is paced for a {payload.pace_preference} rhythm with a {payload.budget} budget lens. "
-        f"Review-backed signals indicate {review_analysis.quick_verdict.lower()}"
+        f"{payload.destination} looks like a strong match for a {payload.traveller_type} trip over "
+        f"{payload.duration_days} days, especially if you care about {interests_text}. "
+        f"The pace here suits a {payload.pace_preference} style with a {payload.budget} budget lens."
     )
 
     highlights = [
-        f"Review-backed signal: {review_analysis.quick_verdict}",
-        f"Prioritize destination-defining neighborhoods in {payload.destination}, not generic place listings.",
-        f"Blend landmark experiences with interest-led discovery around {interests_text}.",
+        f"Focus on neighborhoods in {payload.destination} that shape the character of the trip, not just big-name stops.",
+        f"Blend headline experiences with interest-led exploration around {interests_text}.",
+        "Use live freshness checks before locking specific places or timings.",
     ]
 
     reasoning = [
-        f"The destination was framed for traveller_type={payload.traveller_type}.",
-        f"The duration of {payload.duration_days} days supports a paced overview rather than rushed coverage.",
-        f"Suggested areas were canonicalized, quality-filtered, and guarded against POI leakage in {payload.destination}.",
-        f"Review intelligence source={review_bundle['source']} with authenticity={review_analysis.authenticity_label}.",
+        f"This recommendation was shaped around a {payload.traveller_type} travel context.",
+        f"{payload.duration_days} days gives enough room for a paced destination overview.",
+        "Suggested areas were filtered to prioritize traveler-friendly sub-areas over generic landmarks.",
+        f"Review confidence is {review_analysis.authenticity_label}.",
         str(context["freshness_note"]),
     ]
 
@@ -220,10 +313,12 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         overview=overview,
         highlights=highlights,
         suggested_areas=suggested_areas,
+        area_cards=area_cards,
         reasoning=reasoning,
         review_summary=review_analysis.quick_verdict,
         review_signals=review_analysis.themes,
         review_authenticity=review_analysis.authenticity_label,
+        review_insight=review_insight,
     )
 
 

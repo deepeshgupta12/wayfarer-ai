@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, Plus } from 'lucide-react';
-import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
 import { generateDestinationGuide, streamDestinationGuide } from '@/api/wayfarerApi';
 import { getTravellerPersona } from '@/lib/travellerProfile';
@@ -36,23 +35,23 @@ function deriveGuidePayload(rawInput, persona) {
 }
 
 function buildAssistantMessageFromGuide(result, streamedContent) {
-  const reviewSummary = result.review_summary
-    ? `\n\nReview summary: ${result.review_summary}`
-    : '';
-
   return {
     role: 'assistant',
-    content: streamedContent || `${result.overview}${reviewSummary}`,
-    places: result.suggested_areas.map((area) => ({
-      name: area,
-      category: 'suggested area',
-      rating: 4.7,
-      description: `A strong area to explore in ${result.destination}.`,
-      why_recommended: result.reasoning[0] || 'Recommended by the Wayfarer destination guide.',
-    })),
+    content: streamedContent || result.overview,
+    places:
+      result.area_cards?.map((area) => ({
+        name: area.name,
+        category: area.category,
+        rating: area.rating,
+        description: area.summary,
+        why_recommended: area.why_it_fits,
+      })) || [],
     chips: result.highlights || [],
+    reviewSummary: result.review_summary || null,
+    reviewInsight: result.review_insight || null,
     reviewSignals: result.review_signals || {},
     reviewAuthenticity: result.review_authenticity || null,
+    isStreaming: false,
     timestamp: new Date().toISOString(),
   };
 }
@@ -101,7 +100,7 @@ export default function Assistant() {
 
     try {
       setMessages((prev) => {
-        assistantIndexRef.current = prev.length + 1;
+        assistantIndexRef.current = prev.length;
         return [
           ...prev,
           {
@@ -109,8 +108,11 @@ export default function Assistant() {
             content: '',
             places: [],
             chips: [],
+            reviewSummary: null,
+            reviewInsight: null,
             reviewSignals: {},
             reviewAuthenticity: null,
+            isStreaming: true,
             timestamp: new Date().toISOString(),
           },
         ];
@@ -120,11 +122,11 @@ export default function Assistant() {
 
       await streamDestinationGuide(payload, {
         onContentDelta: (delta) => {
-          streamedContent += `${delta} `;
+          streamedContent = `${streamedContent}${streamedContent ? ' ' : ''}${delta}`;
           setMessages((prev) =>
             prev.map((message, index) =>
               index === assistantIndexRef.current
-                ? { ...message, content: streamedContent.trim() }
+                ? { ...message, content: streamedContent.trim(), isStreaming: true }
                 : message
             )
           );
@@ -197,15 +199,6 @@ export default function Assistant() {
             {messages.map((msg, i) => (
               <MessageBubble key={i} message={msg} onChipClick={handleSend} />
             ))}
-
-            {isLoading && (
-              <div className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
-                  <Sparkles className="w-3.5 h-3.5 text-white" />
-                </div>
-                <LoadingState compact message="Streaming your destination guide..." />
-              </div>
-            )}
 
             {errorMessage ? (
               <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -280,6 +273,48 @@ function EmptyChat({ onSuggestionClick, persona }) {
   );
 }
 
+function InsightSection({ reviewInsight, chips, onChipClick }) {
+  const hasInsights = reviewInsight || chips?.length > 0;
+  if (!hasInsights) return null;
+
+  return (
+    <div className="mt-4 space-y-3">
+      {reviewInsight ? (
+        <div className="rounded-xl border border-border bg-secondary/40 px-4 py-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+            Review insight
+          </div>
+          <div className="text-sm text-foreground">{reviewInsight.overall_vibe}</div>
+
+          {reviewInsight.standout_themes?.length > 0 ? (
+            <div className="mt-2 text-xs text-muted-foreground">
+              Stands out for: <span className="font-medium">{reviewInsight.standout_themes.join(', ')}</span>
+            </div>
+          ) : null}
+
+          <div className="mt-2 text-xs text-muted-foreground">
+            Confidence: <span className="font-medium">{reviewInsight.confidence}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {chips?.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {chips.map((chip, i) => (
+            <button
+              key={i}
+              onClick={() => onChipClick(chip)}
+              className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageBubble({ message, onChipClick }) {
   if (message.role === 'user') {
     return (
@@ -305,15 +340,16 @@ function MessageBubble({ message, onChipClick }) {
         <Sparkles className="w-3.5 h-3.5 text-white" />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
-
-        {message.reviewAuthenticity ? (
-          <div className="mt-3 text-xs text-muted-foreground">
-            Review authenticity: <span className="font-medium">{message.reviewAuthenticity}</span>
+        {message.content ? (
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
+        ) : message.isStreaming ? (
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground mb-2">Thinking through your destination guide...</div>
+            <TypingDots />
           </div>
         ) : null}
 
-        {message.places?.length > 0 && (
+        {message.places?.length > 0 ? (
           <div className="mt-4 space-y-2">
             {message.places.map((place, i) => (
               <PlaceCard
@@ -330,22 +366,24 @@ function MessageBubble({ message, onChipClick }) {
               />
             ))}
           </div>
-        )}
+        ) : null}
 
-        {message.chips?.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-4">
-            {message.chips.map((chip, i) => (
-              <button
-                key={i}
-                onClick={() => onChipClick(chip)}
-                className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
-              >
-                {chip}
-              </button>
-            ))}
-          </div>
-        )}
+        <InsightSection
+          reviewInsight={message.reviewInsight}
+          chips={message.chips}
+          onChipClick={onChipClick}
+        />
       </div>
     </motion.div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <div className="flex items-center gap-1.5 py-1">
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.2s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.1s]" />
+      <span className="w-2 h-2 rounded-full bg-muted-foreground/50 animate-bounce" />
+    </div>
   );
 }
