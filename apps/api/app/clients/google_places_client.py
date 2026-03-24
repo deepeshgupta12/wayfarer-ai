@@ -35,16 +35,78 @@ class GooglePlacesClient:
             },
         )
 
-    def _extract_suggested_areas(self, payload: dict[str, Any]) -> list[str]:
+    def _looks_like_area_name(self, text: str, destination: str) -> bool:
+        value = text.strip()
+        lowered = value.lower()
+        destination_lower = destination.lower()
+
+        blocked_keywords = [
+            "hotel",
+            "hostel",
+            "inn",
+            "resort",
+            "apartment",
+            "suite",
+            "stay",
+            "tour",
+            "experience",
+            "museum",
+            "temple",
+            "station",
+            "airport",
+            "restaurant",
+            "cafe",
+            "bar",
+        ]
+        if any(keyword in lowered for keyword in blocked_keywords):
+            return False
+
+        preferred_area_keywords = [
+            "district",
+            "neighborhood",
+            "quarter",
+            "ward",
+            "town",
+            "old town",
+            "downtown",
+        ]
+        if any(keyword in lowered for keyword in preferred_area_keywords):
+            return True
+
+        if destination_lower in lowered and len(value.split()) <= 4:
+            return True
+
+        return len(value.split()) <= 3
+
+    def _normalize_area_candidate(self, place: dict[str, Any], destination: str) -> str | None:
+        display_name = str(place.get("displayName", {}).get("text", "")).strip()
+        address = str(place.get("formattedAddress", "")).strip()
+
+        if display_name and self._looks_like_area_name(display_name, destination):
+            return display_name
+
+        if address:
+            first_part = address.split(",")[0].strip()
+            if first_part and self._looks_like_area_name(first_part, destination):
+                return first_part
+
+        return None
+
+    def _extract_suggested_areas(self, payload: dict[str, Any], destination: str) -> list[str]:
         suggestions: list[str] = []
+        seen: set[str] = set()
 
         for place in payload.get("places", []) or []:
-            address = place.get("formattedAddress") or ""
-            short_name = place.get("displayName", {}).get("text")
-            if short_name:
-                suggestions.append(str(short_name))
-            elif address:
-                suggestions.append(str(address).split(",")[0])
+            candidate = self._normalize_area_candidate(place, destination)
+            if not candidate:
+                continue
+
+            normalized_key = candidate.lower()
+            if normalized_key in seen:
+                continue
+
+            seen.add(normalized_key)
+            suggestions.append(candidate)
 
             if len(suggestions) >= 3:
                 break
@@ -59,8 +121,8 @@ class GooglePlacesClient:
             "X-Goog-FieldMask": "places.displayName,places.formattedAddress",
         }
         body = {
-            "textQuery": f"best neighborhoods to stay in {destination}",
-            "pageSize": 3,
+            "textQuery": f"best neighborhoods in {destination}",
+            "pageSize": 6,
         }
 
         with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
@@ -68,11 +130,11 @@ class GooglePlacesClient:
             response.raise_for_status()
             payload = response.json()
 
-        suggested_areas = self._extract_suggested_areas(payload)
+        suggested_areas = self._extract_suggested_areas(payload, destination)
 
         return {
             "suggested_areas": suggested_areas or self._stub_destination_context(destination)["suggested_areas"],
-            "freshness_note": "Suggested areas were enriched from Google Places live text search.",
+            "freshness_note": "Suggested areas were enriched from Google Places live text search with neighborhood-focused filtering.",
         }
 
     def get_destination_context(self, destination: str) -> dict[str, object]:
