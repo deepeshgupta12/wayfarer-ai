@@ -44,3 +44,6 @@ class DestinationGuideResponse(BaseModel):
     highlights: list[str]
     suggested_areas: list[str]
     reasoning: list[str]
+    review_summary: str | None = None
+    review_signals: dict[str, str] = Field(default_factory=dict)
+    review_authenticity: str | None = None

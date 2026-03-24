@@ -6,6 +6,7 @@ from app.schemas.destination import (
     DestinationSearchRequest,
     DestinationSearchResponse,
 )
+from app.services.review_intelligence_service import analyze_review_bundle
 
 tripadvisor_client = TripadvisorClient()
 google_places_client = GooglePlacesClient()
@@ -26,25 +27,34 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
 
 def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuideResponse:
     context = google_places_client.get_destination_context(payload.destination)
+    review_bundle = tripadvisor_client.get_destination_reviews(payload.destination)
+    review_analysis = analyze_review_bundle(
+        location_id=str(review_bundle["location_id"]),
+        location_name=str(review_bundle["location_name"]),
+        reviews=list(review_bundle["reviews"]),
+    )
+
     interests_text = ", ".join(payload.interests) if payload.interests else "general exploration"
     suggested_areas = list(context["suggested_areas"])
 
     overview = (
         f"{payload.destination} is a strong fit for a {payload.traveller_type} traveller over "
         f"{payload.duration_days} days, especially if you enjoy {interests_text}. "
-        f"This guide is paced for a {payload.pace_preference} rhythm with a {payload.budget} budget lens."
+        f"This guide is paced for a {payload.pace_preference} rhythm with a {payload.budget} budget lens. "
+        f"Review-backed signals indicate {review_analysis.quick_verdict.lower()}"
     )
 
     highlights = [
+        f"Review-backed signal: {review_analysis.quick_verdict}",
         f"Prioritize destination-defining neighborhoods in {payload.destination}, not generic place listings.",
         f"Blend landmark experiences with interest-led discovery around {interests_text}.",
-        "Use review intelligence and freshness checks before finalizing live itineraries.",
     ]
 
     reasoning = [
         f"The destination was framed for traveller_type={payload.traveller_type}.",
         f"The duration of {payload.duration_days} days supports a paced overview rather than rushed coverage.",
         f"Suggested areas were canonicalized, quality-filtered, and guarded against POI leakage in {payload.destination}.",
+        f"Review intelligence source={review_bundle['source']} with authenticity={review_analysis.authenticity_label}.",
         str(context["freshness_note"]),
     ]
 
@@ -56,4 +66,7 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         highlights=highlights,
         suggested_areas=suggested_areas,
         reasoning=reasoning,
+        review_summary=review_analysis.quick_verdict,
+        review_signals=review_analysis.themes,
+        review_authenticity=review_analysis.authenticity_label,
     )

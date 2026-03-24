@@ -37,9 +37,13 @@ def _label_authenticity(trust_score: float) -> str:
     return "low"
 
 
-def analyze_reviews(payload: ReviewIntelligenceRequest) -> ReviewIntelligenceOutput:
-    combined_text = " ".join(review.text for review in payload.reviews)
-    average_rating = sum(review.rating for review in payload.reviews) / len(payload.reviews)
+def analyze_review_bundle(
+    location_id: str,
+    location_name: str,
+    reviews: list[dict[str, object]],
+) -> ReviewIntelligenceOutput:
+    combined_text = " ".join(str(review["text"]) for review in reviews)
+    average_rating = sum(float(review["rating"]) for review in reviews) / len(reviews)
 
     themes = {
         "service": _classify_theme(combined_text, ["friendly", "helpful", "staff", "service"]),
@@ -55,9 +59,7 @@ def analyze_reviews(payload: ReviewIntelligenceRequest) -> ReviewIntelligenceOut
     else:
         verdict_prefix = "Travellers report a mixed-to-cautious experience here."
 
-    trust_score = _compute_trust_score(
-        [{"rating": review.rating, "text": review.text} for review in payload.reviews]
-    )
+    trust_score = _compute_trust_score(reviews)
     authenticity_label = _label_authenticity(trust_score)
 
     quick_verdict = (
@@ -67,13 +69,22 @@ def analyze_reviews(payload: ReviewIntelligenceRequest) -> ReviewIntelligenceOut
     )
 
     return ReviewIntelligenceOutput(
-        location_id=payload.location_id,
-        location_name=payload.location_name,
+        location_id=location_id,
+        location_name=location_name,
         quick_verdict=quick_verdict,
         themes=themes,
         trust_score=trust_score,
         authenticity_label=authenticity_label,
-        review_count=len(payload.reviews),
+        review_count=len(reviews),
+    )
+
+
+def analyze_reviews(payload: ReviewIntelligenceRequest) -> ReviewIntelligenceOutput:
+    reviews = [{"rating": review.rating, "text": review.text} for review in payload.reviews]
+    return analyze_review_bundle(
+        location_id=payload.location_id,
+        location_name=payload.location_name,
+        reviews=reviews,
     )
 
 

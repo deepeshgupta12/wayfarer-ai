@@ -50,3 +50,7 @@ def test_destination_guide_returns_expected_structure() -> None:
     assert isinstance(payload["suggested_areas"], list)
     assert len(payload["suggested_areas"]) >= 1
     assert "guarded" in payload["reasoning"][2].lower()
+    assert "review_summary" in payload
+    assert isinstance(payload["review_signals"], dict)
+    assert "service" in payload["review_signals"]
+    assert payload["review_authenticity"] in ["low", "medium", "high"]
