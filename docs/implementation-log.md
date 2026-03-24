@@ -35,3 +35,10 @@
 - Redis client foundation added
 - Infra service status layer added
 - Detailed health endpoint added
+
+## Step 6
+- AI provider abstraction foundation added
+- OpenAI provider stub added
+- Ollama provider stub added
+- Provider status service added
+- Provider status endpoint added
