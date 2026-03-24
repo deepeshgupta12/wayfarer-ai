@@ -34,3 +34,16 @@ def test_google_places_area_filter_rejects_market_like_names() -> None:
 
     assert client._is_blocked_area_name("Nishiki Market") is True
     assert client._score_area_name("Higashiyama District", "Kyoto") > 0
+
+
+def test_google_places_area_filter_rejects_intersection_like_names() -> None:
+    client = GooglePlacesClient()
+
+    assert client._is_blocked_area_name("Kyoto Downtown Intersection (Shijo-Kawaramachi)") is True
+
+
+def test_google_places_area_canonicalizes_known_destination_subareas() -> None:
+    client = GooglePlacesClient()
+
+    assert client._canonicalize_area_candidate("Gion District", "Kyoto") == "Gion"
+    assert client._canonicalize_area_candidate("Higashiyama District", "Kyoto") == "Higashiyama"
