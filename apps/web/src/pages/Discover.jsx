@@ -40,8 +40,23 @@ export default function Discover() {
   const [liveResults, setLiveResults] = useState([]);
   const [isLoadingResults, setIsLoadingResults] = useState(false);
   const [resultsError, setResultsError] = useState('');
+  const [persona, setPersona] = useState(null);
 
-  const persona = useMemo(() => getTravellerPersona(), []);
+  useEffect(() => {
+    const refreshPersona = () => {
+      setPersona(getTravellerPersona());
+    };
+
+    refreshPersona();
+    window.addEventListener('storage', refreshPersona);
+    window.addEventListener('focus', refreshPersona);
+
+    return () => {
+      window.removeEventListener('storage', refreshPersona);
+      window.removeEventListener('focus', refreshPersona);
+    };
+  }, []);
+
   const seededQuery = useMemo(() => deriveSearchSeed(persona), [persona]);
 
   useEffect(() => {

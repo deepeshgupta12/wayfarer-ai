@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Send, Sparkles, Plus } from 'lucide-react';
 import LoadingState from '../components/ui/LoadingState';
@@ -40,9 +40,24 @@ export default function Assistant() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [persona, setPersona] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
-  const persona = useMemo(() => getTravellerPersona(), []);
+
+  useEffect(() => {
+    const refreshPersona = () => {
+      setPersona(getTravellerPersona());
+    };
+
+    refreshPersona();
+    window.addEventListener('storage', refreshPersona);
+    window.addEventListener('focus', refreshPersona);
+
+    return () => {
+      window.removeEventListener('storage', refreshPersona);
+      window.removeEventListener('focus', refreshPersona);
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -237,7 +252,12 @@ function MessageBubble({ message, onChipClick }) {
                 category={place.category}
                 rating={place.rating}
                 description={place.description}
-                reason={place.why_recommended} image={undefined} distance={undefined} onSave={undefined} onClick={undefined}              />
+                reason={place.why_recommended}
+                image={undefined}
+                distance={undefined}
+                onSave={undefined}
+                onClick={undefined}
+              />
             ))}
           </div>
         )}
