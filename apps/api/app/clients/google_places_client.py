@@ -35,6 +35,49 @@ class GooglePlacesClient:
             },
         )
 
+    def _canonical_area_map(self, destination: str) -> dict[str, str]:
+        destination_lower = destination.lower()
+
+        if destination_lower == "kyoto":
+            return {
+                "gion district": "Gion",
+                "gion": "Gion",
+                "higashiyama district": "Higashiyama",
+                "higashiyama ward": "Higashiyama",
+                "higashiyama": "Higashiyama",
+                "arashiyama district": "Arashiyama",
+                "arashiyama": "Arashiyama",
+                "downtown kyoto": "Downtown Kyoto",
+                "central kyoto": "Downtown Kyoto",
+                "kyoto downtown": "Downtown Kyoto",
+                "kyoto city downtown": "Downtown Kyoto",
+                "pontocho": "Pontocho",
+                "pontochō": "Pontocho",
+            }
+
+        if destination_lower == "lisbon":
+            return {
+                "alfama district": "Alfama",
+                "alfama": "Alfama",
+                "bairro alto": "Bairro Alto",
+                "chiado district": "Chiado",
+                "chiado": "Chiado",
+                "baixa": "Baixa",
+                "baixa-chiado": "Baixa/Chiado",
+            }
+
+        if destination_lower == "prague":
+            return {
+                "old town": "Old Town",
+                "staré město": "Old Town",
+                "mala strana": "Mala Strana",
+                "malá strana": "Mala Strana",
+                "vinohrady": "Vinohrady",
+                "new town": "New Town",
+            }
+
+        return {}
+
     def _is_blocked_area_name(self, text: str) -> bool:
         lowered = text.strip().lower()
 
@@ -65,8 +108,46 @@ class GooglePlacesClient:
             "bridge",
             "zoo",
             "aquarium",
+            "intersection",
+            "crossing",
+            "bus stop",
+            "platform",
+            "terminal",
+            "ritz-carlton",
+            "four seasons",
+            "marriott",
+            "hilton",
+            "hyatt",
         ]
         return any(keyword in lowered for keyword in blocked_keywords)
+
+    def _looks_too_granular(self, text: str, destination: str) -> bool:
+        value = text.strip()
+        lowered = value.lower()
+        destination_lower = destination.lower()
+
+        if len(value) <= 3:
+            return True
+
+        granular_suffixes = [
+            "cho",
+            "machi",
+            "dori",
+            "street",
+            "lane",
+            "road",
+            "avenue",
+            "intersection",
+        ]
+        if any(lowered.endswith(suffix) for suffix in granular_suffixes):
+            return True
+
+        # Single obscure token not matching destination context
+        words = value.split()
+        if len(words) == 1 and destination_lower not in lowered and len(value) > 12:
+            return True
+
+        return False
 
     def _score_area_name(self, text: str, destination: str) -> int:
         value = text.strip()
@@ -75,6 +156,9 @@ class GooglePlacesClient:
 
         if not value or self._is_blocked_area_name(value):
             return -100
+
+        if self._looks_too_granular(value, destination):
+            return -40
 
         score = 0
 
@@ -103,17 +187,23 @@ class GooglePlacesClient:
         elif word_count == 4:
             score += 1
         else:
-            score -= 3
+            score -= 4
 
         if lowered == destination_lower:
-            score -= 6
+            score -= 8
         elif destination_lower in lowered:
             score += 1
 
-        title_like_bonus = 1 if value[:1].isupper() else 0
-        score += title_like_bonus
+        canonical_map = self._canonical_area_map(destination)
+        if lowered in canonical_map:
+            score += 8
 
         return score
+
+    def _canonicalize_area_candidate(self, candidate: str, destination: str) -> str:
+        canonical_map = self._canonical_area_map(destination)
+        lowered = candidate.strip().lower()
+        return canonical_map.get(lowered, candidate.strip())
 
     def _normalize_area_candidate(self, place: dict[str, Any], destination: str) -> tuple[str | None, int]:
         display_name = str(place.get("displayName", {}).get("text", "")).strip()
@@ -122,16 +212,18 @@ class GooglePlacesClient:
         candidates: list[tuple[str, int]] = []
 
         if display_name:
-            score = self._score_area_name(display_name, destination)
+            canonical = self._canonicalize_area_candidate(display_name, destination)
+            score = self._score_area_name(canonical, destination)
             if score > 0:
-                candidates.append((display_name, score))
+                candidates.append((canonical, score))
 
         if address:
             first_part = address.split(",")[0].strip()
             if first_part:
-                score = self._score_area_name(first_part, destination)
+                canonical = self._canonicalize_area_candidate(first_part, destination)
+                score = self._score_area_name(canonical, destination)
                 if score > 0:
-                    candidates.append((first_part, score))
+                    candidates.append((canonical, score))
 
         if not candidates:
             return None, -100
@@ -156,7 +248,8 @@ class GooglePlacesClient:
             ranked_candidates.append((candidate, score))
 
         ranked_candidates = sorted(ranked_candidates, key=lambda item: item[1], reverse=True)
-        return [candidate for candidate, _ in ranked_candidates[:3]]
+        final_candidates = [candidate for candidate, score in ranked_candidates if score >= 4][:3]
+        return final_candidates
 
     def _live_destination_context(self, destination: str) -> dict[str, object]:
         url = f"{self.settings.google_places_base_url}/places:searchText"
@@ -177,9 +270,15 @@ class GooglePlacesClient:
 
         suggested_areas = self._extract_suggested_areas(payload, destination)
 
+        if not suggested_areas:
+            return {
+                "suggested_areas": self._stub_destination_context(destination)["suggested_areas"],
+                "freshness_note": "Live Google Places candidates were rejected by area-quality filters, so curated destination defaults were used.",
+            }
+
         return {
-            "suggested_areas": suggested_areas or self._stub_destination_context(destination)["suggested_areas"],
-            "freshness_note": "Suggested areas were enriched from Google Places live text search with area ranking and POI filtering.",
+            "suggested_areas": suggested_areas,
+            "freshness_note": "Suggested areas were enriched from Google Places live text search with canonicalization and strict POI suppression.",
         }
 
     def get_destination_context(self, destination: str) -> dict[str, object]:
