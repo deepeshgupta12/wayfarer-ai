@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowRight, ArrowLeft, Sparkles, Check } from 'lucide-react';
 import OnboardingStep from '../components/onboarding/OnboardingStep';
 import { initializeAndSavePersona } from '@/api/wayfarerApi';
-import { getOrCreateTravellerId, saveTravellerPersona } from '@/lib/travellerProfile';
+import { getOrCreateTravellerId, replaceTravellerPersona } from '@/lib/travellerProfile';
 
 const steps = [
   {
@@ -166,7 +166,7 @@ export default function Onboarding() {
       };
 
       const persona = await initializeAndSavePersona(payload);
-      saveTravellerPersona(persona);
+      replaceTravellerPersona(persona);
       navigate('/discover');
     } catch (error) {
       setErrorMessage(error.message || 'Unable to save your travel profile right now.');
