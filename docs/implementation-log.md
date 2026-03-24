@@ -55,3 +55,11 @@
 - DB table creation on startup added
 - Persona initialize-and-save endpoint added
 - Persona persistence test added
+
+## Step 9
+- Embedding provider abstraction foundation added
+- OpenAI embedding provider stub added
+- Ollama embedding provider stub added
+- Embedding status endpoint added
+- Embedding generation endpoint added
+- Embedding API tests added
