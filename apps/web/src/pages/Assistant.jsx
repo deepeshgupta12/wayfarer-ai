@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Send, Sparkles, Plus } from 'lucide-react';
 import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
-import { generateDestinationGuide } from '@/api/wayfarerApi';
+import { generateDestinationGuide, streamDestinationGuide } from '@/api/wayfarerApi';
 import { getTravellerPersona } from '@/lib/travellerProfile';
 
 const suggestedChips = [
@@ -32,6 +32,28 @@ function deriveGuidePayload(rawInput, persona) {
     interests: persona?.signals?.interests || ['culture'],
     pace_preference: persona?.signals?.pace_preference || 'balanced',
     budget: persona?.signals?.travel_style || 'midrange',
+  };
+}
+
+function buildAssistantMessageFromGuide(result, streamedContent) {
+  const reviewSummary = result.review_summary
+    ? `\n\nReview summary: ${result.review_summary}`
+    : '';
+
+  return {
+    role: 'assistant',
+    content: streamedContent || `${result.overview}${reviewSummary}`,
+    places: result.suggested_areas.map((area) => ({
+      name: area,
+      category: 'suggested area',
+      rating: 4.7,
+      description: `A strong area to explore in ${result.destination}.`,
+      why_recommended: result.reasoning[0] || 'Recommended by the Wayfarer destination guide.',
+    })),
+    chips: result.highlights || [],
+    reviewSignals: result.review_signals || {},
+    reviewAuthenticity: result.review_authenticity || null,
+    timestamp: new Date().toISOString(),
   };
 }
 
@@ -74,27 +96,69 @@ export default function Assistant() {
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
+    const payload = deriveGuidePayload(msg, persona);
+    const assistantIndexRef = { current: -1 };
+
     try {
-      const payload = deriveGuidePayload(msg, persona);
-      const result = await generateDestinationGuide(payload);
+      setMessages((prev) => {
+        assistantIndexRef.current = prev.length + 1;
+        return [
+          ...prev,
+          {
+            role: 'assistant',
+            content: '',
+            places: [],
+            chips: [],
+            reviewSignals: {},
+            reviewAuthenticity: null,
+            timestamp: new Date().toISOString(),
+          },
+        ];
+      });
 
-      const assistantMsg = {
-        role: 'assistant',
-        content: result.overview,
-        places: result.suggested_areas.map((area) => ({
-          name: area,
-          category: 'suggested area',
-          rating: 4.7,
-          description: `A strong area to explore in ${result.destination}.`,
-          why_recommended: result.reasoning[0] || 'Recommended by the Wayfarer destination guide.',
-        })),
-        chips: result.highlights || [],
-        timestamp: new Date().toISOString(),
-      };
+      let streamedContent = '';
 
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (error) {
-      setErrorMessage(error.message || 'Unable to generate a destination guide right now.');
+      await streamDestinationGuide(payload, {
+        onContentDelta: (delta) => {
+          streamedContent += `${delta} `;
+          setMessages((prev) =>
+            prev.map((message, index) =>
+              index === assistantIndexRef.current
+                ? { ...message, content: streamedContent.trim() }
+                : message
+            )
+          );
+        },
+        onFinal: (finalPayload) => {
+          const finalMessage = buildAssistantMessageFromGuide(finalPayload, streamedContent.trim());
+          setMessages((prev) =>
+            prev.map((message, index) =>
+              index === assistantIndexRef.current ? finalMessage : message
+            )
+          );
+        },
+      });
+    } catch (streamError) {
+      try {
+        const result = await generateDestinationGuide(payload);
+        const assistantMsg = buildAssistantMessageFromGuide(result, '');
+
+        setMessages((prev) => {
+          if (assistantIndexRef.current >= 0) {
+            return prev.map((message, index) =>
+              index === assistantIndexRef.current ? assistantMsg : message
+            );
+          }
+          return [...prev, assistantMsg];
+        });
+      } catch (fallbackError) {
+        setMessages((prev) =>
+          assistantIndexRef.current >= 0
+            ? prev.filter((_, index) => index !== assistantIndexRef.current)
+            : prev
+        );
+        setErrorMessage(fallbackError.message || 'Unable to generate a destination guide right now.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -111,7 +175,7 @@ export default function Assistant() {
           </div>
           <div>
             <h1 className="font-semibold text-sm">Wayfarer Assistant</h1>
-            <p className="text-xs text-muted-foreground">Persona-aware destination guide powered by the V1 backend</p>
+            <p className="text-xs text-muted-foreground">Persona-aware destination guide with streaming + review-backed intelligence</p>
           </div>
         </div>
         <button
@@ -139,7 +203,7 @@ export default function Assistant() {
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
                   <Sparkles className="w-3.5 h-3.5 text-white" />
                 </div>
-                <LoadingState compact message="Building your destination guide..." />
+                <LoadingState compact message="Streaming your destination guide..." />
               </div>
             )}
 
@@ -194,7 +258,7 @@ function EmptyChat({ onSuggestionClick, persona }) {
       </motion.div>
       <h2 className="font-serif text-2xl font-bold mb-2">Where to next?</h2>
       <p className="text-muted-foreground text-sm max-w-sm mb-4">
-        Ask for a destination guide and Wayfarer will use the current V1 backend contracts to build a structured response.
+        Ask for a destination guide and Wayfarer will stream back a structured, review-backed answer.
       </p>
       <p className="text-xs text-muted-foreground max-w-md mb-8">
         {persona?.summary
@@ -242,6 +306,12 @@ function MessageBubble({ message, onChipClick }) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
+
+        {message.reviewAuthenticity ? (
+          <div className="mt-3 text-xs text-muted-foreground">
+            Review authenticity: <span className="font-medium">{message.reviewAuthenticity}</span>
+          </div>
+        ) : null}
 
         {message.places?.length > 0 && (
           <div className="mt-4 space-y-2">

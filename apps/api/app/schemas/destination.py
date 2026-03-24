@@ -47,3 +47,43 @@ class DestinationGuideResponse(BaseModel):
     review_summary: str | None = None
     review_signals: dict[str, str] = Field(default_factory=dict)
     review_authenticity: str | None = None
+
+
+class DestinationPlaceIndexRequest(BaseModel):
+    destination: str = Field(..., min_length=1)
+    traveller_type: TravellerType | None = None
+    interests: list[str] = Field(default_factory=list)
+
+
+class DestinationPlaceIndexItem(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    embedding_dimensions: int
+
+
+class DestinationPlaceIndexResponse(BaseModel):
+    destination: str
+    indexed_count: int
+    items: list[DestinationPlaceIndexItem]
+
+
+class SimilarPlaceMatch(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    similarity_score: float
+
+
+class SimilarPlaceRequest(BaseModel):
+    source_location_id: str = Field(..., min_length=1)
+    top_k: int = Field(default=3, ge=1, le=10)
+
+
+class SimilarPlaceResponse(BaseModel):
+    source_location_id: str
+    matches: list[SimilarPlaceMatch]
