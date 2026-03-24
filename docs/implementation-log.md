@@ -29,3 +29,9 @@
 - FastAPI test client setup added
 - Root endpoint API test added
 - Health endpoint API test added
+
+## Step 5
+- Database engine foundation added
+- Redis client foundation added
+- Infra service status layer added
+- Detailed health endpoint added
