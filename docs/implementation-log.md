@@ -63,3 +63,10 @@
 - Embedding status endpoint added
 - Embedding generation endpoint added
 - Embedding API tests added
+
+## Step 10
+- pgvector extension bootstrap added
+- Traveller persona embedding model added
+- Persona embedding generate-and-save endpoint added
+- Persona embedding persistence service added
+- Persona embedding API test added
