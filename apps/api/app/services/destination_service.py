@@ -44,7 +44,7 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
     reasoning = [
         f"The destination was framed for traveller_type={payload.traveller_type}.",
         f"The duration of {payload.duration_days} days supports a paced overview rather than rushed coverage.",
-        f"Suggested areas were canonicalized and quality-filtered to prefer traveler-facing sub-areas in {payload.destination}.",
+        f"Suggested areas were canonicalized, quality-filtered, and guarded against POI leakage in {payload.destination}.",
         str(context["freshness_note"]),
     ]
 

@@ -47,3 +47,24 @@ def test_google_places_area_canonicalizes_known_destination_subareas() -> None:
 
     assert client._canonicalize_area_candidate("Gion District", "Kyoto") == "Gion"
     assert client._canonicalize_area_candidate("Higashiyama District", "Kyoto") == "Higashiyama"
+
+
+def test_google_places_area_filter_rejects_country_like_names() -> None:
+    client = GooglePlacesClient()
+
+    assert client._is_country_like_name("Japan") is True
+    assert client._score_area_name("Japan", "Kyoto") < 0
+
+
+def test_google_places_quality_guardrails_can_force_fallback() -> None:
+    client = GooglePlacesClient()
+
+    payload = {
+        "places": [
+            {"displayName": {"text": "Japan"}, "formattedAddress": "Japan"},
+            {"displayName": {"text": "Arashiyama Bamboo Forest"}, "formattedAddress": "Kyoto, Japan"},
+            {"displayName": {"text": "The Ritz-Carlton, Kyoto"}, "formattedAddress": "Kyoto, Japan"},
+        ]
+    }
+
+    assert client._extract_suggested_areas(payload, "Kyoto") == []

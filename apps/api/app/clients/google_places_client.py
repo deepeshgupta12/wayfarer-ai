@@ -78,6 +78,22 @@ class GooglePlacesClient:
 
         return {}
 
+    def _country_like_names(self) -> set[str]:
+        return {
+            "japan",
+            "portugal",
+            "czechia",
+            "czech republic",
+            "france",
+            "italy",
+            "spain",
+            "germany",
+            "india",
+            "usa",
+            "united states",
+            "united kingdom",
+        }
+
     def _is_blocked_area_name(self, text: str) -> bool:
         lowered = text.strip().lower()
 
@@ -118,8 +134,18 @@ class GooglePlacesClient:
             "marriott",
             "hilton",
             "hyatt",
+            "forest",
+            "garden",
+            "bamboo grove",
+            "bamboo forest",
+            "viewpoint",
+            "observatory",
+            "river walk",
         ]
         return any(keyword in lowered for keyword in blocked_keywords)
+
+    def _is_country_like_name(self, text: str) -> bool:
+        return text.strip().lower() in self._country_like_names()
 
     def _looks_too_granular(self, text: str, destination: str) -> bool:
         value = text.strip()
@@ -142,7 +168,6 @@ class GooglePlacesClient:
         if any(lowered.endswith(suffix) for suffix in granular_suffixes):
             return True
 
-        # Single obscure token not matching destination context
         words = value.split()
         if len(words) == 1 and destination_lower not in lowered and len(value) > 12:
             return True
@@ -154,9 +179,12 @@ class GooglePlacesClient:
         lowered = value.lower()
         destination_lower = destination.lower()
 
-        if not value or self._is_blocked_area_name(value):
+        if not value:
             return -100
-
+        if self._is_country_like_name(value):
+            return -100
+        if self._is_blocked_area_name(value):
+            return -100
         if self._looks_too_granular(value, destination):
             return -40
 
@@ -248,8 +276,17 @@ class GooglePlacesClient:
             ranked_candidates.append((candidate, score))
 
         ranked_candidates = sorted(ranked_candidates, key=lambda item: item[1], reverse=True)
-        final_candidates = [candidate for candidate, score in ranked_candidates if score >= 4][:3]
-        return final_candidates
+
+        strong_candidates = [candidate for candidate, score in ranked_candidates if score >= 8]
+        medium_candidates = [candidate for candidate, score in ranked_candidates if score >= 4]
+
+        if len(strong_candidates) >= 2:
+            return strong_candidates[:3]
+
+        if len(medium_candidates) >= 3:
+            return medium_candidates[:3]
+
+        return []
 
     def _live_destination_context(self, destination: str) -> dict[str, object]:
         url = f"{self.settings.google_places_base_url}/places:searchText"
@@ -273,12 +310,12 @@ class GooglePlacesClient:
         if not suggested_areas:
             return {
                 "suggested_areas": self._stub_destination_context(destination)["suggested_areas"],
-                "freshness_note": "Live Google Places candidates were rejected by area-quality filters, so curated destination defaults were used.",
+                "freshness_note": "Live Google Places candidates did not meet minimum area-quality thresholds, so curated destination defaults were used.",
             }
 
         return {
             "suggested_areas": suggested_areas,
-            "freshness_note": "Suggested areas were enriched from Google Places live text search with canonicalization and strict POI suppression.",
+            "freshness_note": "Suggested areas were enriched from Google Places live text search with canonicalization, POI suppression, and area-quality guardrails.",
         }
 
     def get_destination_context(self, destination: str) -> dict[str, object]:
