@@ -1,0 +1,109 @@
+{
+  "name": "Trip",
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "destination_image": {
+      "type": "string"
+    },
+    "start_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "end_date": {
+      "type": "string",
+      "format": "date"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planning",
+        "upcoming",
+        "active",
+        "completed",
+        "archived"
+      ],
+      "default": "planning"
+    },
+    "itinerary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "number"
+          },
+          "date": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "activities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "time": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "rating": {
+                  "type": "number"
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "image_url": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "travel_style": {
+      "type": "string"
+    },
+    "budget_level": {
+      "type": "string"
+    },
+    "companions": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "rating": {
+      "type": "number"
+    },
+    "feedback": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_email",
+    "title",
+    "destination"
+  ]
+}

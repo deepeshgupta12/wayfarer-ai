@@ -1,0 +1,154 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: 'Inter', sans-serif;
+    --font-serif: 'Playfair Display', serif;
+
+    --background: 40 33% 99%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 222 47% 16%;
+    --primary-foreground: 40 33% 99%;
+    --secondary: 40 30% 96%;
+    --secondary-foreground: 222 47% 16%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 32 95% 54%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 222 47% 16%;
+    --chart-1: 32 95% 54%;
+    --chart-2: 162 48% 45%;
+    --chart-3: 222 47% 16%;
+    --chart-4: 280 60% 55%;
+    --chart-5: 350 70% 55%;
+    --radius: 0.75rem;
+
+    --sage: 152 25% 52%;
+    --sage-light: 152 30% 95%;
+    --ocean: 200 80% 50%;
+    --ocean-light: 200 80% 95%;
+    --sunset: 15 85% 58%;
+    --sunset-light: 15 85% 96%;
+    --lavender: 260 50% 62%;
+    --lavender-light: 260 50% 96%;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 222 47% 11%;
+    --sidebar-primary: 222 47% 16%;
+    --sidebar-primary-foreground: 40 33% 99%;
+    --sidebar-accent: 40 30% 96%;
+    --sidebar-accent-foreground: 222 47% 16%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 222 47% 16%;
+  }
+
+  .dark {
+    --background: 222 47% 6%;
+    --foreground: 40 33% 96%;
+    --card: 222 40% 10%;
+    --card-foreground: 40 33% 96%;
+    --popover: 222 40% 10%;
+    --popover-foreground: 40 33% 96%;
+    --primary: 40 33% 96%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 222 30% 14%;
+    --secondary-foreground: 40 33% 96%;
+    --muted: 222 30% 14%;
+    --muted-foreground: 220 9% 60%;
+    --accent: 32 95% 54%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 222 30% 18%;
+    --input: 222 30% 18%;
+    --ring: 40 33% 96%;
+    --chart-1: 32 95% 54%;
+    --chart-2: 162 48% 45%;
+    --chart-3: 200 80% 50%;
+    --chart-4: 280 60% 55%;
+    --chart-5: 350 70% 55%;
+
+    --sage: 152 25% 42%;
+    --sage-light: 152 25% 12%;
+    --ocean: 200 70% 40%;
+    --ocean-light: 200 70% 12%;
+    --sunset: 15 75% 48%;
+    --sunset-light: 15 75% 12%;
+    --lavender: 260 40% 52%;
+    --lavender-light: 260 40% 12%;
+
+    --sidebar-background: 222 47% 8%;
+    --sidebar-foreground: 40 33% 96%;
+    --sidebar-primary: 40 33% 96%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 222 30% 14%;
+    --sidebar-accent-foreground: 40 33% 96%;
+    --sidebar-border: 222 30% 18%;
+    --sidebar-ring: 40 33% 96%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+  }
+}
+
+@layer utilities {
+  .font-serif {
+    font-family: var(--font-serif);
+  }
+  .font-sans {
+    font-family: var(--font-sans);
+  }
+  .text-gradient {
+    background: linear-gradient(135deg, hsl(var(--accent)), hsl(var(--sunset)));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .glass {
+    backdrop-filter: blur(20px);
+    background: hsla(var(--background), 0.8);
+  }
+  .glass-card {
+    backdrop-filter: blur(12px);
+    background: hsla(var(--card), 0.9);
+    border: 1px solid hsla(var(--border), 0.5);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground));
+}
+
+/* Smooth scroll */
+html {
+  scroll-behavior: smooth;
+}

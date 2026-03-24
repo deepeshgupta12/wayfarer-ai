@@ -1,0 +1,97 @@
+{
+  "name": "TravellerProfile",
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string",
+      "description": "Owner email"
+    },
+    "display_name": {
+      "type": "string"
+    },
+    "avatar_url": {
+      "type": "string"
+    },
+    "budget_level": {
+      "type": "string",
+      "enum": [
+        "budget",
+        "moderate",
+        "premium",
+        "luxury"
+      ]
+    },
+    "travel_pace": {
+      "type": "string",
+      "enum": [
+        "slow",
+        "moderate",
+        "fast",
+        "intense"
+      ]
+    },
+    "social_mode": {
+      "type": "string",
+      "enum": [
+        "solo",
+        "couple",
+        "friends",
+        "family"
+      ]
+    },
+    "interests": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "experience_biases": {
+      "type": "object",
+      "properties": {
+        "food": {
+          "type": "number"
+        },
+        "culture": {
+          "type": "number"
+        },
+        "adventure": {
+          "type": "number"
+        },
+        "comfort": {
+          "type": "number"
+        },
+        "local_exploration": {
+          "type": "number"
+        },
+        "nature": {
+          "type": "number"
+        },
+        "nightlife": {
+          "type": "number"
+        },
+        "wellness": {
+          "type": "number"
+        }
+      }
+    },
+    "onboarding_completed": {
+      "type": "boolean",
+      "default": false
+    },
+    "visited_countries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "dream_destinations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "user_email"
+  ]
+}

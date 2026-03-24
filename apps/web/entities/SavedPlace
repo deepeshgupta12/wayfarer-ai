@@ -1,0 +1,70 @@
+{
+  "name": "SavedPlace",
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "restaurant",
+        "attraction",
+        "hotel",
+        "cafe",
+        "bar",
+        "museum",
+        "park",
+        "shopping",
+        "experience",
+        "hidden_gem",
+        "other"
+      ]
+    },
+    "image_url": {
+      "type": "string"
+    },
+    "rating": {
+      "type": "number"
+    },
+    "description": {
+      "type": "string"
+    },
+    "reason_saved": {
+      "type": "string"
+    },
+    "visited": {
+      "type": "boolean",
+      "default": false
+    },
+    "user_rating": {
+      "type": "number"
+    },
+    "user_notes": {
+      "type": "string"
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "is_hidden_gem": {
+      "type": "boolean",
+      "default": false
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_email",
+    "name"
+  ]
+}
