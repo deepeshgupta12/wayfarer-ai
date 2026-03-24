@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.routes.embeddings import router as embeddings_router
 from app.api.routes.health import router as health_router
 from app.api.routes.persona import router as persona_router
 from app.api.routes.providers import router as providers_router
@@ -22,6 +23,7 @@ def on_startup() -> None:
 
 app.include_router(health_router)
 app.include_router(providers_router)
+app.include_router(embeddings_router)
 app.include_router(persona_router)
 
 
