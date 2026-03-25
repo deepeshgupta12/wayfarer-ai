@@ -144,6 +144,8 @@ def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
     assert first_day["slots"][1]["slot_type"] == "lunch"
     assert first_day["slots"][2]["slot_type"] == "afternoon"
     assert first_day["slots"][3]["slot_type"] == "evening"
+    assert "geo_cluster" in payload["candidate_places"][0]
+    assert "geo_cluster" in first_day
 
 
 def test_enrich_trip_plan_rejects_incomplete_sessions() -> None:
@@ -266,3 +268,98 @@ def test_enriched_day_contains_fallback_candidates() -> None:
     assert "slots" in first_day
     assert "fallback_candidate_ids" in first_day["slots"][0]
     assert "fallback_candidate_names" in first_day["slots"][0]
+
+
+def test_replace_slot_keeps_same_session_and_updates_only_requested_slot() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_009",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+    enriched_payload = enrich_response.json()
+
+    replace_response = client.post(
+        f"/trip-plans/{planning_session_id}/replace-slot",
+        json={
+            "day_number": 2,
+            "slot_type": "evening",
+            "replacement_mode": "more_culture",
+        },
+    )
+    assert replace_response.status_code == 200
+
+    payload = replace_response.json()
+    assert payload["planning_session_id"] == planning_session_id
+    assert payload["status"] == "enriched"
+    assert len(payload["itinerary_skeleton"]) == 4
+
+    day_two = payload["itinerary_skeleton"][1]
+    target_slot = [slot for slot in day_two["slots"] if slot["slot_type"] == "evening"][0]
+    assert target_slot["assigned_place_name"] is not None
+    assert "ranked better" in target_slot["rationale"].lower()
+
+    day_one_after = payload["itinerary_skeleton"][0]
+    day_one_before = enriched_payload["itinerary_skeleton"][0]
+    assert day_one_after["day_number"] == day_one_before["day_number"]
+
+
+def test_replace_slot_rejects_non_enriched_plan() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_010",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, relaxed pace, love food",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    replace_response = client.post(
+        f"/trip-plans/{planning_session_id}/replace-slot",
+        json={
+            "day_number": 1,
+            "slot_type": "morning",
+            "replacement_mode": "best_alternative",
+        },
+    )
+    assert replace_response.status_code == 400
+    assert "must be enriched" in replace_response.json()["detail"].lower()
+
+
+def test_replace_slot_rejects_invalid_day() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_011",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, relaxed pace, love food",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    replace_response = client.post(
+        f"/trip-plans/{planning_session_id}/replace-slot",
+        json={
+            "day_number": 9,
+            "slot_type": "morning",
+            "replacement_mode": "best_alternative",
+        },
+    )
+    assert replace_response.status_code == 400
+    assert "day 9 not found" in replace_response.json()["detail"].lower()

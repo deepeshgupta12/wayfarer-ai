@@ -2,7 +2,7 @@ import { useRef, useState, useEffect } from 'react';
 // @ts-ignore
 import { motion } from 'framer-motion';
 // @ts-ignore
-import { Send, Sparkles, Plus } from 'lucide-react';
+import { Send, Sparkles, Plus, RefreshCw } from 'lucide-react';
 import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
 import {
@@ -11,6 +11,7 @@ import {
   generateDestinationGuide,
   parseAndSaveTripBrief,
   refreshTravellerPersonaFromMemory,
+  replaceTripPlanSlot,
   updateTripPlan,
 } from '@/api/wayfarerApi';
 import {
@@ -124,6 +125,12 @@ function isRefinementFollowUp(rawInput, currentPlanningSession) {
     'friends trip',
     'change to',
     'refine pace',
+    'replace day',
+    'replace evening',
+    'replace morning',
+    'replace lunch',
+    'replace afternoon',
+    'less hectic',
   ];
 
   if (followupTerms.some((term) => lowered.includes(term))) {
@@ -141,6 +148,53 @@ function isRefinementFollowUp(rawInput, currentPlanningSession) {
   }
 
   return false;
+}
+
+function isSlotReplacementFollowUp(rawInput) {
+  const lowered = rawInput.toLowerCase().trim();
+
+  if (lowered.includes('swap candidates')) return true;
+  if (lowered.includes('replace day')) return true;
+  if (lowered.includes('replace morning')) return true;
+  if (lowered.includes('replace lunch')) return true;
+  if (lowered.includes('replace afternoon')) return true;
+  if (lowered.includes('replace evening')) return true;
+  if (lowered.includes('less hectic')) return true;
+
+  return false;
+}
+
+function inferReplacementPayload(rawInput, planningSession) {
+  const lowered = rawInput.toLowerCase().trim();
+  const itinerary = planningSession?.itinerary_skeleton || [];
+  const fallbackDay = itinerary[0]?.day_number || 1;
+
+  let dayNumber = fallbackDay;
+  const dayMatch = lowered.match(/day\s+(\d+)/);
+  if (dayMatch) {
+    dayNumber = Number(dayMatch[1]);
+  }
+
+  let slotType = 'afternoon';
+  if (lowered.includes('morning')) slotType = 'morning';
+  else if (lowered.includes('lunch')) slotType = 'lunch';
+  else if (lowered.includes('afternoon')) slotType = 'afternoon';
+  else if (lowered.includes('evening')) slotType = 'evening';
+
+  let replacementMode = 'best_alternative';
+  if (lowered.includes('less hectic') || lowered.includes('more relaxed')) {
+    replacementMode = 'less_hectic';
+  } else if (lowered.includes('food')) {
+    replacementMode = 'more_food';
+  } else if (lowered.includes('culture')) {
+    replacementMode = 'more_culture';
+  }
+
+  return {
+    day_number: dayNumber,
+    slot_type: slotType,
+    replacement_mode: replacementMode,
+  };
 }
 
 function buildTripPlanUpdatePayload(rawInput) {
@@ -288,7 +342,29 @@ function buildAssistantMessageFromEnrichedTripPlan(result, followupText = null) 
     type: 'trip_plan_enriched',
     content,
     planningSession: result,
-    chips: ['Make it more relaxed', 'Make it food + culture', 'Change to couple trip', 'Swap candidates'],
+    chips: [
+      'Make it more relaxed',
+      'Make it food + culture',
+      'Change to couple trip',
+      'Replace Day 2 with something less hectic',
+      'Swap candidates',
+    ],
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildAssistantMessageFromSlotReplacement(result, followupText) {
+  return {
+    role: 'assistant',
+    type: 'trip_plan_enriched',
+    content: `I replaced part of your itinerary based on "${followupText}" and kept the same planning session active.`,
+    planningSession: result,
+    chips: [
+      'Replace Day 2 with something less hectic',
+      'Replace evening slot',
+      'Make it food + culture',
+      'Change to couple trip',
+    ],
     timestamp: new Date().toISOString(),
   };
 }
@@ -344,8 +420,28 @@ export default function Assistant() {
     try {
       if (currentPlanningSession && isRefinementFollowUp(msg, currentPlanningSession)) {
         const planningSessionId = currentPlanningSession.planning_session_id;
-        const updatePayload = buildTripPlanUpdatePayload(msg);
 
+        if (currentPlanningSession.status === 'enriched' && isSlotReplacementFollowUp(msg)) {
+          const replacementPayload = inferReplacementPayload(msg, currentPlanningSession);
+          const replacedPlan = await replaceTripPlanSlot(planningSessionId, replacementPayload);
+
+          await createTravellerMemory({
+            traveller_id: travellerId,
+            event_type: 'trip_plan_slot_replaced',
+            source_surface: 'assistant',
+            payload: {
+              planning_session_id: planningSessionId,
+              replacement_payload: replacementPayload,
+              followup_text: msg,
+            },
+          });
+
+          const replacementMsg = buildAssistantMessageFromSlotReplacement(replacedPlan, msg);
+          setMessages((prev) => [...prev, replacementMsg]);
+          return;
+        }
+
+        const updatePayload = buildTripPlanUpdatePayload(msg);
         let updatedPlan = currentPlanningSession;
 
         if (Object.keys(updatePayload).length > 0) {
@@ -710,7 +806,12 @@ function PlanningSessionCard({ planningSession, onChipClick, chips }) {
   );
 }
 
-function SlotCard({ slot }) {
+function SlotCard({ slot, onChipClick, dayNumber }) {
+  const replaceChip =
+    slot.slot_type === 'evening'
+      ? `Replace Day ${dayNumber} evening slot`
+      : `Replace Day ${dayNumber} ${slot.slot_type}`;
+
   return (
     <div className="rounded-xl bg-secondary/40 px-4 py-3 space-y-2">
       <div className="flex items-start justify-between gap-3">
@@ -733,11 +834,21 @@ function SlotCard({ slot }) {
           <span className="font-medium">{slot.fallback_candidate_names.join(', ')}</span>
         </div>
       ) : null}
+
+      <div className="flex flex-wrap gap-2 pt-1">
+        <button
+          onClick={() => onChipClick(replaceChip)}
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
+        >
+          <RefreshCw className="w-3 h-3" />
+          Replace slot
+        </button>
+      </div>
     </div>
   );
 }
 
-function ItinerarySkeletonCard({ planningSession }) {
+function ItinerarySkeletonCard({ planningSession, onChipClick }) {
   const itinerary = planningSession?.itinerary_skeleton || [];
   const candidates = planningSession?.candidate_places || [];
 
@@ -768,10 +879,21 @@ function ItinerarySkeletonCard({ planningSession }) {
               <span className="font-medium">Day rationale:</span> {day.day_rationale}
             </div>
 
+            {day.geo_cluster ? (
+              <div className="text-xs text-muted-foreground">
+                <span className="font-medium">Geo cluster:</span> {day.geo_cluster}
+              </div>
+            ) : null}
+
             {day.slots?.length > 0 ? (
               <div className="grid gap-3">
                 {day.slots.map((slot, index) => (
-                  <SlotCard key={`${day.day_number}-${slot.slot_type}-${index}`} slot={slot} />
+                  <SlotCard
+                    key={`${day.day_number}-${slot.slot_type}-${index}`}
+                    slot={slot}
+                    onChipClick={onChipClick}
+                    dayNumber={day.day_number}
+                  />
                 ))}
               </div>
             ) : null}
@@ -802,6 +924,7 @@ function ItinerarySkeletonCard({ planningSession }) {
                     <div className="text-sm font-medium text-foreground">{candidate.name}</div>
                     <div className="text-xs text-muted-foreground">
                       {candidate.city}, {candidate.country} · {candidate.category}
+                      {candidate.geo_cluster ? ` · ${candidate.geo_cluster}` : ''}
                     </div>
                   </div>
                   <div className="text-xs font-medium text-muted-foreground">
@@ -856,7 +979,7 @@ function MessageBubble({ message, onChipClick }) {
         ) : null}
 
         {message.type === 'trip_plan_enriched' ? (
-          <ItinerarySkeletonCard planningSession={message.planningSession} />
+          <ItinerarySkeletonCard planningSession={message.planningSession} onChipClick={onChipClick} />
         ) : null}
 
         {message.places?.length > 0 ? (

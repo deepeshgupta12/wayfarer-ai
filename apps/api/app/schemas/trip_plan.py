@@ -26,6 +26,15 @@ class TripPlanUpdateRequest(BaseModel):
     budget: TripBudget | None = None
 
 
+class TripSlotReplacementRequest(BaseModel):
+    day_number: int = Field(..., ge=1, le=30)
+    slot_type: TripSlotType
+    replacement_mode: Literal["best_alternative", "less_hectic", "more_food", "more_culture"] = Field(
+        default="best_alternative"
+    )
+    preferred_location_id: str | None = None
+
+
 class ParsedTripConstraints(BaseModel):
     destination: str | None = None
     duration_days: int | None = None
@@ -47,6 +56,7 @@ class TripCandidatePlace(BaseModel):
     review_summary: str | None = None
     score: float
     why_selected: str
+    geo_cluster: str | None = None
 
 
 class TripSlotAssignment(BaseModel):
@@ -70,6 +80,7 @@ class TripDayPlan(BaseModel):
     day_rationale: str
     fallback_candidate_ids: list[str] = Field(default_factory=list)
     fallback_candidate_names: list[str] = Field(default_factory=list)
+    geo_cluster: str | None = None
 
 
 class TripPlanResponse(BaseModel):

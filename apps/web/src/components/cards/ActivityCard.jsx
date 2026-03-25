@@ -1,7 +1,19 @@
 import { motion } from 'framer-motion';
-import { Clock, MapPin, Star, RefreshCw, ChevronRight, Sparkles } from 'lucide-react';
+import { Clock, MapPin, RefreshCw, ChevronRight, Sparkles } from 'lucide-react';
 
-export default function ActivityCard({ time, name, description, type, location, rating, reason, image, onSwap, onExpand, index = 0 }) {
+export default function ActivityCard({
+  time,
+  name,
+  description,
+  type,
+  location,
+  reason,
+  image,
+  onSwap,
+  onExpand,
+  index = 0,
+  fallbackNames = [],
+}) {
   const typeIcons = {
     food: '🍽️',
     culture: '🏛️',
@@ -21,7 +33,6 @@ export default function ActivityCard({ time, name, description, type, location, 
       className="group relative flex gap-3 p-3 rounded-xl hover:bg-secondary/50 transition-colors cursor-pointer"
       onClick={onExpand}
     >
-      {/* Timeline dot */}
       <div className="flex flex-col items-center flex-shrink-0 pt-1">
         <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-sm">
           {typeIcons[type] || '📍'}
@@ -64,10 +75,19 @@ export default function ActivityCard({ time, name, description, type, location, 
           </div>
         )}
 
+        {fallbackNames?.length > 0 ? (
+          <div className="mt-2 text-[11px] text-muted-foreground">
+            Fallback options: <span className="font-medium">{fallbackNames.join(', ')}</span>
+          </div>
+        ) : null}
+
         <div className="flex items-center gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
           {onSwap && (
             <button
-              onClick={(e) => { e.stopPropagation(); onSwap(); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSwap();
+              }}
               className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               <RefreshCw className="w-3 h-3" />
