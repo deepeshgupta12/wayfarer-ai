@@ -9,11 +9,19 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronUp,
+  Heart,
+  SkipForward,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import LoadingState from '../components/ui/LoadingState';
 import ActivityCard from '../components/cards/ActivityCard';
-import { getStoredTripById, listStoredTrips } from '@/lib/tripStorage';
+import {
+  appendTripVersion,
+  getStoredTripById,
+  listStoredTrips,
+  recordSelectedPlace,
+  recordSkippedRecommendation,
+} from '@/lib/tripStorage';
 
 function normalizeDayActivities(day) {
   if (Array.isArray(day.slots) && day.slots.length > 0) {
@@ -36,14 +44,16 @@ function normalizeDayActivities(day) {
           slot.slot_type === 'lunch'
             ? 'food'
             : slot.slot_type === 'evening'
-              ? 'nightlife'
-              : slot.slot_type === 'afternoon'
-                ? 'nature'
-                : 'culture',
+            ? 'nightlife'
+            : slot.slot_type === 'afternoon'
+            ? 'nature'
+            : 'culture',
         location: slot.assigned_place_name || day.title,
         rating: undefined,
         reason: slot.rationale,
         fallbackNames: slot.fallback_candidate_names || [],
+        alternatives: slot.alternatives || [],
+        assignedLocationId: slot.assigned_location_id || null,
         slotType: slot.slot_type,
         replacementStatus,
         continuityNote: slot.continuity_note || null,
@@ -98,6 +108,44 @@ export default function Itinerary() {
     setLoading(false);
   }, []);
 
+  const refreshTrip = () => {
+    if (!trip?.id) return;
+    const latest = getStoredTripById(trip.id);
+    setTrip(latest);
+  };
+
+  const handleSavePlace = (activity) => {
+    if (!trip?.id) return;
+
+    recordSelectedPlace(trip.id, {
+      location_id: activity.assignedLocationId || activity.name,
+      name: activity.name,
+      city: trip.destination,
+      category: activity.type,
+    });
+
+    refreshTrip();
+  };
+
+  const handleSkipAlternative = (alternative) => {
+    if (!trip?.id) return;
+
+    recordSkippedRecommendation(trip.id, {
+      location_id: alternative.location_id,
+      name: alternative.name,
+      city: alternative.city,
+      category: alternative.category,
+    });
+
+    refreshTrip();
+  };
+
+  const handleSnapshot = () => {
+    if (!trip?.id) return;
+    appendTripVersion(trip.id, 'manual_workspace_snapshot');
+    refreshTrip();
+  };
+
   if (loading) {
     return <LoadingState message="Loading your itinerary..." />;
   }
@@ -120,6 +168,9 @@ export default function Itinerary() {
   }
 
   const itinerary = deriveCanonicalItinerary(trip);
+  const versions = trip.itinerary_versions || [];
+  const selectedPlaces = trip.selected_places || [];
+  const skippedRecommendations = trip.skipped_recommendations || [];
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
@@ -152,8 +203,11 @@ export default function Itinerary() {
               <Share2 className="w-4 h-4" />
             </button>
 
-            <button className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent/10 text-accent text-sm font-medium hover:bg-accent/20 transition-colors">
-              <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+            <button
+              onClick={handleSnapshot}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent/10 text-accent text-sm font-medium hover:bg-accent/20 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Save Version
             </button>
           </div>
         </div>
@@ -229,7 +283,34 @@ export default function Itinerary() {
                       ) : null}
 
                       {activities.map((activity, j) => (
-                        <ActivityCard key={j} {...activity} index={j} onSwap={() => {}} />
+                        <div key={j} className="rounded-xl border border-border/60">
+                          <ActivityCard
+                            {...activity}
+                            index={j}
+                            onSwap={() => {}}
+                          />
+
+                          <div className="px-4 pb-4 flex flex-wrap gap-2">
+                            <button
+                              onClick={() => handleSavePlace(activity)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
+                            >
+                              <Heart className="w-3 h-3" />
+                              Save place
+                            </button>
+
+                            {(activity.alternatives || []).map((alternative, altIndex) => (
+                              <button
+                                key={`${alternative.location_id}-${altIndex}`}
+                                onClick={() => handleSkipAlternative(alternative)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
+                              >
+                                <SkipForward className="w-3 h-3" />
+                                Skip {alternative.name}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
                       ))}
 
                       {day.fallback_candidate_names?.length > 0 ? (
@@ -280,11 +361,50 @@ export default function Itinerary() {
 
               <div className="p-3 rounded-xl bg-ocean-light border border-ocean/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Guardrail:</strong> replacements are surfaced explicitly so you can
-                  distinguish a real slot swap from a strongest-fit retention decision.
+                  <strong>Versioning:</strong> this trip currently has{' '}
+                  <span className="font-medium">{versions.length}</span> saved itinerary snapshots.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl bg-secondary border border-border">
+                <p className="text-xs text-muted-foreground">
+                  <strong>Saved places:</strong> {selectedPlaces.length}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  <strong>Skipped recommendations:</strong> {skippedRecommendations.length}
                 </p>
               </div>
             </div>
+
+            {selectedPlaces.length > 0 ? (
+              <div className="mt-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Selected Places
+                </div>
+                <div className="space-y-2">
+                  {selectedPlaces.slice(0, 5).map((place, index) => (
+                    <div key={`${place.location_id || place.name}-${index}`} className="text-xs text-muted-foreground">
+                      {place.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {skippedRecommendations.length > 0 ? (
+              <div className="mt-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Skipped Signals
+                </div>
+                <div className="space-y-2">
+                  {skippedRecommendations.slice(0, 5).map((place, index) => (
+                    <div key={`${place.location_id || place.name}-${index}`} className="text-xs text-muted-foreground">
+                      {place.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

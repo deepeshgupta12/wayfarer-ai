@@ -9,7 +9,12 @@ from app.clients.google_places_client import GooglePlacesClient
 from app.clients.tripadvisor_client import TripadvisorClient
 from app.models.place_embedding import PlaceEmbeddingRecord
 from app.schemas.destination import (
+    DestinationAlternative,
     DestinationAreaCard,
+    DestinationComparisonDimension,
+    DestinationComparisonRequest,
+    DestinationComparisonResponse,
+    DestinationComparisonSide,
     DestinationGuideRequest,
     DestinationGuideResponse,
     DestinationPlaceIndexItem,
@@ -27,6 +32,150 @@ from app.services.review_intelligence_service import analyze_review_bundle
 
 tripadvisor_client = TripadvisorClient()
 google_places_client = GooglePlacesClient()
+
+COMPARISON_DIMENSIONS = [
+    "vibe",
+    "food_scene",
+    "walkability",
+    "value_for_money",
+    "romance",
+    "family_friendliness",
+    "cultural_richness",
+    "safety",
+    "nightlife",
+    "nature_and_scenery",
+]
+
+DESTINATION_PROFILES: dict[str, dict[str, float]] = {
+    "kyoto": {
+        "vibe": 9.2,
+        "food_scene": 8.8,
+        "walkability": 8.4,
+        "value_for_money": 7.6,
+        "romance": 8.9,
+        "family_friendliness": 8.0,
+        "cultural_richness": 9.8,
+        "safety": 9.4,
+        "nightlife": 6.1,
+        "nature_and_scenery": 8.8,
+    },
+    "tokyo": {
+        "vibe": 9.0,
+        "food_scene": 9.6,
+        "walkability": 8.7,
+        "value_for_money": 7.4,
+        "romance": 8.1,
+        "family_friendliness": 8.2,
+        "cultural_richness": 8.7,
+        "safety": 9.2,
+        "nightlife": 8.7,
+        "nature_and_scenery": 6.9,
+    },
+    "lisbon": {
+        "vibe": 8.8,
+        "food_scene": 8.6,
+        "walkability": 8.1,
+        "value_for_money": 8.3,
+        "romance": 8.7,
+        "family_friendliness": 7.5,
+        "cultural_richness": 8.1,
+        "safety": 7.8,
+        "nightlife": 8.5,
+        "nature_and_scenery": 7.6,
+    },
+    "prague": {
+        "vibe": 8.9,
+        "food_scene": 7.8,
+        "walkability": 9.0,
+        "value_for_money": 8.4,
+        "romance": 8.8,
+        "family_friendliness": 7.6,
+        "cultural_richness": 9.0,
+        "safety": 8.3,
+        "nightlife": 7.9,
+        "nature_and_scenery": 7.1,
+    },
+    "budapest": {
+        "vibe": 8.5,
+        "food_scene": 8.0,
+        "walkability": 8.2,
+        "value_for_money": 9.0,
+        "romance": 8.3,
+        "family_friendliness": 7.1,
+        "cultural_richness": 8.4,
+        "safety": 7.5,
+        "nightlife": 8.8,
+        "nature_and_scenery": 7.4,
+    },
+}
+
+BASE_DIMENSION_WEIGHTS: dict[str, float] = {
+    "vibe": 1.0,
+    "food_scene": 1.0,
+    "walkability": 1.0,
+    "value_for_money": 1.0,
+    "romance": 1.0,
+    "family_friendliness": 1.0,
+    "cultural_richness": 1.0,
+    "safety": 1.0,
+    "nightlife": 1.0,
+    "nature_and_scenery": 1.0,
+}
+
+TRAVELLER_TYPE_WEIGHT_BONUSES: dict[str, dict[str, float]] = {
+    "solo": {
+        "walkability": 0.6,
+        "safety": 0.7,
+        "vibe": 0.4,
+    },
+    "couple": {
+        "romance": 1.0,
+        "food_scene": 0.4,
+        "vibe": 0.3,
+    },
+    "family": {
+        "family_friendliness": 1.1,
+        "safety": 0.6,
+        "walkability": 0.2,
+    },
+    "friends": {
+        "nightlife": 0.8,
+        "value_for_money": 0.5,
+        "vibe": 0.4,
+    },
+}
+
+INTEREST_WEIGHT_BONUSES: dict[str, dict[str, float]] = {
+    "food": {
+        "food_scene": 1.1,
+        "value_for_money": 0.2,
+    },
+    "culture": {
+        "cultural_richness": 1.1,
+        "walkability": 0.2,
+    },
+    "nature": {
+        "nature_and_scenery": 1.2,
+        "vibe": 0.2,
+    },
+    "nightlife": {
+        "nightlife": 1.1,
+        "vibe": 0.2,
+    },
+    "luxury": {
+        "vibe": 0.4,
+        "food_scene": 0.3,
+        "romance": 0.2,
+    },
+    "adventure": {
+        "nature_and_scenery": 0.7,
+        "walkability": 0.2,
+    },
+    "wellness": {
+        "nature_and_scenery": 0.5,
+        "safety": 0.2,
+    },
+}
 
 
 def _build_place_embedding_text(
@@ -121,7 +270,11 @@ def _build_area_card(area: str, destination: str) -> DestinationAreaCard:
     )
 
 
-def _build_review_insight(review_summary: str, review_signals: dict[str, str], authenticity: str | None) -> DestinationReviewInsight:
+def _build_review_insight(
+    review_summary: str,
+    review_signals: dict[str, str],
+    authenticity: str | None,
+) -> DestinationReviewInsight:
     standout = []
 
     for label, value in review_signals.items():
@@ -149,6 +302,256 @@ def _build_review_insight(review_summary: str, review_signals: dict[str, str], a
         confidence=confidence,
         raw_summary=review_summary,
     )
+
+
+def _get_destination_profile(destination: str) -> dict[str, float]:
+    lowered = destination.strip().lower()
+    if lowered in DESTINATION_PROFILES:
+        return DESTINATION_PROFILES[lowered]
+
+    return {
+        "vibe": 7.5,
+        "food_scene": 7.5,
+        "walkability": 7.4,
+        "value_for_money": 7.4,
+        "romance": 7.3,
+        "family_friendliness": 7.3,
+        "cultural_richness": 7.5,
+        "safety": 7.5,
+        "nightlife": 7.2,
+        "nature_and_scenery": 7.4,
+    }
+
+
+def _build_dimension_weights(traveller_type: str, interests: list[str]) -> dict[str, float]:
+    weights = dict(BASE_DIMENSION_WEIGHTS)
+
+    for dimension, bonus in TRAVELLER_TYPE_WEIGHT_BONUSES.get(traveller_type, {}).items():
+        weights[dimension] = weights.get(dimension, 1.0) + bonus
+
+    for interest in interests:
+        for dimension, bonus in INTEREST_WEIGHT_BONUSES.get(interest, {}).items():
+            weights[dimension] = weights.get(dimension, 1.0) + bonus
+
+    return weights
+
+
+def _weighted_destination_score(
+    destination: str,
+    traveller_type: str,
+    interests: list[str],
+) -> float:
+    profile = _get_destination_profile(destination)
+    weights = _build_dimension_weights(traveller_type, interests)
+
+    numerator = sum(profile[dimension] * weights[dimension] for dimension in COMPARISON_DIMENSIONS)
+    denominator = sum(weights[dimension] for dimension in COMPARISON_DIMENSIONS)
+
+    if denominator == 0:
+        return 0.0
+
+    return round(numerator / denominator, 2)
+
+
+def _dimension_note(destination: str, dimension: str, score: float) -> str:
+    readable_dimension = dimension.replace("_", " ")
+
+    if score >= 8.8:
+        return f"{destination} is especially strong on {readable_dimension}."
+    if score >= 8.0:
+        return f"{destination} performs well on {readable_dimension}."
+    if score >= 7.0:
+        return f"{destination} is fairly balanced on {readable_dimension}."
+    return f"{destination} is less differentiated on {readable_dimension}."
+
+
+def _comparison_tagline(destination: str, traveller_type: str, interests: list[str]) -> str:
+    interests_text = ", ".join(interests[:2]) if interests else "general city exploration"
+    return f"A strong option for {traveller_type} travellers leaning toward {interests_text}."
+
+
+def _comparison_best_for(destination: str, traveller_type: str, interests: list[str]) -> str:
+    profile = _get_destination_profile(destination)
+    top_dimension = max(COMPARISON_DIMENSIONS, key=lambda item: profile[item]).replace("_", " ")
+    interests_text = ", ".join(interests[:2]) if interests else "balanced city trips"
+    return f"{traveller_type.capitalize()} travellers who care about {top_dimension} and {interests_text}."
+
+
+def _build_comparison_side(
+    destination: str,
+    traveller_type: str,
+    interests: list[str],
+) -> DestinationComparisonSide:
+    search_results = tripadvisor_client.search_locations(
+        query=destination,
+        traveller_type=traveller_type,
+        interests=interests,
+    )
+    primary = search_results[0]
+    review_bundle = tripadvisor_client.get_destination_reviews(primary.name)
+    review_analysis = analyze_review_bundle(
+        location_id=str(review_bundle["location_id"]),
+        location_name=str(review_bundle["location_name"]),
+        reviews=list(review_bundle["reviews"]),
+    )
+    context = google_places_client.get_destination_context(primary.name)
+
+    return DestinationComparisonSide(
+        name=primary.name,
+        city=primary.city,
+        country=primary.country,
+        category=primary.category,
+        tagline=_comparison_tagline(primary.name, traveller_type, interests),
+        best_for=_comparison_best_for(primary.name, traveller_type, interests),
+        review_summary=review_analysis.quick_verdict,
+        review_authenticity=review_analysis.authenticity_label,
+        suggested_areas=list(context["suggested_areas"]),
+        weighted_score=_weighted_destination_score(primary.name, traveller_type, interests),
+    )
+
+
+def _winner_label(score_a: float, score_b: float) -> str:
+    if abs(score_a - score_b) < 0.15:
+        return "tie"
+    return "destination_a" if score_a > score_b else "destination_b"
+
+
+def _build_comparison_dimensions(
+    destination_a: str,
+    destination_b: str,
+    traveller_type: str,
+    interests: list[str],
+) -> list[DestinationComparisonDimension]:
+    profile_a = _get_destination_profile(destination_a)
+    profile_b = _get_destination_profile(destination_b)
+    weights = _build_dimension_weights(traveller_type, interests)
+
+    dimensions: list[DestinationComparisonDimension] = []
+
+    for dimension in COMPARISON_DIMENSIONS:
+        score_a = round(profile_a[dimension], 1)
+        score_b = round(profile_b[dimension], 1)
+
+        dimensions.append(
+            DestinationComparisonDimension(
+                name=dimension.replace("_", " ").title(),
+                weight=round(weights[dimension], 2),
+                score_a=score_a,
+                score_b=score_b,
+                note_a=_dimension_note(destination_a, dimension, score_a),
+                note_b=_dimension_note(destination_b, dimension, score_b),
+                winner=_winner_label(score_a, score_b),
+            )
+        )
+
+    return dimensions
+
+
+def _build_comparison_verdict(
+    side_a: DestinationComparisonSide,
+    side_b: DestinationComparisonSide,
+    traveller_type: str,
+    interests: list[str],
+) -> str:
+    interests_text = ", ".join(interests[:2]) if interests else "general exploration"
+
+    if side_a.weighted_score > side_b.weighted_score:
+        return (
+            f"{side_a.name} comes out ahead for this {traveller_type} planning context because its weighted profile "
+            f"better aligns with {interests_text}, while {side_b.name} still remains a credible alternative."
+        )
+
+    if side_b.weighted_score > side_a.weighted_score:
+        return (
+            f"{side_b.name} comes out ahead for this {traveller_type} planning context because its weighted profile "
+            f"better aligns with {interests_text}, while {side_a.name} still remains a credible alternative."
+        )
+
+    return (
+        f"{side_a.name} and {side_b.name} land very close for this {traveller_type} planning context, so the better "
+        f"choice depends on whether you want stronger fit on your top priorities or a different trip character."
+    )
+
+
+def _build_planning_recommendation(
+    side_a: DestinationComparisonSide,
+    side_b: DestinationComparisonSide,
+    duration_days: int,
+) -> str:
+    better = side_a if side_a.weighted_score >= side_b.weighted_score else side_b
+    other = side_b if better is side_a else side_a
+
+    return (
+        f"If you want to move directly into planning, start the itinerary workspace with {better.name} for the main plan. "
+        f"Keep {other.name} as the backup comparison branch, especially if you later want an alternate {duration_days}-day version."
+    )
+
+
+def _profile_similarity_score(
+    source_destination: str,
+    candidate_destination: str,
+    traveller_type: str,
+    interests: list[str],
+) -> float:
+    source_profile = _get_destination_profile(source_destination)
+    candidate_profile = _get_destination_profile(candidate_destination)
+    weights = _build_dimension_weights(traveller_type, interests)
+
+    total_weight = sum(weights.values())
+    if total_weight == 0:
+        return 0.0
+
+    weighted_distance = 0.0
+    for dimension in COMPARISON_DIMENSIONS:
+        weighted_distance += abs(source_profile[dimension] - candidate_profile[dimension]) * weights[dimension]
+
+    normalized_distance = weighted_distance / total_weight
+    similarity = max(0.0, 100.0 - (normalized_distance * 12.0))
+    return round(similarity, 1)
+
+
+def _build_you_would_also_love(
+    payload: DestinationGuideRequest,
+) -> list[DestinationAlternative]:
+    alternatives: list[DestinationAlternative] = []
+
+    for candidate_destination in DESTINATION_PROFILES:
+        if candidate_destination == payload.destination.strip().lower():
+            continue
+
+        search_results = tripadvisor_client.search_locations(
+            query=candidate_destination.title(),
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+        if not search_results:
+            continue
+
+        result = search_results[0]
+        match_score = _profile_similarity_score(
+            source_destination=payload.destination,
+            candidate_destination=result.name,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+
+        alternatives.append(
+            DestinationAlternative(
+                location_id=result.location_id,
+                name=result.name,
+                city=result.city,
+                country=result.country,
+                category=result.category,
+                match_score=match_score,
+                reason=(
+                    f"A strong alternate if you want a trip with a comparable fit for "
+                    f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
+                ),
+            )
+        )
+
+    alternatives.sort(key=lambda item: item.match_score, reverse=True)
+    return alternatives[:3]
 
 
 def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchResponse:
@@ -230,10 +633,15 @@ def get_similar_places(
     if source_record is None:
         return SimilarPlaceResponse(
             source_location_id=payload.source_location_id,
+            city_filter_applied=payload.city_filter,
             matches=[],
         )
 
-    all_records = db.query(PlaceEmbeddingRecord).all()
+    query = db.query(PlaceEmbeddingRecord)
+    if payload.city_filter:
+        query = query.filter(PlaceEmbeddingRecord.city == payload.city_filter)
+
+    all_records = query.all()
 
     scored_matches: list[SimilarPlaceMatch] = []
     for record in all_records:
@@ -253,6 +661,10 @@ def get_similar_places(
                 country=record.country,
                 category=record.category,
                 similarity_score=similarity_score,
+                why_similar=(
+                    f"Similar embedding profile to {source_record.name}"
+                    + (f" within {payload.city_filter}." if payload.city_filter else ".")
+                ),
             )
         )
 
@@ -264,6 +676,7 @@ def get_similar_places(
 
     return SimilarPlaceResponse(
         source_location_id=payload.source_location_id,
+        city_filter_applied=payload.city_filter,
         matches=scored_matches,
     )
 
@@ -319,6 +732,49 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         review_signals=review_analysis.themes,
         review_authenticity=review_analysis.authenticity_label,
         review_insight=review_insight,
+        youd_also_love=_build_you_would_also_love(payload),
+    )
+
+
+def compare_destinations(payload: DestinationComparisonRequest) -> DestinationComparisonResponse:
+    side_a = _build_comparison_side(
+        destination=payload.destination_a,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+    side_b = _build_comparison_side(
+        destination=payload.destination_b,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+
+    dimensions = _build_comparison_dimensions(
+        destination_a=side_a.name,
+        destination_b=side_b.name,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+
+    return DestinationComparisonResponse(
+        destination_a=side_a,
+        destination_b=side_b,
+        dimensions=dimensions,
+        verdict=_build_comparison_verdict(
+            side_a=side_a,
+            side_b=side_b,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        ),
+        planning_recommendation=_build_planning_recommendation(
+            side_a=side_a,
+            side_b=side_b,
+            duration_days=payload.duration_days,
+        ),
+        next_step_suggestions=[
+            f"Plan {payload.duration_days} days in {side_a.name}",
+            f"Plan {payload.duration_days} days in {side_b.name}",
+            f"Use {side_b.name if side_a.weighted_score >= side_b.weighted_score else side_a.name} as a backup itinerary branch",
+        ],
     )
 
 

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Plus, Sparkles, Calendar, MapPin } from 'lucide-react';
+import { Plus, Sparkles, Calendar, MapPin, Layers } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import EmptyState from '../components/ui/EmptyState';
@@ -118,6 +118,18 @@ export default function Plan() {
           ))}
         </div>
       )}
+
+      {!isLoading && trips.length > 0 ? (
+        <div className="mt-8 rounded-2xl border border-border bg-card p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Layers className="w-4 h-4 text-accent" />
+            <h3 className="font-medium text-sm">Planning state now retained</h3>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Each saved trip now retains itinerary versions, selected places, and skipped recommendation signals for stronger planning continuity.
+          </p>
+        </div>
+      ) : null}
 
       {showNewTrip ? (
         <NewTripModal

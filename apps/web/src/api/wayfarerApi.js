@@ -66,6 +66,42 @@ export async function generateDestinationGuide(payload) {
   return parseJsonResponse(response);
 }
 
+export async function compareDestinations(payload) {
+  const response = await fetch(`${API_BASE_URL}/destinations/compare`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return parseJsonResponse(response);
+}
+
+export async function indexDestinationPlaces(payload) {
+  const response = await fetch(`${API_BASE_URL}/destinations/places/index`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return parseJsonResponse(response);
+}
+
+export async function getSimilarPlaces(payload) {
+  const response = await fetch(`${API_BASE_URL}/destinations/places/similar`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return parseJsonResponse(response);
+}
+
 export async function parseAndSaveTripBrief(payload) {
   const response = await fetch(`${API_BASE_URL}/trip-plans/parse-and-save`, {
     method: 'POST',
@@ -139,9 +175,19 @@ export async function createTravellerMemory(payload) {
   return parseJsonResponse(response);
 }
 
-export async function getTravellerMemory(travellerId, limit = 20) {
+export async function getTravellerMemory(travellerId, limit = 20, filters = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+
+  if (filters.event_type) {
+    params.set('event_type', filters.event_type);
+  }
+
+  if (filters.planning_session_id) {
+    params.set('planning_session_id', filters.planning_session_id);
+  }
+
   const response = await fetch(
-    `${API_BASE_URL}/traveller-memory/${encodeURIComponent(travellerId)}?limit=${limit}`
+    `${API_BASE_URL}/traveller-memory/${encodeURIComponent(travellerId)}?${params.toString()}`
   );
 
   return parseJsonResponse(response);
