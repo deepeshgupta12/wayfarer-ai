@@ -26,6 +26,9 @@ class TripPlanRecord(Base):
     missing_fields: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
 
+    candidate_places: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+    itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

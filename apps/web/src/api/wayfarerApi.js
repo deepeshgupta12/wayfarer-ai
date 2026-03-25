@@ -78,6 +78,17 @@ export async function parseAndSaveTripBrief(payload) {
   return parseJsonResponse(response);
 }
 
+export async function enrichTripPlan(planningSessionId) {
+  const response = await fetch(
+    `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}/enrich`,
+    {
+      method: 'POST',
+    }
+  );
+
+  return parseJsonResponse(response);
+}
+
 export async function getTripPlan(planningSessionId) {
   const response = await fetch(
     `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}`

@@ -24,6 +24,15 @@ class TripadvisorClient:
                 review_count=12450,
             ),
             DestinationSearchResult(
+                location_id="ta_tokyo_001",
+                name="Tokyo",
+                city="Tokyo",
+                country="Japan",
+                category="city",
+                rating=4.8,
+                review_count=18420,
+            ),
+            DestinationSearchResult(
                 location_id="ta_lisbon_001",
                 name="Lisbon",
                 city="Lisbon",
@@ -40,6 +49,15 @@ class TripadvisorClient:
                 category="city",
                 rating=4.7,
                 review_count=11890,
+            ),
+            DestinationSearchResult(
+                location_id="ta_budapest_001",
+                name="Budapest",
+                city="Budapest",
+                country="Hungary",
+                category="city",
+                rating=4.7,
+                review_count=10980,
             ),
         ]
 
@@ -62,6 +80,27 @@ class TripadvisorClient:
                     {
                         "rating": 4,
                         "text": "Very strong value for a culture-heavy trip, especially with scenic areas and memorable ambience.",
+                    },
+                ],
+                "source": "stub",
+            }
+
+        if destination_lower == "tokyo":
+            return {
+                "location_id": "ta_tokyo_001",
+                "location_name": "Tokyo",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Excellent food scene, efficient service, and so many calm neighborhoods once you get beyond the busiest zones.",
+                    },
+                    {
+                        "rating": 5,
+                        "text": "Great value for the depth of experiences, with clean streets, strong ambience, and memorable city energy.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "A huge city, but still easy to shape into a relaxed trip with food-focused exploration.",
                     },
                 ],
                 "source": "stub",
@@ -104,6 +143,27 @@ class TripadvisorClient:
                     {
                         "rating": 4,
                         "text": "Strong overall experience for couples with cozy atmosphere and solid food options.",
+                    },
+                ],
+                "source": "stub",
+            }
+
+        if destination_lower == "budapest":
+            return {
+                "location_id": "ta_budapest_001",
+                "location_name": "Budapest",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Strong nightlife, beautiful river views, and excellent value compared with many other European cities.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Good food, memorable ambience, and a nice mix of culture and evening energy.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Great for friends, with lively districts and worthwhile historic landmarks.",
                     },
                 ],
                 "source": "stub",
