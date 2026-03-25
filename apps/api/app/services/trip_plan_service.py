@@ -14,6 +14,7 @@ from app.schemas.trip_plan import (
     TripPlanEnrichResponse,
     TripPlanResponse,
     TripPlanSummaryResponse,
+    TripPlanUpdateRequest,
 )
 from app.services.review_intelligence_service import analyze_review_bundle
 
@@ -199,6 +200,26 @@ def _build_parsed_constraints_from_record(record: TripPlanRecord) -> ParsedTripC
         interests=list(record.interests or []),
         pace_preference=record.pace_preference,
         budget=record.budget,
+    )
+
+
+def _build_summary_response(record: TripPlanRecord) -> TripPlanSummaryResponse:
+    parsed_constraints = _build_parsed_constraints_from_record(record)
+    candidate_places = [TripCandidatePlace(**item) for item in list(record.candidate_places or [])]
+    itinerary_skeleton = [TripDaySkeleton(**item) for item in list(record.itinerary_skeleton or [])]
+
+    return TripPlanSummaryResponse(
+        planning_session_id=record.planning_session_id,
+        traveller_id=record.traveller_id,
+        source_surface=record.source_surface,
+        raw_brief=record.raw_brief,
+        parsed_constraints=parsed_constraints,
+        missing_fields=list(record.missing_fields or []),
+        status=record.status,
+        candidate_places=candidate_places,
+        itinerary_skeleton=itinerary_skeleton,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )
 
 
@@ -450,6 +471,48 @@ def parse_and_save_trip_brief(
     )
 
 
+def update_trip_plan(
+    db: Session,
+    planning_session_id: str,
+    payload: TripPlanUpdateRequest,
+) -> TripPlanSummaryResponse:
+    record = (
+        db.query(TripPlanRecord)
+        .filter(TripPlanRecord.planning_session_id == planning_session_id)
+        .first()
+    )
+
+    if record is None:
+        raise ValueError(f"Trip plan not found for planning_session_id={planning_session_id}")
+
+    if payload.destination is not None:
+        record.destination = payload.destination
+    if payload.duration_days is not None:
+        record.duration_days = payload.duration_days
+    if payload.group_type is not None:
+        record.group_type = payload.group_type
+    if payload.interests is not None:
+        record.interests = list(payload.interests)[:3]
+    if payload.pace_preference is not None:
+        record.pace_preference = payload.pace_preference
+    if payload.budget is not None:
+        record.budget = payload.budget
+
+    parsed_constraints = _build_parsed_constraints_from_record(record)
+    record.missing_fields = _build_missing_fields(parsed_constraints)
+
+    # refinement invalidates prior enrichment
+    record.candidate_places = []
+    record.itinerary_skeleton = []
+    record.status = "draft"
+
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    return _build_summary_response(record)
+
+
 def get_trip_plan_summary(
     db: Session,
     planning_session_id: str,
@@ -463,23 +526,7 @@ def get_trip_plan_summary(
     if record is None:
         raise ValueError(f"Trip plan not found for planning_session_id={planning_session_id}")
 
-    parsed_constraints = _build_parsed_constraints_from_record(record)
-    candidate_places = [TripCandidatePlace(**item) for item in list(record.candidate_places or [])]
-    itinerary_skeleton = [TripDaySkeleton(**item) for item in list(record.itinerary_skeleton or [])]
-
-    return TripPlanSummaryResponse(
-        planning_session_id=record.planning_session_id,
-        traveller_id=record.traveller_id,
-        source_surface=record.source_surface,
-        raw_brief=record.raw_brief,
-        parsed_constraints=parsed_constraints,
-        missing_fields=list(record.missing_fields or []),
-        status=record.status,
-        candidate_places=candidate_places,
-        itinerary_skeleton=itinerary_skeleton,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
+    return _build_summary_response(record)
 
 
 def enrich_trip_plan(
