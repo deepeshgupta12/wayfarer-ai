@@ -77,3 +77,27 @@ def test_review_intelligence_marks_negative_food_signal_as_caution() -> None:
     assert payload["themes"]["service"] in ["positive", "neutral"]
     assert payload["themes"]["food_quality"] == "caution"
     assert payload["themes"]["value"] == "caution"
+
+
+def test_review_intelligence_returns_valid_labels_only() -> None:
+    client = get_test_client()
+
+    response = client.post(
+        "/review-intelligence/analyze",
+        json={
+            "location_id": "loc_test_004",
+            "location_name": "Signal Check Cafe",
+            "reviews": [
+                {"rating": 4, "text": "Friendly staff and beautiful atmosphere."},
+                {"rating": 4, "text": "Good value and tasty food."},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["themes"]["service"] in ["positive", "neutral", "caution"]
+    assert payload["themes"]["food_quality"] in ["positive", "neutral", "caution"]
+    assert payload["themes"]["value"] in ["positive", "neutral", "caution"]
+    assert payload["themes"]["ambience"] in ["positive", "neutral", "caution"]

@@ -21,3 +21,15 @@ class OpenAIChatProvider(BaseChatProvider):
             "configured": api_key_present,
             "model": self.settings.openai_model,
         }
+
+    def generate_json(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+        _ = prompt
+        _ = schema
+
+        # Step 26 foundation:
+        # provider-backed structured generation hook exists,
+        # but falls back to deterministic heuristics when no live implementation is configured.
+        if not self.get_status()["configured"]:
+            return None
+
+        return None
