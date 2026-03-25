@@ -61,11 +61,241 @@ class TripadvisorClient:
             ),
         ]
 
+    def _build_destination_stub_catalog(self) -> dict[str, list[DestinationSearchResult]]:
+        return {
+            "kyoto": [
+                DestinationSearchResult(
+                    location_id="ta_kyoto_001",
+                    name="Kyoto",
+                    city="Kyoto",
+                    country="Japan",
+                    category="city",
+                    rating=4.7,
+                    review_count=12450,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_kyoto_gion_001",
+                    name="Gion",
+                    city="Kyoto",
+                    country="Japan",
+                    category="neighborhood",
+                    rating=4.8,
+                    review_count=8750,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_kyoto_higashiyama_001",
+                    name="Higashiyama",
+                    city="Kyoto",
+                    country="Japan",
+                    category="district",
+                    rating=4.8,
+                    review_count=8120,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_kyoto_arashiyama_001",
+                    name="Arashiyama",
+                    city="Kyoto",
+                    country="Japan",
+                    category="district",
+                    rating=4.7,
+                    review_count=7680,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_kyoto_nishiki_001",
+                    name="Nishiki Market",
+                    city="Kyoto",
+                    country="Japan",
+                    category="market",
+                    rating=4.6,
+                    review_count=6250,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_kyoto_pontocho_001",
+                    name="Pontocho",
+                    city="Kyoto",
+                    country="Japan",
+                    category="neighborhood",
+                    rating=4.6,
+                    review_count=5140,
+                ),
+            ],
+            "tokyo": [
+                DestinationSearchResult(
+                    location_id="ta_tokyo_001",
+                    name="Tokyo",
+                    city="Tokyo",
+                    country="Japan",
+                    category="city",
+                    rating=4.8,
+                    review_count=18420,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_tokyo_asakusa_001",
+                    name="Asakusa",
+                    city="Tokyo",
+                    country="Japan",
+                    category="district",
+                    rating=4.7,
+                    review_count=10240,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_tokyo_shibuya_001",
+                    name="Shibuya",
+                    city="Tokyo",
+                    country="Japan",
+                    category="district",
+                    rating=4.7,
+                    review_count=11120,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_tokyo_ueno_park_001",
+                    name="Ueno Park",
+                    city="Tokyo",
+                    country="Japan",
+                    category="park",
+                    rating=4.6,
+                    review_count=7420,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_tokyo_tsukiji_001",
+                    name="Tsukiji Outer Market",
+                    city="Tokyo",
+                    country="Japan",
+                    category="market",
+                    rating=4.6,
+                    review_count=6890,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_tokyo_kagurazaka_001",
+                    name="Kagurazaka",
+                    city="Tokyo",
+                    country="Japan",
+                    category="neighborhood",
+                    rating=4.6,
+                    review_count=4320,
+                ),
+            ],
+            "lisbon": [
+                DestinationSearchResult(
+                    location_id="ta_lisbon_001",
+                    name="Lisbon",
+                    city="Lisbon",
+                    country="Portugal",
+                    category="city",
+                    rating=4.6,
+                    review_count=10120,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_lisbon_alfama_001",
+                    name="Alfama",
+                    city="Lisbon",
+                    country="Portugal",
+                    category="neighborhood",
+                    rating=4.7,
+                    review_count=6140,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_lisbon_chiado_001",
+                    name="Chiado",
+                    city="Lisbon",
+                    country="Portugal",
+                    category="neighborhood",
+                    rating=4.6,
+                    review_count=5780,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_lisbon_bairro_alto_001",
+                    name="Bairro Alto",
+                    city="Lisbon",
+                    country="Portugal",
+                    category="district",
+                    rating=4.6,
+                    review_count=5510,
+                ),
+            ],
+            "prague": [
+                DestinationSearchResult(
+                    location_id="ta_prague_001",
+                    name="Prague",
+                    city="Prague",
+                    country="Czechia",
+                    category="city",
+                    rating=4.7,
+                    review_count=11890,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_prague_old_town_001",
+                    name="Old Town",
+                    city="Prague",
+                    country="Czechia",
+                    category="district",
+                    rating=4.8,
+                    review_count=6680,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_prague_mala_strana_001",
+                    name="Mala Strana",
+                    city="Prague",
+                    country="Czechia",
+                    category="district",
+                    rating=4.7,
+                    review_count=5320,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_prague_vinohrady_001",
+                    name="Vinohrady",
+                    city="Prague",
+                    country="Czechia",
+                    category="neighborhood",
+                    rating=4.6,
+                    review_count=4010,
+                ),
+            ],
+            "budapest": [
+                DestinationSearchResult(
+                    location_id="ta_budapest_001",
+                    name="Budapest",
+                    city="Budapest",
+                    country="Hungary",
+                    category="city",
+                    rating=4.7,
+                    review_count=10980,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_budapest_castle_001",
+                    name="Castle District",
+                    city="Budapest",
+                    country="Hungary",
+                    category="district",
+                    rating=4.7,
+                    review_count=4980,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_budapest_jewish_quarter_001",
+                    name="Jewish Quarter",
+                    city="Budapest",
+                    country="Hungary",
+                    category="district",
+                    rating=4.6,
+                    review_count=5210,
+                ),
+                DestinationSearchResult(
+                    location_id="ta_budapest_danube_001",
+                    name="Danube Promenade",
+                    city="Budapest",
+                    country="Hungary",
+                    category="riverfront",
+                    rating=4.6,
+                    review_count=4670,
+                ),
+            ],
+        }
+
     def _stub_reviews(self, destination: str) -> dict[str, object]:
         destination_lower = destination.lower()
 
-        if destination_lower == "kyoto":
-            return {
+        review_map: dict[str, dict[str, object]] = {
+            "kyoto": {
                 "location_id": "ta_kyoto_001",
                 "location_name": "Kyoto",
                 "reviews": [
@@ -83,10 +313,103 @@ class TripadvisorClient:
                     },
                 ],
                 "source": "stub",
-            }
-
-        if destination_lower == "tokyo":
-            return {
+            },
+            "gion": {
+                "location_id": "ta_kyoto_gion_001",
+                "location_name": "Gion",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Atmospheric evening lanes, strong cultural character, and memorable heritage walks.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Great for couples and culture-focused travellers, especially at a calmer pace.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Beautiful ambience and a strong sense of place once the busiest stretches thin out.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "higashiyama": {
+                "location_id": "ta_kyoto_higashiyama_001",
+                "location_name": "Higashiyama",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Excellent for temples, heritage streets, and slower cultural exploration in Kyoto.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Walkable, scenic, and especially strong in the morning and afternoon.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "A great fit when history and atmosphere matter more than nightlife.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "arashiyama": {
+                "location_id": "ta_kyoto_arashiyama_001",
+                "location_name": "Arashiyama",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Scenic, spacious, and much calmer than central Kyoto with memorable river and bamboo views.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Very good for relaxed pacing, nature, and slower half-day exploration.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Worth the time if you want breathing room and a softer rhythm.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "nishiki market": {
+                "location_id": "ta_kyoto_nishiki_001",
+                "location_name": "Nishiki Market",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Excellent food variety, memorable local bites, and a fun lunch-focused stop.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Strong fit for food lovers, though it can feel busy at peak hours.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Great value for sampling Kyoto cuisine in one compact area.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "pontocho": {
+                "location_id": "ta_kyoto_pontocho_001",
+                "location_name": "Pontocho",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Excellent evening ambience, strong dining options, and memorable narrow lanes.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "A strong evening choice for atmosphere, food, and a more romantic city feel.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Can be lively at night but still feels character-rich and worthwhile.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "tokyo": {
                 "location_id": "ta_tokyo_001",
                 "location_name": "Tokyo",
                 "reviews": [
@@ -104,10 +427,103 @@ class TripadvisorClient:
                     },
                 ],
                 "source": "stub",
-            }
-
-        if destination_lower == "lisbon":
-            return {
+            },
+            "asakusa": {
+                "location_id": "ta_tokyo_asakusa_001",
+                "location_name": "Asakusa",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Strong heritage atmosphere, temple access, and a good cultural anchor for first-time Tokyo visits.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Walkable and especially good in the morning before crowds build.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "A nice balance of culture, food streets, and traditional feel.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "shibuya": {
+                "location_id": "ta_tokyo_shibuya_001",
+                "location_name": "Shibuya",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "High energy, strong nightlife, and lots of dining and people-watching options.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Best if you want evening atmosphere and broad city energy.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Very lively, though it can feel hectic if you want a slower pace.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "ueno park": {
+                "location_id": "ta_tokyo_ueno_park_001",
+                "location_name": "Ueno Park",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Good breathing room inside Tokyo, with calmer walking, greenery, and nearby museums.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Strong fit for relaxed afternoons and balanced city pacing.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Worth pairing with nearby cultural stops when you want less hectic coverage.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "tsukiji outer market": {
+                "location_id": "ta_tokyo_tsukiji_001",
+                "location_name": "Tsukiji Outer Market",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Excellent food quality, memorable bites, and especially strong for lunch or early-day food exploration.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Very rewarding for food-focused travellers, though it can get crowded.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "A good way to anchor a food-heavy Tokyo day.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "kagurazaka": {
+                "location_id": "ta_tokyo_kagurazaka_001",
+                "location_name": "Kagurazaka",
+                "reviews": [
+                    {
+                        "rating": 5,
+                        "text": "Calmer neighborhood rhythm with strong dining and a more local-feeling atmosphere.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "A good fit when you want food and ambience without the most hectic city energy.",
+                    },
+                    {
+                        "rating": 4,
+                        "text": "Walkable and enjoyable for slower evening exploration.",
+                    },
+                ],
+                "source": "stub",
+            },
+            "lisbon": {
                 "location_id": "ta_lisbon_001",
                 "location_name": "Lisbon",
                 "reviews": [
@@ -125,10 +541,8 @@ class TripadvisorClient:
                     },
                 ],
                 "source": "stub",
-            }
-
-        if destination_lower == "prague":
-            return {
+            },
+            "prague": {
                 "location_id": "ta_prague_001",
                 "location_name": "Prague",
                 "reviews": [
@@ -146,10 +560,8 @@ class TripadvisorClient:
                     },
                 ],
                 "source": "stub",
-            }
-
-        if destination_lower == "budapest":
-            return {
+            },
+            "budapest": {
                 "location_id": "ta_budapest_001",
                 "location_name": "Budapest",
                 "reviews": [
@@ -167,10 +579,14 @@ class TripadvisorClient:
                     },
                 ],
                 "source": "stub",
-            }
+            },
+        }
+
+        if destination_lower in review_map:
+            return review_map[destination_lower]
 
         return {
-            "location_id": f"ta_{destination_lower}_001",
+            "location_id": f"ta_{destination_lower.replace(' ', '_')}_001",
             "location_name": destination,
             "reviews": [
                 {
@@ -201,6 +617,24 @@ class TripadvisorClient:
             if lowered_query in result.name.lower() or lowered_query in result.city.lower()
         ]
         return filtered or stub_results[:2]
+
+    def _get_destination_specific_stub_results(
+        self,
+        query: str,
+    ) -> list[DestinationSearchResult]:
+        catalog = self._build_destination_stub_catalog()
+        lowered_query = query.lower().strip()
+
+        if lowered_query in catalog:
+            return catalog[lowered_query]
+
+        for destination_key, items in catalog.items():
+            if lowered_query in destination_key:
+                return items
+            if any(lowered_query in item.name.lower() for item in items):
+                return items
+
+        return self._filter_stub_results(query, self._build_stub_results())
 
     def _is_destination_like_result(
         self,
@@ -369,6 +803,23 @@ class TripadvisorClient:
 
         return reviews
 
+    def _merge_live_with_destination_stub_results(
+        self,
+        query: str,
+        live_results: list[DestinationSearchResult],
+    ) -> list[DestinationSearchResult]:
+        stub_results = self._get_destination_specific_stub_results(query)
+        merged: list[DestinationSearchResult] = []
+        seen_ids: set[str] = set()
+
+        for result in live_results + stub_results:
+            if result.location_id in seen_ids:
+                continue
+            seen_ids.add(result.location_id)
+            merged.append(result)
+
+        return merged
+
     def search_locations(
         self,
         query: str,
@@ -378,19 +829,19 @@ class TripadvisorClient:
         _ = traveller_type
         _ = interests or []
 
-        stub_results = self._build_stub_results()
-
         if not self.settings.tripadvisor_api_key_configured:
-            return self._filter_stub_results(query, stub_results)
+            return self._get_destination_specific_stub_results(query)
 
         try:
             live_results = self._live_search_locations(query)
             if live_results:
+                if len(live_results) < 4:
+                    return self._merge_live_with_destination_stub_results(query, live_results)
                 return live_results
         except Exception:
             pass
 
-        return self._filter_stub_results(query, stub_results)
+        return self._get_destination_specific_stub_results(query)
 
     def get_destination_reviews(
         self,

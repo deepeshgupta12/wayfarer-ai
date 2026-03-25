@@ -253,6 +253,12 @@ function buildTripPlanUpdatePayload(rawInput) {
   return updatePayload;
 }
 
+function getSlotFromPlanningSession(planningSession, dayNumber, slotType) {
+  const day = (planningSession?.itinerary_skeleton || []).find((item) => item.day_number === dayNumber);
+  if (!day) return null;
+  return (day.slots || []).find((slot) => slot.slot_type === slotType) || null;
+}
+
 function buildAssistantMessageFromGuide(result) {
   return {
     role: 'assistant',
@@ -353,11 +359,31 @@ function buildAssistantMessageFromEnrichedTripPlan(result, followupText = null) 
   };
 }
 
-function buildAssistantMessageFromSlotReplacement(result, followupText) {
+function buildAssistantMessageFromSlotReplacement(result, followupText, previousPlanningSession, replacementPayload) {
+  const previousSlot = getSlotFromPlanningSession(
+    previousPlanningSession,
+    replacementPayload.day_number,
+    replacementPayload.slot_type
+  );
+  const newSlot = getSlotFromPlanningSession(
+    result,
+    replacementPayload.day_number,
+    replacementPayload.slot_type
+  );
+
+  const wasChanged =
+    previousSlot?.assigned_location_id &&
+    newSlot?.assigned_location_id &&
+    previousSlot.assigned_location_id !== newSlot.assigned_location_id;
+
+  const content = wasChanged
+    ? `I replaced that slot based on "${followupText}" and kept the same planning session active.`
+    : `I checked that slot after "${followupText}", but the current option still looks like the strongest fit, so I kept it unchanged.`;
+
   return {
     role: 'assistant',
     type: 'trip_plan_enriched',
-    content: `I replaced part of your itinerary based on "${followupText}" and kept the same planning session active.`,
+    content,
     planningSession: result,
     chips: [
       'Replace Day 2 with something less hectic',
@@ -436,7 +462,12 @@ export default function Assistant() {
             },
           });
 
-          const replacementMsg = buildAssistantMessageFromSlotReplacement(replacedPlan, msg);
+          const replacementMsg = buildAssistantMessageFromSlotReplacement(
+            replacedPlan,
+            msg,
+            currentPlanningSession,
+            replacementPayload
+          );
           setMessages((prev) => [...prev, replacementMsg]);
           return;
         }
