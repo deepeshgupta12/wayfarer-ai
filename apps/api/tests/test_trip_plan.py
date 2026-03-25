@@ -99,7 +99,7 @@ def test_get_trip_plan_returns_saved_session() -> None:
     assert payload["parsed_constraints"]["destination"] == "Budapest"
 
 
-def test_enrich_trip_plan_returns_candidates_and_itinerary_skeleton() -> None:
+def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
     client = get_test_client()
 
     client.post(
@@ -135,7 +135,15 @@ def test_enrich_trip_plan_returns_candidates_and_itinerary_skeleton() -> None:
     assert payload["saved"] is True
     assert len(payload["candidate_places"]) >= 1
     assert len(payload["itinerary_skeleton"]) == 4
-    assert payload["candidate_places"][0]["score"] > 0
+
+    first_day = payload["itinerary_skeleton"][0]
+    assert "day_rationale" in first_day
+    assert "slots" in first_day
+    assert len(first_day["slots"]) == 4
+    assert first_day["slots"][0]["slot_type"] == "morning"
+    assert first_day["slots"][1]["slot_type"] == "lunch"
+    assert first_day["slots"][2]["slot_type"] == "afternoon"
+    assert first_day["slots"][3]["slot_type"] == "evening"
 
 
 def test_enrich_trip_plan_rejects_incomplete_sessions() -> None:
@@ -196,7 +204,7 @@ def test_update_trip_plan_keeps_same_session_and_clears_old_enrichment() -> None
     assert payload["itinerary_skeleton"] == []
 
 
-def test_update_then_regenerate_enriched_trip_plan() -> None:
+def test_update_then_regenerate_enriched_trip_plan_with_slots() -> None:
     client = get_test_client()
 
     create_response = client.post(
@@ -231,3 +239,30 @@ def test_update_then_regenerate_enriched_trip_plan() -> None:
     assert payload["parsed_constraints"]["interests"] == ["food", "culture"]
     assert len(payload["candidate_places"]) >= 1
     assert len(payload["itinerary_skeleton"]) == 4
+    assert len(payload["itinerary_skeleton"][0]["slots"]) == 4
+
+
+def test_enriched_day_contains_fallback_candidates() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_008",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+    first_day = payload["itinerary_skeleton"][0]
+
+    assert "fallback_candidate_ids" in first_day
+    assert "fallback_candidate_names" in first_day
+    assert "slots" in first_day
+    assert "fallback_candidate_ids" in first_day["slots"][0]
+    assert "fallback_candidate_names" in first_day["slots"][0]

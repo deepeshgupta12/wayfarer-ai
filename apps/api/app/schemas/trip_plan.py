@@ -8,6 +8,7 @@ TripBudget = Literal["budget", "midrange", "luxury"]
 TripPace = Literal["relaxed", "balanced", "fast"]
 TripGroup = Literal["solo", "couple", "family", "friends"]
 TripInterest = Literal["food", "culture", "adventure", "nature", "luxury", "nightlife", "wellness"]
+TripSlotType = Literal["morning", "lunch", "afternoon", "evening"]
 
 
 class TripBriefParseRequest(BaseModel):
@@ -48,12 +49,27 @@ class TripCandidatePlace(BaseModel):
     why_selected: str
 
 
-class TripDaySkeleton(BaseModel):
+class TripSlotAssignment(BaseModel):
+    slot_type: TripSlotType
+    label: str
+    summary: str
+    assigned_place_name: str | None = None
+    assigned_location_id: str | None = None
+    rationale: str
+    fallback_candidate_ids: list[str] = Field(default_factory=list)
+    fallback_candidate_names: list[str] = Field(default_factory=list)
+
+
+class TripDayPlan(BaseModel):
     day_number: int
     title: str
     summary: str
     place_names: list[str] = Field(default_factory=list)
     candidate_location_ids: list[str] = Field(default_factory=list)
+    slots: list[TripSlotAssignment] = Field(default_factory=list)
+    day_rationale: str
+    fallback_candidate_ids: list[str] = Field(default_factory=list)
+    fallback_candidate_names: list[str] = Field(default_factory=list)
 
 
 class TripPlanResponse(BaseModel):
@@ -65,7 +81,7 @@ class TripPlanResponse(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     status: str
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
-    itinerary_skeleton: list[TripDaySkeleton] = Field(default_factory=list)
+    itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     saved: bool
     created_at: datetime
 
@@ -79,7 +95,7 @@ class TripPlanSummaryResponse(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     status: str
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
-    itinerary_skeleton: list[TripDaySkeleton] = Field(default_factory=list)
+    itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -93,6 +109,6 @@ class TripPlanEnrichResponse(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     status: str
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
-    itinerary_skeleton: list[TripDaySkeleton] = Field(default_factory=list)
+    itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     saved: bool
     updated_at: datetime

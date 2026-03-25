@@ -10,11 +10,12 @@ from app.schemas.trip_plan import (
     ParsedTripConstraints,
     TripBriefParseRequest,
     TripCandidatePlace,
-    TripDaySkeleton,
+    TripDayPlan,
     TripPlanEnrichResponse,
     TripPlanResponse,
     TripPlanSummaryResponse,
     TripPlanUpdateRequest,
+    TripSlotAssignment,
 )
 from app.services.review_intelligence_service import analyze_review_bundle
 
@@ -45,6 +46,13 @@ INTEREST_KEYWORDS: dict[str, list[str]] = {
     "nightlife": ["nightlife", "bar", "club", "music", "late night"],
     "wellness": ["wellness", "spa", "retreat", "relax", "onsen"],
 }
+
+SLOT_SEQUENCE = [
+    ("morning", "Morning"),
+    ("lunch", "Lunch"),
+    ("afternoon", "Afternoon"),
+    ("evening", "Evening"),
+]
 
 tripadvisor_client = TripadvisorClient()
 
@@ -206,7 +214,7 @@ def _build_parsed_constraints_from_record(record: TripPlanRecord) -> ParsedTripC
 def _build_summary_response(record: TripPlanRecord) -> TripPlanSummaryResponse:
     parsed_constraints = _build_parsed_constraints_from_record(record)
     candidate_places = [TripCandidatePlace(**item) for item in list(record.candidate_places or [])]
-    itinerary_skeleton = [TripDaySkeleton(**item) for item in list(record.itinerary_skeleton or [])]
+    itinerary_skeleton = [TripDayPlan(**item) for item in list(record.itinerary_skeleton or [])]
 
     return TripPlanSummaryResponse(
         planning_session_id=record.planning_session_id,
@@ -241,7 +249,10 @@ def _score_candidate_place(
     positive_theme_bonus = sum(1.5 for value in review_themes.values() if value == "positive")
     caution_penalty = sum(1.0 for value in review_themes.values() if value == "caution")
 
-    return round(min(99.0, base_score + volume_bonus + authenticity_bonus + positive_theme_bonus - caution_penalty), 1)
+    return round(
+        min(99.0, base_score + volume_bonus + authenticity_bonus + positive_theme_bonus - caution_penalty),
+        1,
+    )
 
 
 def _build_why_selected(
@@ -369,37 +380,163 @@ def _day_summary(
     )
 
 
+def _select_day_candidates(
+    day_number: int,
+    duration_days: int,
+    candidate_places: list[TripCandidatePlace],
+) -> list[TripCandidatePlace]:
+    assigned = [
+        candidate
+        for index, candidate in enumerate(candidate_places)
+        if index % duration_days == (day_number - 1) % duration_days
+    ]
+
+    if not assigned and candidate_places:
+        assigned = [candidate_places[min(day_number - 1, len(candidate_places) - 1)]]
+
+    return assigned
+
+
+def _build_day_fallbacks(
+    assigned_candidates: list[TripCandidatePlace],
+    all_candidates: list[TripCandidatePlace],
+) -> tuple[list[str], list[str]]:
+    assigned_ids = {candidate.location_id for candidate in assigned_candidates}
+    fallback_candidates = [candidate for candidate in all_candidates if candidate.location_id not in assigned_ids][:3]
+
+    return (
+        [candidate.location_id for candidate in fallback_candidates],
+        [candidate.name for candidate in fallback_candidates],
+    )
+
+
+def _slot_summary(
+    slot_type: str,
+    destination: str,
+    interests: list[str],
+    pace: str | None,
+    place_name: str | None,
+) -> str:
+    interests_text = ", ".join(interests[:2]) if interests else "local discovery"
+    anchor = place_name or destination
+
+    if slot_type == "morning":
+        return f"Start with {anchor} and ease into the day around {interests_text}."
+    if slot_type == "lunch":
+        return f"Keep lunch anchored around {anchor}, with a strong lean toward {interests_text}."
+    if slot_type == "afternoon":
+        if pace == "fast":
+            return f"Use the afternoon for broader coverage around {anchor} while keeping momentum high."
+        if pace == "relaxed":
+            return f"Keep the afternoon slower and more focused around {anchor}."
+        return f"Use the afternoon for balanced exploration centered on {anchor}."
+    return f"Close the day with {anchor} and leave room for flexible evening choices."
+
+
+def _slot_rationale(
+    slot_type: str,
+    candidate: TripCandidatePlace | None,
+    day_title: str,
+) -> str:
+    if candidate is None:
+        return f"This {slot_type} slot is intentionally flexible within {day_title.lower()}."
+
+    return (
+        f"{candidate.name} was assigned to the {slot_type} slot because it fits the tone of "
+        f"{day_title.lower()} and remains one of the stronger available candidates."
+    )
+
+
+def _build_day_slots(
+    day_number: int,
+    day_title: str,
+    destination: str,
+    interests: list[str],
+    pace: str | None,
+    assigned_candidates: list[TripCandidatePlace],
+    all_candidates: list[TripCandidatePlace],
+) -> list[TripSlotAssignment]:
+    slots: list[TripSlotAssignment] = []
+
+    fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, all_candidates)
+    total_assigned = len(assigned_candidates)
+
+    for slot_index, (slot_type, label) in enumerate(SLOT_SEQUENCE):
+        candidate = assigned_candidates[slot_index % total_assigned] if total_assigned > 0 else None
+
+        slots.append(
+            TripSlotAssignment(
+                slot_type=slot_type,
+                label=label,
+                summary=_slot_summary(
+                    slot_type=slot_type,
+                    destination=destination,
+                    interests=interests,
+                    pace=pace,
+                    place_name=candidate.name if candidate else None,
+                ),
+                assigned_place_name=candidate.name if candidate else None,
+                assigned_location_id=candidate.location_id if candidate else None,
+                rationale=_slot_rationale(
+                    slot_type=slot_type,
+                    candidate=candidate,
+                    day_title=day_title,
+                ),
+                fallback_candidate_ids=fallback_candidate_ids,
+                fallback_candidate_names=fallback_candidate_names,
+            )
+        )
+
+    return slots
+
+
+def _build_day_rationale(
+    day_title: str,
+    pace: str | None,
+    interests: list[str],
+    assigned_candidates: list[TripCandidatePlace],
+) -> str:
+    pace_text = pace or "balanced"
+    interests_text = ", ".join(interests[:2]) if interests else "general discovery"
+    place_names = ", ".join(candidate.name for candidate in assigned_candidates[:2]) if assigned_candidates else "flexible candidates"
+
+    return (
+        f"{day_title} was structured with a {pace_text} pacing lens, leaning into {interests_text}, "
+        f"with {place_names} shaping the slot-level flow."
+    )
+
+
 def _build_itinerary_skeleton(
     parsed_constraints: ParsedTripConstraints,
     candidate_places: list[TripCandidatePlace],
-) -> list[TripDaySkeleton]:
+) -> list[TripDayPlan]:
     duration_days = parsed_constraints.duration_days or 0
     destination = parsed_constraints.destination or "the destination"
     interests = list(parsed_constraints.interests or [])
     pace = parsed_constraints.pace_preference
 
-    skeleton: list[TripDaySkeleton] = []
+    skeleton: list[TripDayPlan] = []
 
     if duration_days <= 0:
         return skeleton
 
     for day_number in range(1, duration_days + 1):
-        assigned = [
-            candidate
-            for index, candidate in enumerate(candidate_places)
-            if index % duration_days == (day_number - 1) % duration_days
-        ]
+        assigned_candidates = _select_day_candidates(
+            day_number=day_number,
+            duration_days=duration_days,
+            candidate_places=candidate_places,
+        )
 
-        if not assigned and candidate_places:
-            assigned = [candidate_places[min(day_number - 1, len(candidate_places) - 1)]]
+        place_names = [candidate.name for candidate in assigned_candidates]
+        candidate_ids = [candidate.location_id for candidate in assigned_candidates]
+        fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, candidate_places)
 
-        place_names = [candidate.name for candidate in assigned]
-        candidate_ids = [candidate.location_id for candidate in assigned]
+        day_title = _day_title(day_number, duration_days, pace)
 
         skeleton.append(
-            TripDaySkeleton(
+            TripDayPlan(
                 day_number=day_number,
-                title=_day_title(day_number, duration_days, pace),
+                title=day_title,
                 summary=_day_summary(
                     day_number=day_number,
                     total_days=duration_days,
@@ -410,6 +547,23 @@ def _build_itinerary_skeleton(
                 ),
                 place_names=place_names,
                 candidate_location_ids=candidate_ids,
+                slots=_build_day_slots(
+                    day_number=day_number,
+                    day_title=day_title,
+                    destination=destination,
+                    interests=interests,
+                    pace=pace,
+                    assigned_candidates=assigned_candidates,
+                    all_candidates=candidate_places,
+                ),
+                day_rationale=_build_day_rationale(
+                    day_title=day_title,
+                    pace=pace,
+                    interests=interests,
+                    assigned_candidates=assigned_candidates,
+                ),
+                fallback_candidate_ids=fallback_candidate_ids,
+                fallback_candidate_names=fallback_candidate_names,
             )
         )
 
@@ -501,7 +655,6 @@ def update_trip_plan(
     parsed_constraints = _build_parsed_constraints_from_record(record)
     record.missing_fields = _build_missing_fields(parsed_constraints)
 
-    # refinement invalidates prior enrichment
     record.candidate_places = []
     record.itinerary_skeleton = []
     record.status = "draft"
