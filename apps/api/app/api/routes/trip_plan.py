@@ -6,11 +6,13 @@ from app.schemas.trip_plan import (
     TripPlanEnrichResponse,
     TripPlanResponse,
     TripPlanSummaryResponse,
+    TripPlanUpdateRequest,
 )
 from app.services.trip_plan_service import (
     enrich_trip_plan,
     get_trip_plan_summary,
     parse_and_save_trip_brief,
+    update_trip_plan,
 )
 
 router = APIRouter(prefix="/trip-plans", tags=["trip-plans"])
@@ -23,6 +25,21 @@ def parse_trip_brief_and_create_plan(
     db = get_db_session()
     try:
         return parse_and_save_trip_brief(db, payload)
+    finally:
+        db.close()
+
+
+@router.patch("/{planning_session_id}", response_model=TripPlanSummaryResponse)
+def update_saved_trip_plan(
+    planning_session_id: str,
+    payload: TripPlanUpdateRequest,
+) -> TripPlanSummaryResponse:
+    db = get_db_session()
+    try:
+        try:
+            return update_trip_plan(db, planning_session_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:
         db.close()
 
