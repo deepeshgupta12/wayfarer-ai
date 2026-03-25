@@ -93,6 +93,21 @@ export async function updateTripPlan(planningSessionId, payload) {
   return parseJsonResponse(response);
 }
 
+export async function replaceTripPlanSlot(planningSessionId, payload) {
+  const response = await fetch(
+    `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}/replace-slot`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  return parseJsonResponse(response);
+}
+
 export async function enrichTripPlan(planningSessionId) {
   const response = await fetch(
     `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}/enrich`,

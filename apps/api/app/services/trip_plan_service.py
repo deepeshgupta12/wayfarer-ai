@@ -16,6 +16,7 @@ from app.schemas.trip_plan import (
     TripPlanSummaryResponse,
     TripPlanUpdateRequest,
     TripSlotAssignment,
+    TripSlotReplacementRequest,
 )
 from app.services.review_intelligence_service import analyze_review_bundle
 
@@ -255,6 +256,19 @@ def _score_candidate_place(
     )
 
 
+def _infer_geo_cluster(place_name: str, city: str, country: str) -> str:
+    lowered = f"{place_name} {city} {country}".lower()
+
+    if any(term in lowered for term in ["gion", "higashiyama", "temple", "heritage", "museum"]):
+        return "heritage_core"
+    if any(term in lowered for term in ["alfama", "chiado", "bairro", "nightlife", "bar"]):
+        return "urban_core"
+    if any(term in lowered for term in ["park", "garden", "scenic", "river", "arashiyama", "nature"]):
+        return "scenic_zone"
+
+    return "central_core"
+
+
 def _build_why_selected(
     interests: list[str],
     review_themes: dict[str, str],
@@ -319,6 +333,11 @@ def _build_candidate_places(parsed_constraints: ParsedTripConstraints) -> list[T
                     interests=list(parsed_constraints.interests or []),
                     review_themes=review_analysis.themes,
                     authenticity_label=review_analysis.authenticity_label,
+                ),
+                geo_cluster=_infer_geo_cluster(
+                    place_name=result.name,
+                    city=result.city,
+                    country=result.country,
                 ),
             )
         )
@@ -437,9 +456,16 @@ def _slot_rationale(
     slot_type: str,
     candidate: TripCandidatePlace | None,
     day_title: str,
+    mode: str = "default",
 ) -> str:
     if candidate is None:
         return f"This {slot_type} slot is intentionally flexible within {day_title.lower()}."
+
+    if mode == "replaced":
+        return (
+            f"{candidate.name} now anchors the {slot_type} slot because it ranked better for this edit request "
+            f"while staying aligned with {day_title.lower()}."
+        )
 
     return (
         f"{candidate.name} was assigned to the {slot_type} slot because it fits the tone of "
@@ -456,6 +482,7 @@ def _build_day_slots(
     assigned_candidates: list[TripCandidatePlace],
     all_candidates: list[TripCandidatePlace],
 ) -> list[TripSlotAssignment]:
+    _ = day_number
     slots: list[TripSlotAssignment] = []
 
     fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, all_candidates)
@@ -506,6 +533,22 @@ def _build_day_rationale(
     )
 
 
+def _choose_day_cluster(assigned_candidates: list[TripCandidatePlace]) -> str | None:
+    if not assigned_candidates:
+        return None
+
+    cluster_counts: dict[str, int] = {}
+    for candidate in assigned_candidates:
+        if not candidate.geo_cluster:
+            continue
+        cluster_counts[candidate.geo_cluster] = cluster_counts.get(candidate.geo_cluster, 0) + 1
+
+    if not cluster_counts:
+        return assigned_candidates[0].geo_cluster
+
+    return max(cluster_counts.items(), key=lambda item: item[1])[0]
+
+
 def _build_itinerary_skeleton(
     parsed_constraints: ParsedTripConstraints,
     candidate_places: list[TripCandidatePlace],
@@ -532,6 +575,7 @@ def _build_itinerary_skeleton(
         fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, candidate_places)
 
         day_title = _day_title(day_number, duration_days, pace)
+        geo_cluster = _choose_day_cluster(assigned_candidates)
 
         skeleton.append(
             TripDayPlan(
@@ -564,10 +608,199 @@ def _build_itinerary_skeleton(
                 ),
                 fallback_candidate_ids=fallback_candidate_ids,
                 fallback_candidate_names=fallback_candidate_names,
+                geo_cluster=geo_cluster,
             )
         )
 
     return skeleton
+
+
+def _get_record_or_raise(db: Session, planning_session_id: str) -> TripPlanRecord:
+    record = (
+        db.query(TripPlanRecord)
+        .filter(TripPlanRecord.planning_session_id == planning_session_id)
+        .first()
+    )
+
+    if record is None:
+        raise ValueError(f"Trip plan not found for planning_session_id={planning_session_id}")
+
+    return record
+
+
+def _get_day_or_raise(itinerary_skeleton: list[TripDayPlan], day_number: int) -> TripDayPlan:
+    for day in itinerary_skeleton:
+        if day.day_number == day_number:
+            return day
+    raise RuntimeError(f"Day {day_number} not found in itinerary.")
+
+
+def _get_slot_or_raise(day: TripDayPlan, slot_type: str) -> TripSlotAssignment:
+    for slot in day.slots:
+        if slot.slot_type == slot_type:
+            return slot
+    raise RuntimeError(f"Slot {slot_type} not found in day {day.day_number}.")
+
+
+def _slot_position(slot_type: str) -> int:
+    for index, (name, _) in enumerate(SLOT_SEQUENCE):
+        if name == slot_type:
+            return index
+    return 0
+
+
+def _replacement_interest_boost(candidate: TripCandidatePlace, mode: str, interests: list[str]) -> float:
+    text = f"{candidate.name} {candidate.review_summary or ''} {candidate.why_selected}".lower()
+    score = 0.0
+
+    if mode == "more_food" and ("food" in text or "dining" in text or "cuisine" in text):
+        score += 6.0
+    if mode == "more_culture" and ("culture" in text or "heritage" in text or "history" in text or "museum" in text):
+        score += 6.0
+    if mode == "less_hectic":
+        if "calm" in text or "relaxed" in text or "walkable" in text:
+            score += 5.0
+        if "nightlife" in text or "late" in text or "energy" in text:
+            score -= 2.0
+
+    for interest in interests[:2]:
+        if interest in text:
+            score += 1.5
+
+    return score
+
+
+def _slot_fit_bonus(slot_type: str, candidate: TripCandidatePlace, pace: str | None) -> float:
+    text = f"{candidate.name} {candidate.review_summary or ''} {candidate.why_selected}".lower()
+    bonus = 0.0
+
+    if slot_type == "morning":
+        if "calm" in text or "walkable" in text or "culture" in text:
+            bonus += 2.0
+    elif slot_type == "lunch":
+        if "food" in text or "dining" in text or "cuisine" in text:
+            bonus += 3.0
+    elif slot_type == "afternoon":
+        if "culture" in text or "scenic" in text or "exploration" in text:
+            bonus += 2.0
+    elif slot_type == "evening":
+        if "ambience" in text or "nightlife" in text or "atmosphere" in text:
+            bonus += 2.0
+
+    if pace == "relaxed" and ("calm" in text or "walkable" in text or "relaxed" in text):
+        bonus += 1.5
+    if pace == "fast" and ("energy" in text or "broad" in text or "nightlife" in text):
+        bonus += 1.0
+
+    return bonus
+
+
+def _day_overlap_penalty(candidate: TripCandidatePlace, day: TripDayPlan, slot_type: str) -> float:
+    penalty = 0.0
+    assigned_ids = {
+        slot.assigned_location_id
+        for slot in day.slots
+        if slot.assigned_location_id and slot.slot_type != slot_type
+    }
+    if candidate.location_id in assigned_ids:
+        penalty += 5.0
+    return penalty
+
+
+def _cluster_bonus(candidate: TripCandidatePlace, day: TripDayPlan) -> float:
+    if not day.geo_cluster or not candidate.geo_cluster:
+        return 0.0
+    return 2.5 if candidate.geo_cluster == day.geo_cluster else 0.0
+
+
+def _rank_replacement_candidates(
+    candidate_places: list[TripCandidatePlace],
+    day: TripDayPlan,
+    slot_type: str,
+    parsed_constraints: ParsedTripConstraints,
+    mode: str,
+    current_assigned_location_id: str | None,
+    preferred_location_id: str | None,
+) -> list[TripCandidatePlace]:
+    scored: list[tuple[float, TripCandidatePlace]] = []
+
+    for candidate in candidate_places:
+        replacement_score = candidate.score
+        replacement_score += _slot_fit_bonus(slot_type, candidate, parsed_constraints.pace_preference)
+        replacement_score += _replacement_interest_boost(
+            candidate,
+            mode,
+            list(parsed_constraints.interests or []),
+        )
+        replacement_score += _cluster_bonus(candidate, day)
+        replacement_score -= _day_overlap_penalty(candidate, day, slot_type)
+
+        if current_assigned_location_id and candidate.location_id == current_assigned_location_id:
+            replacement_score -= 10.0
+
+        if preferred_location_id and candidate.location_id == preferred_location_id:
+            replacement_score += 15.0
+
+        scored.append((replacement_score, candidate))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [candidate for _, candidate in scored]
+
+
+def _refresh_slot_and_day_metadata(
+    day: TripDayPlan,
+    parsed_constraints: ParsedTripConstraints,
+    candidate_places: list[TripCandidatePlace],
+) -> TripDayPlan:
+    ordered_day_candidates: list[TripCandidatePlace] = []
+    seen_ids: set[str] = set()
+
+    candidate_lookup = {candidate.location_id: candidate for candidate in candidate_places}
+
+    for slot in day.slots:
+        if slot.assigned_location_id and slot.assigned_location_id in candidate_lookup:
+            if slot.assigned_location_id not in seen_ids:
+                ordered_day_candidates.append(candidate_lookup[slot.assigned_location_id])
+                seen_ids.add(slot.assigned_location_id)
+
+    day.place_names = [candidate.name for candidate in ordered_day_candidates]
+    day.candidate_location_ids = [candidate.location_id for candidate in ordered_day_candidates]
+    day.fallback_candidate_ids, day.fallback_candidate_names = _build_day_fallbacks(ordered_day_candidates, candidate_places)
+    day.geo_cluster = _choose_day_cluster(ordered_day_candidates)
+
+    for slot in day.slots:
+        current_candidate = (
+            candidate_lookup.get(slot.assigned_location_id)
+            if slot.assigned_location_id
+            else None
+        )
+
+        slot.summary = _slot_summary(
+            slot_type=slot.slot_type,
+            destination=parsed_constraints.destination or "the destination",
+            interests=list(parsed_constraints.interests or []),
+            pace=parsed_constraints.pace_preference,
+            place_name=current_candidate.name if current_candidate else None,
+        )
+        slot.fallback_candidate_ids = list(day.fallback_candidate_ids)
+        slot.fallback_candidate_names = list(day.fallback_candidate_names)
+
+    day.day_rationale = _build_day_rationale(
+        day_title=day.title,
+        pace=parsed_constraints.pace_preference,
+        interests=list(parsed_constraints.interests or []),
+        assigned_candidates=ordered_day_candidates,
+    )
+    day.summary = _day_summary(
+        day_number=day.day_number,
+        total_days=parsed_constraints.duration_days or day.day_number,
+        destination=parsed_constraints.destination or "the destination",
+        interests=list(parsed_constraints.interests or []),
+        pace=parsed_constraints.pace_preference,
+        place_names=day.place_names,
+    )
+
+    return day
 
 
 def parse_and_save_trip_brief(
@@ -630,14 +863,7 @@ def update_trip_plan(
     planning_session_id: str,
     payload: TripPlanUpdateRequest,
 ) -> TripPlanSummaryResponse:
-    record = (
-        db.query(TripPlanRecord)
-        .filter(TripPlanRecord.planning_session_id == planning_session_id)
-        .first()
-    )
-
-    if record is None:
-        raise ValueError(f"Trip plan not found for planning_session_id={planning_session_id}")
+    record = _get_record_or_raise(db, planning_session_id)
 
     if payload.destination is not None:
         record.destination = payload.destination
@@ -666,19 +892,72 @@ def update_trip_plan(
     return _build_summary_response(record)
 
 
+def replace_trip_plan_slot(
+    db: Session,
+    planning_session_id: str,
+    payload: TripSlotReplacementRequest,
+) -> TripPlanSummaryResponse:
+    record = _get_record_or_raise(db, planning_session_id)
+
+    if record.status != "enriched":
+        raise RuntimeError("Trip plan must be enriched before replacing a slot.")
+
+    parsed_constraints = _build_parsed_constraints_from_record(record)
+    candidate_places = [TripCandidatePlace(**item) for item in list(record.candidate_places or [])]
+    itinerary_skeleton = [TripDayPlan(**item) for item in list(record.itinerary_skeleton or [])]
+
+    if not candidate_places or not itinerary_skeleton:
+        raise RuntimeError("Trip plan has no enriched itinerary to replace.")
+
+    day = _get_day_or_raise(itinerary_skeleton, payload.day_number)
+    slot = _get_slot_or_raise(day, payload.slot_type)
+
+    ranked_candidates = _rank_replacement_candidates(
+        candidate_places=candidate_places,
+        day=day,
+        slot_type=payload.slot_type,
+        parsed_constraints=parsed_constraints,
+        mode=payload.replacement_mode,
+        current_assigned_location_id=slot.assigned_location_id,
+        preferred_location_id=payload.preferred_location_id,
+    )
+
+    if not ranked_candidates:
+        raise RuntimeError("No replacement candidates available for this slot.")
+
+    chosen = ranked_candidates[0]
+
+    slot.assigned_place_name = chosen.name
+    slot.assigned_location_id = chosen.location_id
+    slot.rationale = _slot_rationale(
+        slot_type=payload.slot_type,
+        candidate=chosen,
+        day_title=day.title,
+        mode="replaced",
+    )
+
+    day = _refresh_slot_and_day_metadata(
+        day=day,
+        parsed_constraints=parsed_constraints,
+        candidate_places=candidate_places,
+    )
+
+    record.itinerary_skeleton = [item.model_dump() for item in itinerary_skeleton]
+    record.status = "enriched"
+    record.missing_fields = []
+
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    return _build_summary_response(record)
+
+
 def get_trip_plan_summary(
     db: Session,
     planning_session_id: str,
 ) -> TripPlanSummaryResponse:
-    record = (
-        db.query(TripPlanRecord)
-        .filter(TripPlanRecord.planning_session_id == planning_session_id)
-        .first()
-    )
-
-    if record is None:
-        raise ValueError(f"Trip plan not found for planning_session_id={planning_session_id}")
-
+    record = _get_record_or_raise(db, planning_session_id)
     return _build_summary_response(record)
 
 
@@ -686,14 +965,7 @@ def enrich_trip_plan(
     db: Session,
     planning_session_id: str,
 ) -> TripPlanEnrichResponse:
-    record = (
-        db.query(TripPlanRecord)
-        .filter(TripPlanRecord.planning_session_id == planning_session_id)
-        .first()
-    )
-
-    if record is None:
-        raise ValueError(f"Trip plan not found for planning_session_id={planning_session_id}")
+    record = _get_record_or_raise(db, planning_session_id)
 
     parsed_constraints = _build_parsed_constraints_from_record(record)
     missing_fields = _build_missing_fields(parsed_constraints)

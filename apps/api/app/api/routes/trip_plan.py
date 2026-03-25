@@ -7,11 +7,13 @@ from app.schemas.trip_plan import (
     TripPlanResponse,
     TripPlanSummaryResponse,
     TripPlanUpdateRequest,
+    TripSlotReplacementRequest,
 )
 from app.services.trip_plan_service import (
     enrich_trip_plan,
     get_trip_plan_summary,
     parse_and_save_trip_brief,
+    replace_trip_plan_slot,
     update_trip_plan,
 )
 
@@ -40,6 +42,23 @@ def update_saved_trip_plan(
             return update_trip_plan(db, planning_session_id, payload)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+
+@router.post("/{planning_session_id}/replace-slot", response_model=TripPlanSummaryResponse)
+def replace_saved_trip_plan_slot(
+    planning_session_id: str,
+    payload: TripSlotReplacementRequest,
+) -> TripPlanSummaryResponse:
+    db = get_db_session()
+    try:
+        try:
+            return replace_trip_plan_slot(db, planning_session_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.close()
 
