@@ -29,9 +29,17 @@ def create_memory_event(
 def get_memory_events(
     traveller_id: str,
     limit: int = Query(default=20, ge=1, le=100),
+    event_type: str | None = Query(default=None),
+    planning_session_id: str | None = Query(default=None),
 ) -> TravellerMemoryListResponse:
     db = get_db_session()
     try:
-        return list_traveller_memory(db, traveller_id=traveller_id, limit=limit)
+        return list_traveller_memory(
+            db,
+            traveller_id=traveller_id,
+            limit=limit,
+            event_type=event_type,
+            planning_session_id=planning_session_id,
+        )
     finally:
         db.close()

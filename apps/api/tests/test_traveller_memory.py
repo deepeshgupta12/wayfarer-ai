@@ -65,3 +65,57 @@ def test_list_traveller_memory_events() -> None:
     assert isinstance(payload["items"], list)
     assert len(payload["items"]) >= 2
     assert payload["items"][0]["traveller_id"] == traveller_id
+
+
+def test_list_traveller_memory_supports_event_type_and_planning_session_filters() -> None:
+    client = get_test_client()
+    traveller_id = "traveller_memory_test_003"
+
+    client.post(
+        "/traveller-memory",
+        json={
+            "traveller_id": traveller_id,
+            "event_type": "selected_place_saved",
+            "source_surface": "itinerary",
+            "payload": {
+                "planning_session_id": "plan_alpha",
+                "location_id": "ta_kyoto_gion_001",
+            },
+        },
+    )
+
+    client.post(
+        "/traveller-memory",
+        json={
+            "traveller_id": traveller_id,
+            "event_type": "skipped_recommendation",
+            "source_surface": "assistant",
+            "payload": {
+                "planning_session_id": "plan_alpha",
+                "location_id": "ta_kyoto_pontocho_001",
+            },
+        },
+    )
+
+    client.post(
+        "/traveller-memory",
+        json={
+            "traveller_id": traveller_id,
+            "event_type": "itinerary_version_snapshot",
+            "source_surface": "planner_modal",
+            "payload": {
+                "planning_session_id": "plan_beta",
+                "version_number": 2,
+            },
+        },
+    )
+
+    filtered_response = client.get(
+        f"/traveller-memory/{traveller_id}?limit=10&event_type=selected_place_saved&planning_session_id=plan_alpha"
+    )
+    assert filtered_response.status_code == 200
+
+    payload = filtered_response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["event_type"] == "selected_place_saved"
+    assert payload["items"][0]["payload"]["planning_session_id"] == "plan_alpha"

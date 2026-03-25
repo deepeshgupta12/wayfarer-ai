@@ -202,6 +202,15 @@ export default function Discover() {
                   <span>Rating: {result.rating}</span>
                   <span>Reviews: {result.review_count}</span>
                 </div>
+
+                <div className="pt-4">
+                  <Link
+                    to={`/assistant?prompt=${encodeURIComponent(`I want a guide for ${result.name}`)}`}
+                    className="text-xs font-medium text-accent hover:underline"
+                  >
+                    Explore in assistant
+                  </Link>
+                </div>
               </div>
             ))}
           </div>

@@ -59,6 +59,17 @@ class TripCandidatePlace(BaseModel):
     geo_cluster: str | None = None
 
 
+class TripAlternativeSuggestion(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    score: float
+    why_alternative: str
+    geo_cluster: str | None = None
+
+
 class TripSlotAssignment(BaseModel):
     slot_type: TripSlotType
     label: str
@@ -68,6 +79,7 @@ class TripSlotAssignment(BaseModel):
     rationale: str
     continuity_note: str | None = None
     movement_note: str | None = None
+    alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
     fallback_candidate_ids: list[str] = Field(default_factory=list)
     fallback_candidate_names: list[str] = Field(default_factory=list)
 

@@ -167,6 +167,7 @@ def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
     assert "geo_cluster" in first_day
     assert "continuity_note" in first_day["slots"][0]
     assert "movement_note" in first_day["slots"][0]
+    assert "alternatives" in first_day["slots"][0]
 
 
 def test_enrich_trip_plan_rejects_incomplete_sessions() -> None:
@@ -368,6 +369,59 @@ def test_enriched_trip_plan_has_tighter_cross_day_anti_repetition() -> None:
     assert len(day_one_ids.intersection(day_two_ids)) <= 1
 
 
+def test_enriched_trip_plan_includes_slot_alternatives() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_008e",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+    first_slot = payload["itinerary_skeleton"][0]["slots"][0]
+
+    assert "alternatives" in first_slot
+    assert isinstance(first_slot["alternatives"], list)
+    assert len(first_slot["alternatives"]) >= 1
+    assert first_slot["alternatives"][0]["location_id"] != first_slot["assigned_location_id"]
+
+
+def test_enrich_trip_plan_persists_itinerary_version_snapshot_memory() -> None:
+    client = get_test_client()
+    traveller_id = "traveller_trip_plan_008f"
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": traveller_id,
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    memory_response = client.get(
+        f"/traveller-memory/{traveller_id}?event_type=itinerary_version_snapshot&planning_session_id={planning_session_id}"
+    )
+    assert memory_response.status_code == 200
+
+    payload = memory_response.json()
+    assert payload["total"] >= 1
+    assert payload["items"][0]["event_type"] == "itinerary_version_snapshot"
+    assert payload["items"][0]["payload"]["planning_session_id"] == planning_session_id
+
+
 def test_replace_slot_keeps_same_session_and_updates_only_requested_slot() -> None:
     client = get_test_client()
 
@@ -497,6 +551,42 @@ def test_replace_slot_blocks_swap_when_it_would_weaken_day_coherence() -> None:
 
     if after_slot["assigned_location_id"] == before_slot["assigned_location_id"]:
         assert "no stronger alternative" in after_slot["rationale"].lower()
+
+
+def test_replace_slot_persists_new_itinerary_version_snapshot_memory() -> None:
+    client = get_test_client()
+    traveller_id = "traveller_trip_plan_009d"
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": traveller_id,
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, balanced pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    replace_response = client.post(
+        f"/trip-plans/{planning_session_id}/replace-slot",
+        json={
+            "day_number": 1,
+            "slot_type": "lunch",
+            "replacement_mode": "more_food",
+        },
+    )
+    assert replace_response.status_code == 200
+
+    memory_response = client.get(
+        f"/traveller-memory/{traveller_id}?event_type=itinerary_version_snapshot&planning_session_id={planning_session_id}"
+    )
+    assert memory_response.status_code == 200
+    payload = memory_response.json()
+
+    assert payload["total"] >= 2
 
 
 def test_replace_slot_rejects_non_enriched_plan() -> None:

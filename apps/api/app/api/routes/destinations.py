@@ -3,6 +3,8 @@ from fastapi.responses import StreamingResponse
 
 from app.db.session import get_db_session
 from app.schemas.destination import (
+    DestinationComparisonRequest,
+    DestinationComparisonResponse,
     DestinationGuideRequest,
     DestinationGuideResponse,
     DestinationPlaceIndexRequest,
@@ -14,6 +16,7 @@ from app.schemas.destination import (
 )
 from app.services.destination_service import (
     build_destination_guide,
+    compare_destinations,
     get_similar_places,
     index_destination_places,
     search_destinations,
@@ -45,6 +48,13 @@ def generate_destination_guide_stream(
         stream_destination_guide(payload),
         media_type="application/x-ndjson",
     )
+
+
+@router.post("/compare", response_model=DestinationComparisonResponse)
+def compare_destination_pair(
+    payload: DestinationComparisonRequest,
+) -> DestinationComparisonResponse:
+    return compare_destinations(payload)
 
 
 @router.post("/places/index", response_model=DestinationPlaceIndexResponse)

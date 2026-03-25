@@ -1,14 +1,16 @@
 import { useRef, useState, useEffect } from 'react';
-// @ts-ignore
 import { motion } from 'framer-motion';
-// @ts-ignore
-import { Send, Sparkles, Plus, RefreshCw } from 'lucide-react';
+import { Send, Sparkles, Plus, RefreshCw, Heart, SkipForward } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
 import {
+  compareDestinations,
   createTravellerMemory,
   enrichTripPlan,
   generateDestinationGuide,
+  getSimilarPlaces,
+  indexDestinationPlaces,
   parseAndSaveTripBrief,
   refreshTravellerPersonaFromMemory,
   replaceTripPlanSlot,
@@ -20,6 +22,13 @@ import {
   getPersonaUpdatedEventName,
   replaceTravellerPersona,
 } from '@/lib/travellerProfile';
+import {
+  appendTripVersion,
+  listStoredTrips,
+  recordSelectedPlace,
+  recordSkippedRecommendation,
+  updateStoredTrip,
+} from '@/lib/tripStorage';
 
 const suggestedChips = [
   '3 days in Kyoto for food and culture',
@@ -90,6 +99,29 @@ function isPlanningBrief(rawInput) {
   return false;
 }
 
+function isComparisonPrompt(rawInput) {
+  const lowered = rawInput.toLowerCase().trim();
+  return /compare\s+[a-z\s]+\s+and\s+[a-z\s]+/.test(lowered);
+}
+
+function extractComparisonPayload(rawInput, persona) {
+  const match = rawInput.match(/compare\s+(.+?)\s+and\s+(.+)/i);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    destination_a: match[1].trim(),
+    destination_b: match[2].trim(),
+    traveller_type: persona?.signals?.group_type || 'solo',
+    interests: persona?.signals?.interests || [],
+    pace_preference: persona?.signals?.pace_preference || 'balanced',
+    budget: persona?.signals?.travel_style || 'midrange',
+    duration_days: 4,
+  };
+}
+
 function getLatestPlanningSessionMessage(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -139,11 +171,7 @@ function isRefinementFollowUp(rawInput, currentPlanningSession) {
 
   if (/(\d+)\s*days?/.test(lowered)) return true;
   if (KNOWN_DESTINATIONS.some((destination) => lowered.includes(destination.toLowerCase()))) return true;
-  if (
-    ['budget', 'mid-budget', 'mid budget', 'midrange', 'luxury', 'balanced', 'fast'].some((term) =>
-      lowered.includes(term)
-    )
-  ) {
+  if (['budget', 'mid-budget', 'mid budget', 'midrange', 'luxury', 'balanced', 'fast'].some((term) => lowered.includes(term))) {
     return true;
   }
 
@@ -272,11 +300,23 @@ function buildAssistantMessageFromGuide(result) {
         description: area.summary,
         why_recommended: area.why_it_fits,
       })) || [],
+    alternatives: result.youd_also_love || [],
     chips: result.highlights || [],
     reviewSummary: result.review_summary || null,
     reviewInsight: result.review_insight || null,
     reviewSignals: result.review_signals || {},
     reviewAuthenticity: result.review_authenticity || null,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildAssistantMessageFromComparison(result) {
+  return {
+    role: 'assistant',
+    type: 'destination_comparison',
+    content: result.verdict,
+    comparison: result,
+    chips: result.next_step_suggestions || [],
     timestamp: new Date().toISOString(),
   };
 }
@@ -404,6 +444,8 @@ export default function Assistant() {
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
   const travellerId = getOrCreateTravellerId();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const refreshPersona = () => {
@@ -427,6 +469,82 @@ export default function Assistant() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const prompt = params.get('prompt');
+
+    if (prompt) {
+      setInput(prompt);
+      navigate('/assistant', { replace: true });
+    }
+  }, [location.search, navigate]);
+
+  const persistEnrichedPlanToStoredTrip = (enrichedPlan) => {
+    const trips = listStoredTrips();
+    const matchingTrip = trips.find(
+      (trip) => trip.planning_session_id === enrichedPlan.planning_session_id
+    );
+
+    if (!matchingTrip) return;
+
+    updateStoredTrip(matchingTrip.id, {
+      title: `${enrichedPlan.parsed_constraints.destination} ${enrichedPlan.itinerary_skeleton.length}-day plan`,
+      destination: enrichedPlan.parsed_constraints.destination,
+      itinerary: enrichedPlan.itinerary_skeleton || [],
+      itinerary_skeleton: enrichedPlan.itinerary_skeleton || [],
+      traveller_id: enrichedPlan.traveller_id,
+      source_surface: enrichedPlan.source_surface,
+    });
+
+    appendTripVersion(matchingTrip.id, 'assistant_regeneration');
+  };
+
+  const handleSavePlace = async (place, planningSessionId = null) => {
+    const trips = listStoredTrips();
+    const targetTrip =
+      trips.find((trip) => trip.planning_session_id === planningSessionId) || trips[0];
+
+    if (!targetTrip) return;
+
+    recordSelectedPlace(targetTrip.id, place);
+
+    await createTravellerMemory({
+      traveller_id: travellerId,
+      event_type: 'selected_place_saved',
+      source_surface: 'assistant',
+      payload: {
+        planning_session_id: planningSessionId,
+        location_id: place.location_id || null,
+        name: place.name,
+        city: place.city || null,
+        category: place.category || null,
+      },
+    });
+  };
+
+  const handleSkipAlternative = async (alternative, planningSessionId = null) => {
+    const trips = listStoredTrips();
+    const targetTrip =
+      trips.find((trip) => trip.planning_session_id === planningSessionId) || trips[0];
+
+    if (!targetTrip) return;
+
+    recordSkippedRecommendation(targetTrip.id, alternative);
+
+    await createTravellerMemory({
+      traveller_id: travellerId,
+      event_type: 'skipped_recommendation',
+      source_surface: 'assistant',
+      payload: {
+        planning_session_id: planningSessionId,
+        location_id: alternative.location_id || null,
+        name: alternative.name,
+        city: alternative.city || null,
+        category: alternative.category || null,
+      },
+    });
+  };
 
   const handleSend = async (text) => {
     const msg = text || input;
@@ -461,6 +579,8 @@ export default function Assistant() {
               followup_text: msg,
             },
           });
+
+          persistEnrichedPlanToStoredTrip(replacedPlan);
 
           const replacementMsg = buildAssistantMessageFromSlotReplacement(
             replacedPlan,
@@ -509,11 +629,37 @@ export default function Assistant() {
             },
           });
 
+          persistEnrichedPlanToStoredTrip(enrichedResult);
+
           const enrichedMsg = buildAssistantMessageFromEnrichedTripPlan(enrichedResult, msg);
           setMessages((prev) => [...prev, enrichedMsg]);
         }
 
         return;
+      }
+
+      if (isComparisonPrompt(msg)) {
+        const comparisonPayload = extractComparisonPayload(msg, persona);
+
+        if (comparisonPayload) {
+          const comparisonResult = await compareDestinations(comparisonPayload);
+
+          await createTravellerMemory({
+            traveller_id: travellerId,
+            event_type: 'destination_comparison_generated',
+            source_surface: 'assistant',
+            payload: {
+              destination_a: comparisonResult.destination_a?.name || comparisonPayload.destination_a,
+              destination_b: comparisonResult.destination_b?.name || comparisonPayload.destination_b,
+              traveller_type: comparisonPayload.traveller_type,
+              interests: comparisonPayload.interests,
+            },
+          });
+
+          const comparisonMsg = buildAssistantMessageFromComparison(comparisonResult);
+          setMessages((prev) => [...prev, comparisonMsg]);
+          return;
+        }
       }
 
       if (isPlanningBrief(msg)) {
@@ -552,6 +698,25 @@ export default function Assistant() {
               destination: enrichedResult.parsed_constraints?.destination || null,
             },
           });
+
+          const indexed = await indexDestinationPlaces({
+            destination: enrichedResult.parsed_constraints.destination,
+            traveller_type: enrichedResult.parsed_constraints.group_type,
+            interests: enrichedResult.parsed_constraints.interests || [],
+          });
+
+          if (indexed?.items?.length > 0) {
+            const firstCandidateId = enrichedResult.candidate_places?.[0]?.location_id;
+            if (firstCandidateId) {
+              await getSimilarPlaces({
+                source_location_id: firstCandidateId,
+                top_k: 3,
+                city_filter: enrichedResult.parsed_constraints.destination,
+              });
+            }
+          }
+
+          persistEnrichedPlanToStoredTrip(enrichedResult);
 
           const enrichedMsg = buildAssistantMessageFromEnrichedTripPlan(enrichedResult);
           setMessages((prev) => [...prev, enrichedMsg]);
@@ -644,7 +809,13 @@ export default function Assistant() {
         ) : (
           <div className="space-y-6">
             {messages.map((msg, i) => (
-              <MessageBubble key={i} message={msg} onChipClick={handleSend} />
+              <MessageBubble
+                key={i}
+                message={msg}
+                onChipClick={handleSend}
+                onSavePlace={handleSavePlace}
+                onSkipAlternative={handleSkipAlternative}
+              />
             ))}
 
             {isLoading ? (
@@ -707,7 +878,7 @@ function EmptyChat({ onSuggestionClick, persona }) {
       </motion.div>
       <h2 className="font-serif text-2xl font-bold mb-2">Where to next?</h2>
       <p className="text-muted-foreground text-sm max-w-sm mb-4">
-        Ask for destination guidance or start a planning brief for your next trip.
+        Ask for destination guidance, compare cities, or start a planning brief for your next trip.
       </p>
       <p className="text-xs text-muted-foreground max-w-md mb-8">
         {persona?.summary
@@ -837,7 +1008,64 @@ function PlanningSessionCard({ planningSession, onChipClick, chips }) {
   );
 }
 
-function SlotCard({ slot, onChipClick, dayNumber }) {
+function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, planningSessionId }) {
+  if (!alternatives?.length) return null;
+
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        You’d also love
+      </div>
+
+      {alternatives.map((alternative, index) => (
+        <div key={`${alternative.location_id}-${index}`} className="rounded-xl border border-border bg-background px-3 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium text-foreground">{alternative.name}</div>
+              <div className="text-xs text-muted-foreground">
+                {alternative.city}, {alternative.country} · {alternative.category}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">{alternative.reason || alternative.why_alternative}</div>
+            </div>
+            <div className="text-xs font-medium text-accent">
+              {alternative.match_score || alternative.score}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 pt-3">
+            <button
+              onClick={() =>
+                onSavePlace?.(
+                  {
+                    location_id: alternative.location_id,
+                    name: alternative.name,
+                    city: alternative.city,
+                    category: alternative.category,
+                  },
+                  planningSessionId
+                )
+              }
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
+            >
+              <Heart className="w-3 h-3" />
+              Save
+            </button>
+
+            <button
+              onClick={() => onSkipAlternative?.(alternative, planningSessionId)}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
+            >
+              <SkipForward className="w-3 h-3" />
+              Skip
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SlotCard({ slot, onChipClick, dayNumber, onSavePlace, onSkipAlternative, planningSessionId }) {
   const replaceChip =
     slot.slot_type === 'evening'
       ? `Replace Day ${dayNumber} evening slot`
@@ -860,7 +1088,7 @@ function SlotCard({ slot, onChipClick, dayNumber }) {
         )}
       </div>
 
-      {(isRetained || isReplaced) ? (
+      {isRetained || isReplaced ? (
         <div className="flex items-center gap-2">
           <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
             {isReplaced ? 'Replacement applied' : 'Strongest fit retained'}
@@ -886,11 +1114,18 @@ function SlotCard({ slot, onChipClick, dayNumber }) {
           Replace slot
         </button>
       </div>
+
+      <AlternativesSection
+        alternatives={slot.alternatives || []}
+        onSavePlace={onSavePlace}
+        onSkipAlternative={onSkipAlternative}
+        planningSessionId={planningSessionId}
+      />
     </div>
   );
 }
 
-function ItinerarySkeletonCard({ planningSession, onChipClick }) {
+function ItinerarySkeletonCard({ planningSession, onChipClick, onSavePlace, onSkipAlternative }) {
   const itinerary = planningSession?.itinerary_skeleton || [];
   const candidates = planningSession?.candidate_places || [];
 
@@ -935,6 +1170,9 @@ function ItinerarySkeletonCard({ planningSession, onChipClick }) {
                     slot={slot}
                     onChipClick={onChipClick}
                     dayNumber={day.day_number}
+                    onSavePlace={onSavePlace}
+                    onSkipAlternative={onSkipAlternative}
+                    planningSessionId={planningSession?.planning_session_id}
                   />
                 ))}
               </div>
@@ -976,6 +1214,26 @@ function ItinerarySkeletonCard({ planningSession, onChipClick }) {
                 <div className="mt-2 text-xs text-muted-foreground">
                   {candidate.why_selected}
                 </div>
+
+                <div className="flex flex-wrap gap-2 pt-3">
+                  <button
+                    onClick={() =>
+                      onSavePlace?.(
+                        {
+                          location_id: candidate.location_id,
+                          name: candidate.name,
+                          city: candidate.city,
+                          category: candidate.category,
+                        },
+                        planningSession?.planning_session_id
+                      )
+                    }
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
+                  >
+                    <Heart className="w-3 h-3" />
+                    Save
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -985,7 +1243,64 @@ function ItinerarySkeletonCard({ planningSession, onChipClick }) {
   );
 }
 
-function MessageBubble({ message, onChipClick }) {
+function ComparisonCard({ comparison, onChipClick }) {
+  if (!comparison) return null;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-border bg-card p-4 space-y-4">
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+          Comparison workspace
+        </div>
+        <div className="text-sm font-medium text-foreground">
+          {comparison.destination_a?.name} vs {comparison.destination_b?.name}
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div className="rounded-xl bg-secondary/50 px-3 py-3">
+          <div className="font-medium text-sm">{comparison.destination_a?.name}</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            Weighted score: {comparison.destination_a?.weighted_score}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {comparison.destination_a?.best_for}
+          </div>
+        </div>
+
+        <div className="rounded-xl bg-secondary/50 px-3 py-3">
+          <div className="font-medium text-sm">{comparison.destination_b?.name}</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            Weighted score: {comparison.destination_b?.weighted_score}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {comparison.destination_b?.best_for}
+          </div>
+        </div>
+      </div>
+
+      <div className="text-xs text-muted-foreground">
+        <span className="font-medium">Planning recommendation:</span> {comparison.planning_recommendation}
+      </div>
+
+      {comparison.next_step_suggestions?.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {comparison.next_step_suggestions.map((chip, index) => (
+            <button
+              key={index}
+              onClick={() => onChipClick(chip)}
+              className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative }) {
   if (message.role === 'user') {
     return (
       <motion.div
@@ -1021,7 +1336,16 @@ function MessageBubble({ message, onChipClick }) {
         ) : null}
 
         {message.type === 'trip_plan_enriched' ? (
-          <ItinerarySkeletonCard planningSession={message.planningSession} onChipClick={onChipClick} />
+          <ItinerarySkeletonCard
+            planningSession={message.planningSession}
+            onChipClick={onChipClick}
+            onSavePlace={onSavePlace}
+            onSkipAlternative={onSkipAlternative}
+          />
+        ) : null}
+
+        {message.type === 'destination_comparison' ? (
+          <ComparisonCard comparison={message.comparison} onChipClick={onChipClick} />
         ) : null}
 
         {message.places?.length > 0 ? (
@@ -1036,7 +1360,17 @@ function MessageBubble({ message, onChipClick }) {
                 reason={place.why_recommended}
                 image={undefined}
                 distance={undefined}
-                onSave={undefined}
+                onSave={() =>
+                  onSavePlace?.(
+                    {
+                      location_id: place.location_id || place.name,
+                      name: place.name,
+                      city: place.city || null,
+                      category: place.category,
+                    },
+                    null
+                  )
+                }
                 onClick={undefined}
               />
             ))}
@@ -1044,11 +1378,19 @@ function MessageBubble({ message, onChipClick }) {
         ) : null}
 
         {message.type === 'destination_guide' ? (
-          <InsightSection
-            reviewInsight={message.reviewInsight}
-            chips={message.chips}
-            onChipClick={onChipClick}
-          />
+          <>
+            <InsightSection
+              reviewInsight={message.reviewInsight}
+              chips={message.chips}
+              onChipClick={onChipClick}
+            />
+            <AlternativesSection
+              alternatives={message.alternatives}
+              onSavePlace={onSavePlace}
+              onSkipAlternative={onSkipAlternative}
+              planningSessionId={null}
+            />
+          </>
         ) : null}
       </div>
     </motion.div>

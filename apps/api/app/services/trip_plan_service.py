@@ -5,9 +5,11 @@ from sqlalchemy.orm import Session
 
 from app.clients.tripadvisor_client import TripadvisorClient
 from app.models.persona import TravellerPersonaRecord
+from app.models.traveller_memory import TravellerMemoryRecord
 from app.models.trip_plan import TripPlanRecord
 from app.schemas.trip_plan import (
     ParsedTripConstraints,
+    TripAlternativeSuggestion,
     TripBriefParseRequest,
     TripCandidatePlace,
     TripDayPlan,
@@ -796,102 +798,6 @@ def _continuity_note(
     return f"Acts as a deliberate detour away from the day’s {dominant_cluster} anchor."
 
 
-def _assign_slots_for_day(
-    day_pool: list[TripCandidatePlace],
-    fallback_candidates: list[TripCandidatePlace],
-    pace: str | None,
-    interests: list[str],
-    dominant_cluster: str | None,
-) -> list[TripCandidatePlace | None]:
-    pool: list[TripCandidatePlace] = list(day_pool)
-    pool_ids = {candidate.location_id for candidate in pool}
-
-    for fallback in fallback_candidates:
-        if fallback.location_id not in pool_ids:
-            pool.append(fallback)
-            pool_ids.add(fallback.location_id)
-
-    if not pool:
-        return [None, None, None, None]
-
-    slot_assignments: list[TripCandidatePlace | None] = []
-    slot_usage_counts: dict[str, int] = {}
-    previous_candidate: TripCandidatePlace | None = None
-
-    for slot_type, _ in SLOT_SEQUENCE:
-        ranked = sorted(
-            pool,
-            key=lambda candidate: (
-                _slot_specialization_score(slot_type, candidate, pace, interests)
-                + _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)
-                - _travel_friction_penalty(candidate, previous_candidate, pace)
-                - _same_day_usage_penalty(candidate, slot_usage_counts)
-            ),
-            reverse=True,
-        )
-
-        chosen = ranked[0] if ranked else None
-        slot_assignments.append(chosen)
-
-        if chosen is not None:
-            slot_usage_counts[chosen.location_id] = slot_usage_counts.get(chosen.location_id, 0) + 1
-            previous_candidate = chosen
-
-    return slot_assignments
-
-
-def _build_day_rationale(
-    day_title: str,
-    pace: str | None,
-    interests: list[str],
-    assigned_candidates: list[TripCandidatePlace],
-) -> str:
-    pace_text = pace or "balanced"
-    interests_text = ", ".join(interests[:2]) if interests else "general discovery"
-    place_names = ", ".join(candidate.name for candidate in assigned_candidates[:2]) if assigned_candidates else "flexible candidates"
-
-    return (
-        f"{day_title} was structured with a {pace_text} pacing lens, leaning into {interests_text}, "
-        f"with {place_names} shaping the slot-level flow."
-    )
-
-
-def _choose_day_cluster(assigned_candidates: list[TripCandidatePlace]) -> str | None:
-    if not assigned_candidates:
-        return None
-
-    cluster_counts: dict[str, int] = {}
-    for candidate in assigned_candidates:
-        if not candidate.geo_cluster:
-            continue
-        cluster_counts[candidate.geo_cluster] = cluster_counts.get(candidate.geo_cluster, 0) + 1
-
-    if not cluster_counts:
-        return assigned_candidates[0].geo_cluster
-
-    return max(cluster_counts.items(), key=lambda item: item[1])[0]
-
-
-def _build_continuity_strategy(
-    dominant_cluster: str | None,
-    ordered_day_candidates: list[TripCandidatePlace],
-) -> str | None:
-    if not ordered_day_candidates:
-        return None
-
-    if dominant_cluster:
-        unique_clusters = {
-            candidate.geo_cluster
-            for candidate in ordered_day_candidates
-            if candidate.geo_cluster is not None
-        }
-        if len(unique_clusters) <= 1:
-            return f"The day stays tightly anchored in {dominant_cluster} for stronger route coherence."
-        return f"The day is anchored in {dominant_cluster} with only nearby cluster deviations where slot fit improves."
-
-    return "The day balances slot fit while trying to keep movement reasonably light."
-
-
 def _candidate_lookup(candidate_places: list[TripCandidatePlace]) -> dict[str, TripCandidatePlace]:
     return {candidate.location_id: candidate for candidate in candidate_places}
 
@@ -988,6 +894,50 @@ def _best_non_repeated_candidate_for_slot(
     return ranked[0] if ranked else None
 
 
+def _build_slot_alternatives(
+    slot_type: str,
+    current_candidate: TripCandidatePlace | None,
+    candidate_places: list[TripCandidatePlace],
+    dominant_cluster: str | None,
+    previous_candidate: TripCandidatePlace | None,
+    pace: str | None,
+    interests: list[str],
+    exclude_ids: set[str],
+    max_items: int = 3,
+) -> list[TripAlternativeSuggestion]:
+    alternatives: list[tuple[float, TripCandidatePlace]] = []
+
+    for candidate in candidate_places:
+        if current_candidate is not None and candidate.location_id == current_candidate.location_id:
+            continue
+        if candidate.location_id in exclude_ids:
+            continue
+
+        score = _slot_specialization_score(slot_type, candidate, pace, interests)
+        score += _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)
+        score -= _travel_friction_penalty(candidate, previous_candidate, pace)
+
+        alternatives.append((score, candidate))
+
+    alternatives.sort(key=lambda item: item[0], reverse=True)
+
+    return [
+        TripAlternativeSuggestion(
+            location_id=candidate.location_id,
+            name=candidate.name,
+            city=candidate.city,
+            country=candidate.country,
+            category=candidate.category,
+            score=round(score, 1),
+            why_alternative=(
+                f"A viable {slot_type} alternative that preserves a similar pacing and route-coherence profile."
+            ),
+            geo_cluster=candidate.geo_cluster,
+        )
+        for score, candidate in alternatives[:max_items]
+    ]
+
+
 def _enforce_cross_day_overlap_cap_on_slots(
     slots: list[TripSlotAssignment],
     candidate_places: list[TripCandidatePlace],
@@ -1039,7 +989,6 @@ def _enforce_cross_day_overlap_cap_on_slots(
                     f"{replacement_candidate.name} was selected to keep {day_title.lower()} "
                     f"more distinct from the previous day while preserving day coherence."
                 )
-                is_repeat = current_candidate.location_id in previous_day_ids
 
         slot.summary = _slot_summary(
             slot_type=slot.slot_type,
@@ -1058,6 +1007,102 @@ def _enforce_cross_day_overlap_cap_on_slots(
             previous_candidate = current_candidate
 
     return slots
+
+
+def _assign_slots_for_day(
+    day_pool: list[TripCandidatePlace],
+    fallback_candidates: list[TripCandidatePlace],
+    pace: str | None,
+    interests: list[str],
+    dominant_cluster: str | None,
+) -> list[TripCandidatePlace | None]:
+    pool: list[TripCandidatePlace] = list(day_pool)
+    pool_ids = {candidate.location_id for candidate in pool}
+
+    for fallback in fallback_candidates:
+        if fallback.location_id not in pool_ids:
+            pool.append(fallback)
+            pool_ids.add(fallback.location_id)
+
+    if not pool:
+        return [None, None, None, None]
+
+    slot_assignments: list[TripCandidatePlace | None] = []
+    slot_usage_counts: dict[str, int] = {}
+    previous_candidate: TripCandidatePlace | None = None
+
+    for slot_type, _ in SLOT_SEQUENCE:
+        ranked = sorted(
+            pool,
+            key=lambda candidate: (
+                _slot_specialization_score(slot_type, candidate, pace, interests)
+                + _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)
+                - _travel_friction_penalty(candidate, previous_candidate, pace)
+                - _same_day_usage_penalty(candidate, slot_usage_counts)
+            ),
+            reverse=True,
+        )
+
+        chosen = ranked[0] if ranked else None
+        slot_assignments.append(chosen)
+
+        if chosen is not None:
+            slot_usage_counts[chosen.location_id] = slot_usage_counts.get(chosen.location_id, 0) + 1
+            previous_candidate = chosen
+
+    return slot_assignments
+
+
+def _build_day_rationale(
+    day_title: str,
+    pace: str | None,
+    interests: list[str],
+    assigned_candidates: list[TripCandidatePlace],
+) -> str:
+    pace_text = pace or "balanced"
+    interests_text = ", ".join(interests[:2]) if interests else "general discovery"
+    place_names = ", ".join(candidate.name for candidate in assigned_candidates[:2]) if assigned_candidates else "flexible candidates"
+
+    return (
+        f"{day_title} was structured with a {pace_text} pacing lens, leaning into {interests_text}, "
+        f"with {place_names} shaping the slot-level flow."
+    )
+
+
+def _choose_day_cluster(assigned_candidates: list[TripCandidatePlace]) -> str | None:
+    if not assigned_candidates:
+        return None
+
+    cluster_counts: dict[str, int] = {}
+    for candidate in assigned_candidates:
+        if not candidate.geo_cluster:
+            continue
+        cluster_counts[candidate.geo_cluster] = cluster_counts.get(candidate.geo_cluster, 0) + 1
+
+    if not cluster_counts:
+        return assigned_candidates[0].geo_cluster
+
+    return max(cluster_counts.items(), key=lambda item: item[1])[0]
+
+
+def _build_continuity_strategy(
+    dominant_cluster: str | None,
+    ordered_day_candidates: list[TripCandidatePlace],
+) -> str | None:
+    if not ordered_day_candidates:
+        return None
+
+    if dominant_cluster:
+        unique_clusters = {
+            candidate.geo_cluster
+            for candidate in ordered_day_candidates
+            if candidate.geo_cluster is not None
+        }
+        if len(unique_clusters) <= 1:
+            return f"The day stays tightly anchored in {dominant_cluster} for stronger route coherence."
+        return f"The day is anchored in {dominant_cluster} with only nearby cluster deviations where slot fit improves."
+
+    return "The day balances slot fit while trying to keep movement reasonably light."
 
 
 def _build_day_slots(
@@ -1089,6 +1134,17 @@ def _build_day_slots(
     seen_ids: set[str] = set()
 
     for (slot_type, label), candidate in zip(SLOT_SEQUENCE, ordered_slot_candidates, strict=False):
+        alternatives = _build_slot_alternatives(
+            slot_type=slot_type,
+            current_candidate=candidate,
+            candidate_places=all_candidates,
+            dominant_cluster=dominant_cluster,
+            previous_candidate=previous_candidate,
+            pace=pace,
+            interests=interests,
+            exclude_ids=seen_ids,
+        )
+
         slots.append(
             TripSlotAssignment(
                 slot_type=slot_type,
@@ -1109,6 +1165,7 @@ def _build_day_slots(
                 ),
                 continuity_note=_continuity_note(candidate, dominant_cluster),
                 movement_note=_movement_note(candidate, previous_candidate),
+                alternatives=alternatives,
                 fallback_candidate_ids=fallback_candidate_ids,
                 fallback_candidate_names=fallback_candidate_names,
             )
@@ -1123,130 +1180,47 @@ def _build_day_slots(
     return slots, unique_assigned_candidates
 
 
-def _build_itinerary_skeleton(
-    parsed_constraints: ParsedTripConstraints,
-    candidate_places: list[TripCandidatePlace],
-) -> list[TripDayPlan]:
-    duration_days = parsed_constraints.duration_days or 0
-    destination = parsed_constraints.destination or "the destination"
-    interests = list(parsed_constraints.interests or [])
-    pace = parsed_constraints.pace_preference
+def _persist_trip_snapshot(
+    db: Session,
+    record: TripPlanRecord,
+    snapshot_reason: str,
+) -> None:
+    snapshots = (
+        db.query(TravellerMemoryRecord)
+        .filter(TravellerMemoryRecord.traveller_id == record.traveller_id)
+        .filter(TravellerMemoryRecord.event_type == "itinerary_version_snapshot")
+        .order_by(TravellerMemoryRecord.id.asc())
+        .all()
+    )
 
-    skeleton: list[TripDayPlan] = []
+    version_number = 1 + sum(
+        1
+        for item in snapshots
+        if str(item.payload.get("planning_session_id") or "") == record.planning_session_id
+    )
 
-    if duration_days <= 0:
-        return skeleton
+    memory_record = TravellerMemoryRecord(
+        traveller_id=record.traveller_id,
+        event_type="itinerary_version_snapshot",
+        source_surface=record.source_surface,
+        payload={
+            "planning_session_id": record.planning_session_id,
+            "version_number": version_number,
+            "snapshot_reason": snapshot_reason,
+            "status": record.status,
+            "destination": record.destination,
+            "duration_days": record.duration_days,
+            "group_type": record.group_type,
+            "budget": record.budget,
+            "pace_preference": record.pace_preference,
+            "interests": list(record.interests or []),
+            "candidate_places": list(record.candidate_places or []),
+            "itinerary_skeleton": list(record.itinerary_skeleton or []),
+        },
+    )
 
-    usage_counts: dict[str, int] = {}
-    previous_day_ids: set[str] = set()
-
-    for day_number in range(1, duration_days + 1):
-        dominant_cluster = _choose_day_dominant_cluster(
-            candidate_places=candidate_places,
-            day_number=day_number,
-            duration_days=duration_days,
-            pace=pace,
-            usage_counts=usage_counts,
-            previous_day_ids=previous_day_ids,
-        )
-
-        day_pool = _build_day_candidate_pool(
-            day_number=day_number,
-            duration_days=duration_days,
-            candidate_places=candidate_places,
-            dominant_cluster=dominant_cluster,
-            pace=pace,
-            usage_counts=usage_counts,
-            previous_day_ids=previous_day_ids,
-        )
-
-        fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(day_pool, candidate_places)
-        day_title = _day_title(day_number, duration_days, pace)
-
-        slots, ordered_day_candidates = _build_day_slots(
-            day_number=day_number,
-            day_title=day_title,
-            destination=destination,
-            interests=interests,
-            pace=pace,
-            day_pool=day_pool,
-            all_candidates=candidate_places,
-            dominant_cluster=dominant_cluster,
-        )
-
-        slots = _enforce_cross_day_overlap_cap_on_slots(
-            slots=slots,
-            candidate_places=candidate_places,
-            previous_day_ids=previous_day_ids,
-            max_overlap=1,
-            day_title=day_title,
-            destination=destination,
-            interests=interests,
-            pace=pace,
-            dominant_cluster=dominant_cluster,
-        )
-
-        ordered_day_candidates = _ordered_unique_candidates_from_slots(
-            slots=slots,
-            candidate_places=candidate_places,
-        )
-        ordered_day_candidates = _limit_cross_day_overlap(
-            ordered_candidates=ordered_day_candidates,
-            previous_day_ids=previous_day_ids,
-            max_overlap=1,
-        )
-
-        allowed_ids = {candidate.location_id for candidate in ordered_day_candidates}
-        if allowed_ids:
-            fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(
-                ordered_day_candidates,
-                candidate_places,
-            )
-            for slot in slots:
-                slot.fallback_candidate_ids = list(fallback_candidate_ids)
-                slot.fallback_candidate_names = list(fallback_candidate_names)
-
-        place_names = [candidate.name for candidate in ordered_day_candidates]
-        candidate_ids = [candidate.location_id for candidate in ordered_day_candidates]
-        geo_cluster = _choose_day_cluster(ordered_day_candidates)
-
-        skeleton.append(
-            TripDayPlan(
-                day_number=day_number,
-                title=day_title,
-                summary=_day_summary(
-                    day_number=day_number,
-                    total_days=duration_days,
-                    destination=destination,
-                    interests=interests,
-                    pace=pace,
-                    place_names=place_names,
-                ),
-                place_names=place_names,
-                candidate_location_ids=candidate_ids,
-                slots=slots,
-                day_rationale=_build_day_rationale(
-                    day_title=day_title,
-                    pace=pace,
-                    interests=interests,
-                    assigned_candidates=ordered_day_candidates,
-                ),
-                continuity_strategy=_build_continuity_strategy(
-                    dominant_cluster=geo_cluster or dominant_cluster,
-                    ordered_day_candidates=ordered_day_candidates,
-                ),
-                fallback_candidate_ids=fallback_candidate_ids,
-                fallback_candidate_names=fallback_candidate_names,
-                geo_cluster=geo_cluster,
-            )
-        )
-
-        for candidate_id in candidate_ids:
-            usage_counts[candidate_id] = usage_counts.get(candidate_id, 0) + 1
-
-        previous_day_ids = set(candidate_ids)
-
-    return skeleton
+    db.add(memory_record)
+    db.commit()
 
 
 def _get_record_or_raise(db: Session, planning_session_id: str) -> TripPlanRecord:
@@ -1469,6 +1443,16 @@ def _refresh_slot_and_day_metadata(
         )
         slot.continuity_note = _continuity_note(current_candidate, day.geo_cluster)
         slot.movement_note = _movement_note(current_candidate, previous_candidate)
+        slot.alternatives = _build_slot_alternatives(
+            slot_type=slot.slot_type,
+            current_candidate=current_candidate,
+            candidate_places=candidate_places,
+            dominant_cluster=day.geo_cluster,
+            previous_candidate=previous_candidate,
+            pace=parsed_constraints.pace_preference,
+            interests=list(parsed_constraints.interests or []),
+            exclude_ids={slot.assigned_location_id} if slot.assigned_location_id else set(),
+        )
         slot.fallback_candidate_ids = list(day.fallback_candidate_ids)
         slot.fallback_candidate_names = list(day.fallback_candidate_names)
 
@@ -1491,6 +1475,131 @@ def _refresh_slot_and_day_metadata(
     )
 
     return day
+
+
+def _build_itinerary_skeleton(
+    parsed_constraints: ParsedTripConstraints,
+    candidate_places: list[TripCandidatePlace],
+) -> list[TripDayPlan]:
+    duration_days = parsed_constraints.duration_days or 0
+    destination = parsed_constraints.destination or "the destination"
+    interests = list(parsed_constraints.interests or [])
+    pace = parsed_constraints.pace_preference
+
+    skeleton: list[TripDayPlan] = []
+
+    if duration_days <= 0:
+        return skeleton
+
+    usage_counts: dict[str, int] = {}
+    previous_day_ids: set[str] = set()
+
+    for day_number in range(1, duration_days + 1):
+        dominant_cluster = _choose_day_dominant_cluster(
+            candidate_places=candidate_places,
+            day_number=day_number,
+            duration_days=duration_days,
+            pace=pace,
+            usage_counts=usage_counts,
+            previous_day_ids=previous_day_ids,
+        )
+
+        day_pool = _build_day_candidate_pool(
+            day_number=day_number,
+            duration_days=duration_days,
+            candidate_places=candidate_places,
+            dominant_cluster=dominant_cluster,
+            pace=pace,
+            usage_counts=usage_counts,
+            previous_day_ids=previous_day_ids,
+        )
+
+        fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(day_pool, candidate_places)
+        day_title = _day_title(day_number, duration_days, pace)
+
+        slots, ordered_day_candidates = _build_day_slots(
+            day_number=day_number,
+            day_title=day_title,
+            destination=destination,
+            interests=interests,
+            pace=pace,
+            day_pool=day_pool,
+            all_candidates=candidate_places,
+            dominant_cluster=dominant_cluster,
+        )
+
+        slots = _enforce_cross_day_overlap_cap_on_slots(
+            slots=slots,
+            candidate_places=candidate_places,
+            previous_day_ids=previous_day_ids,
+            max_overlap=1,
+            day_title=day_title,
+            destination=destination,
+            interests=interests,
+            pace=pace,
+            dominant_cluster=dominant_cluster,
+        )
+
+        ordered_day_candidates = _ordered_unique_candidates_from_slots(
+            slots=slots,
+            candidate_places=candidate_places,
+        )
+        ordered_day_candidates = _limit_cross_day_overlap(
+            ordered_candidates=ordered_day_candidates,
+            previous_day_ids=previous_day_ids,
+            max_overlap=1,
+        )
+
+        if ordered_day_candidates:
+            fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(
+                ordered_day_candidates,
+                candidate_places,
+            )
+            for slot in slots:
+                slot.fallback_candidate_ids = list(fallback_candidate_ids)
+                slot.fallback_candidate_names = list(fallback_candidate_names)
+
+        place_names = [candidate.name for candidate in ordered_day_candidates]
+        candidate_ids = [candidate.location_id for candidate in ordered_day_candidates]
+        geo_cluster = _choose_day_cluster(ordered_day_candidates)
+
+        skeleton.append(
+            TripDayPlan(
+                day_number=day_number,
+                title=day_title,
+                summary=_day_summary(
+                    day_number=day_number,
+                    total_days=duration_days,
+                    destination=destination,
+                    interests=interests,
+                    pace=pace,
+                    place_names=place_names,
+                ),
+                place_names=place_names,
+                candidate_location_ids=candidate_ids,
+                slots=slots,
+                day_rationale=_build_day_rationale(
+                    day_title=day_title,
+                    pace=pace,
+                    interests=interests,
+                    assigned_candidates=ordered_day_candidates,
+                ),
+                continuity_strategy=_build_continuity_strategy(
+                    dominant_cluster=geo_cluster or dominant_cluster,
+                    ordered_day_candidates=ordered_day_candidates,
+                ),
+                fallback_candidate_ids=fallback_candidate_ids,
+                fallback_candidate_names=fallback_candidate_names,
+                geo_cluster=geo_cluster,
+            )
+        )
+
+        for candidate_id in candidate_ids:
+            usage_counts[candidate_id] = usage_counts.get(candidate_id, 0) + 1
+
+        previous_day_ids = set(candidate_ids)
+
+    return skeleton
 
 
 def parse_and_save_trip_brief(
@@ -1679,6 +1788,7 @@ def replace_trip_plan_slot(
     db.add(record)
     db.commit()
     db.refresh(record)
+    _persist_trip_snapshot(db, record, snapshot_reason="slot_replaced")
 
     return _build_summary_response(record)
 
@@ -1717,6 +1827,7 @@ def enrich_trip_plan(
     db.add(record)
     db.commit()
     db.refresh(record)
+    _persist_trip_snapshot(db, record, snapshot_reason="enriched_plan_created")
 
     return TripPlanEnrichResponse(
         planning_session_id=record.planning_session_id,

@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Calendar, MapPin } from 'lucide-react';
+import { Calendar, MapPin, Layers, Heart } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import moment from 'moment';
 
@@ -19,6 +19,9 @@ const defaultImages = [
 export default function TripPlanCard({ trip }) {
   const image =
     trip.destination_image || defaultImages[Math.floor(Math.random() * defaultImages.length)];
+
+  const versionCount = trip.itinerary_versions?.length || 0;
+  const selectedPlacesCount = trip.selected_places?.length || 0;
 
   return (
     <Link to={`/itinerary?trip=${trip.id}`}>
@@ -53,12 +56,23 @@ export default function TripPlanCard({ trip }) {
           </div>
 
           {trip.start_date ? (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1 text-xs text-muted-foreground mb-2">
               <Calendar className="w-3 h-3" />
               {moment(trip.start_date).format('MMM D')} —{' '}
               {trip.end_date ? moment(trip.end_date).format('MMM D, YYYY') : 'TBD'}
             </div>
           ) : null}
+
+          <div className="flex items-center gap-3 text-[11px] text-muted-foreground pt-1">
+            <span className="inline-flex items-center gap-1">
+              <Layers className="w-3 h-3" />
+              {versionCount} versions
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Heart className="w-3 h-3" />
+              {selectedPlacesCount} saved
+            </span>
+          </div>
         </div>
       </motion.div>
     </Link>

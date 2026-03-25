@@ -40,25 +40,43 @@ def get_recent_traveller_memory_records(
     db: Session,
     traveller_id: str,
     limit: int = 20,
+    event_type: str | None = None,
+    planning_session_id: str | None = None,
 ) -> list[TravellerMemoryRecord]:
-    return (
+    query = (
         db.query(TravellerMemoryRecord)
         .filter(TravellerMemoryRecord.traveller_id == traveller_id)
         .order_by(desc(TravellerMemoryRecord.created_at), desc(TravellerMemoryRecord.id))
-        .limit(limit)
-        .all()
     )
+
+    if event_type:
+        query = query.filter(TravellerMemoryRecord.event_type == event_type)
+
+    records = query.limit(200).all()
+
+    if planning_session_id:
+        records = [
+            record
+            for record in records
+            if str(record.payload.get("planning_session_id") or "") == planning_session_id
+        ]
+
+    return records[:limit]
 
 
 def list_traveller_memory(
     db: Session,
     traveller_id: str,
     limit: int = 20,
+    event_type: str | None = None,
+    planning_session_id: str | None = None,
 ) -> TravellerMemoryListResponse:
     records = get_recent_traveller_memory_records(
         db=db,
         traveller_id=traveller_id,
         limit=limit,
+        event_type=event_type,
+        planning_session_id=planning_session_id,
     )
 
     items = [
