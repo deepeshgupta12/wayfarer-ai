@@ -194,7 +194,7 @@ export default function Itinerary() {
             <div className="space-y-3">
               <div className="p-3 rounded-xl bg-accent/5 border border-accent/10">
                 <p className="text-xs text-muted-foreground">
-                  This itinerary workspace supports slot-based planning, fallback options, and regeneration foundations.
+                  This itinerary workspace now distinguishes between a true slot replacement and a case where the current option still remains the strongest fit.
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-sage-light border border-sage/10">
@@ -204,7 +204,7 @@ export default function Itinerary() {
               </div>
               <div className="p-3 rounded-xl bg-ocean-light border border-ocean/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Alternative:</strong> Day-level fallback candidates can guide the next best swap when the current place is not a fit.
+                  <strong>Alternative:</strong> Day-level fallback candidates now act as the clearer next-best options when a stronger replacement exists.
                 </p>
               </div>
             </div>

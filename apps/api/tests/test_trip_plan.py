@@ -73,6 +73,24 @@ def test_parse_and_save_trip_brief_uses_persona_defaults_when_missing() -> None:
     assert "food" in payload["parsed_constraints"]["interests"]
 
 
+def test_parse_brief_does_not_false_positive_wellness_from_relaxed_language() -> None:
+    client = get_test_client()
+
+    response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_002b",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["parsed_constraints"]["interests"] == ["food", "culture"]
+
+
 def test_get_trip_plan_returns_saved_session() -> None:
     client = get_test_client()
 
@@ -133,7 +151,7 @@ def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
     assert payload["planning_session_id"] == planning_session_id
     assert payload["status"] == "enriched"
     assert payload["saved"] is True
-    assert len(payload["candidate_places"]) >= 1
+    assert len(payload["candidate_places"]) >= 4
     assert len(payload["itinerary_skeleton"]) == 4
 
     first_day = payload["itinerary_skeleton"][0]
@@ -239,7 +257,7 @@ def test_update_then_regenerate_enriched_trip_plan_with_slots() -> None:
     assert payload["parsed_constraints"]["group_type"] == "couple"
     assert payload["parsed_constraints"]["pace_preference"] == "relaxed"
     assert payload["parsed_constraints"]["interests"] == ["food", "culture"]
-    assert len(payload["candidate_places"]) >= 1
+    assert len(payload["candidate_places"]) >= 4
     assert len(payload["itinerary_skeleton"]) == 4
     assert len(payload["itinerary_skeleton"][0]["slots"]) == 4
 
@@ -287,6 +305,9 @@ def test_replace_slot_keeps_same_session_and_updates_only_requested_slot() -> No
     assert enrich_response.status_code == 200
     enriched_payload = enrich_response.json()
 
+    before_day_two = enriched_payload["itinerary_skeleton"][1]
+    before_target_slot = [slot for slot in before_day_two["slots"] if slot["slot_type"] == "evening"][0]
+
     replace_response = client.post(
         f"/trip-plans/{planning_session_id}/replace-slot",
         json={
@@ -305,11 +326,53 @@ def test_replace_slot_keeps_same_session_and_updates_only_requested_slot() -> No
     day_two = payload["itinerary_skeleton"][1]
     target_slot = [slot for slot in day_two["slots"] if slot["slot_type"] == "evening"][0]
     assert target_slot["assigned_place_name"] is not None
-    assert "ranked better" in target_slot["rationale"].lower()
+
+    if target_slot["assigned_location_id"] != before_target_slot["assigned_location_id"]:
+        assert "ranked better" in target_slot["rationale"].lower()
+    else:
+        assert "no stronger alternative" in target_slot["rationale"].lower()
 
     day_one_after = payload["itinerary_skeleton"][0]
     day_one_before = enriched_payload["itinerary_skeleton"][0]
     assert day_one_after["day_number"] == day_one_before["day_number"]
+
+
+def test_replace_slot_prefers_alternative_when_candidate_pool_allows_it() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_009b",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, balanced pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+    enriched_payload = enrich_response.json()
+
+    before_day = enriched_payload["itinerary_skeleton"][0]
+    before_slot = [slot for slot in before_day["slots"] if slot["slot_type"] == "lunch"][0]
+
+    replace_response = client.post(
+        f"/trip-plans/{planning_session_id}/replace-slot",
+        json={
+            "day_number": 1,
+            "slot_type": "lunch",
+            "replacement_mode": "more_food",
+        },
+    )
+    assert replace_response.status_code == 200
+
+    after_payload = replace_response.json()
+    after_day = after_payload["itinerary_skeleton"][0]
+    after_slot = [slot for slot in after_day["slots"] if slot["slot_type"] == "lunch"][0]
+
+    assert after_slot["assigned_place_name"] is not None
+    assert after_slot["assigned_location_id"] != ""
 
 
 def test_replace_slot_rejects_non_enriched_plan() -> None:

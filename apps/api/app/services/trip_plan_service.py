@@ -39,13 +39,13 @@ DESTINATION_HINTS = [
 ]
 
 INTEREST_KEYWORDS: dict[str, list[str]] = {
-    "food": ["food", "foodie", "cuisine", "eat", "restaurant", "dining", "brunch"],
-    "culture": ["culture", "history", "heritage", "museum", "temple", "architecture"],
+    "food": ["food", "foodie", "cuisine", "eat", "restaurant", "dining", "brunch", "market"],
+    "culture": ["culture", "history", "heritage", "museum", "temple", "architecture", "shrine"],
     "adventure": ["adventure", "hiking", "trek", "outdoors", "surf", "kayak"],
-    "nature": ["nature", "park", "mountain", "beach", "river", "scenic", "gardens"],
+    "nature": ["nature", "park", "mountain", "beach", "river", "scenic", "gardens", "bamboo"],
     "luxury": ["luxury", "premium", "upscale", "boutique", "fine dining"],
     "nightlife": ["nightlife", "bar", "club", "music", "late night"],
-    "wellness": ["wellness", "spa", "retreat", "relax", "onsen"],
+    "wellness": ["wellness", "spa", "retreat", "onsen"],
 }
 
 SLOT_SEQUENCE = [
@@ -150,27 +150,46 @@ def _extract_pace(brief: str) -> str | None:
     return None
 
 
+def _contains_interest_keyword(text: str, keyword: str) -> bool:
+    if " " in keyword:
+        return keyword in text
+    return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
+
+
 def _extract_interests(brief: str) -> list[str]:
     lowered = brief.lower()
     matches: list[str] = []
 
     for interest, keywords in INTEREST_KEYWORDS.items():
-        if any(keyword in lowered for keyword in keywords):
+        if any(_contains_interest_keyword(lowered, keyword) for keyword in keywords):
             matches.append(interest)
 
     return matches
+
+
+def _normalize_interests(interests: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for interest in interests:
+        if interest not in ALLOWED_INTERESTS:
+            continue
+        if interest in seen:
+            continue
+        seen.add(interest)
+        normalized.append(interest)
+
+    return normalized[:3]
 
 
 def _merge_with_persona_defaults(
     parsed: dict[str, object],
     defaults: dict[str, object],
 ) -> ParsedTripConstraints:
-    parsed_interests = list(parsed.get("interests") or [])
-    default_interests = list(defaults.get("interests") or [])
+    parsed_interests = _normalize_interests(list(parsed.get("interests") or []))
+    default_interests = _normalize_interests(list(defaults.get("interests") or []))
 
     interests = parsed_interests or default_interests
-    if len(interests) > 3:
-        interests = interests[:3]
 
     return ParsedTripConstraints(
         destination=parsed.get("destination"),
@@ -206,7 +225,7 @@ def _build_parsed_constraints_from_record(record: TripPlanRecord) -> ParsedTripC
         destination=record.destination,
         duration_days=record.duration_days,
         group_type=record.group_type,
-        interests=list(record.interests or []),
+        interests=_normalize_interests(list(record.interests or [])),
         pace_preference=record.pace_preference,
         budget=record.budget,
     )
@@ -259,11 +278,11 @@ def _score_candidate_place(
 def _infer_geo_cluster(place_name: str, city: str, country: str) -> str:
     lowered = f"{place_name} {city} {country}".lower()
 
-    if any(term in lowered for term in ["gion", "higashiyama", "temple", "heritage", "museum"]):
+    if any(term in lowered for term in ["gion", "higashiyama", "temple", "heritage", "museum", "fushimi"]):
         return "heritage_core"
-    if any(term in lowered for term in ["alfama", "chiado", "bairro", "nightlife", "bar"]):
+    if any(term in lowered for term in ["alfama", "chiado", "bairro", "nightlife", "bar", "shibuya", "pontocho"]):
         return "urban_core"
-    if any(term in lowered for term in ["park", "garden", "scenic", "river", "arashiyama", "nature"]):
+    if any(term in lowered for term in ["park", "garden", "scenic", "river", "arashiyama", "nature", "bamboo"]):
         return "scenic_zone"
 
     return "central_core"
@@ -302,7 +321,7 @@ def _build_candidate_places(parsed_constraints: ParsedTripConstraints) -> list[T
 
     candidates: list[TripCandidatePlace] = []
 
-    for result in results[:5]:
+    for result in results[:8]:
         review_bundle = tripadvisor_client.get_destination_reviews(result.name)
         review_analysis = analyze_review_bundle(
             location_id=str(review_bundle["location_id"]),
@@ -465,6 +484,12 @@ def _slot_rationale(
         return (
             f"{candidate.name} now anchors the {slot_type} slot because it ranked better for this edit request "
             f"while staying aligned with {day_title.lower()}."
+        )
+
+    if mode == "retained_best_fit":
+        return (
+            f"{candidate.name} remains in the {slot_type} slot because no stronger alternative outranked it "
+            f"for this edit request while staying aligned with {day_title.lower()}."
         )
 
     return (
@@ -642,25 +667,18 @@ def _get_slot_or_raise(day: TripDayPlan, slot_type: str) -> TripSlotAssignment:
     raise RuntimeError(f"Slot {slot_type} not found in day {day.day_number}.")
 
 
-def _slot_position(slot_type: str) -> int:
-    for index, (name, _) in enumerate(SLOT_SEQUENCE):
-        if name == slot_type:
-            return index
-    return 0
-
-
 def _replacement_interest_boost(candidate: TripCandidatePlace, mode: str, interests: list[str]) -> float:
     text = f"{candidate.name} {candidate.review_summary or ''} {candidate.why_selected}".lower()
     score = 0.0
 
-    if mode == "more_food" and ("food" in text or "dining" in text or "cuisine" in text):
+    if mode == "more_food" and ("food" in text or "dining" in text or "cuisine" in text or "market" in text):
         score += 6.0
-    if mode == "more_culture" and ("culture" in text or "heritage" in text or "history" in text or "museum" in text):
+    if mode == "more_culture" and ("culture" in text or "heritage" in text or "history" in text or "museum" in text or "temple" in text):
         score += 6.0
     if mode == "less_hectic":
-        if "calm" in text or "relaxed" in text or "walkable" in text:
+        if "calm" in text or "relaxed" in text or "walkable" in text or "garden" in text:
             score += 5.0
-        if "nightlife" in text or "late" in text or "energy" in text:
+        if "nightlife" in text or "late" in text or "energy" in text or "busy" in text:
             score -= 2.0
 
     for interest in interests[:2]:
@@ -675,16 +693,16 @@ def _slot_fit_bonus(slot_type: str, candidate: TripCandidatePlace, pace: str | N
     bonus = 0.0
 
     if slot_type == "morning":
-        if "calm" in text or "walkable" in text or "culture" in text:
+        if "calm" in text or "walkable" in text or "culture" in text or "temple" in text or "garden" in text:
             bonus += 2.0
     elif slot_type == "lunch":
-        if "food" in text or "dining" in text or "cuisine" in text:
+        if "food" in text or "dining" in text or "cuisine" in text or "market" in text:
             bonus += 3.0
     elif slot_type == "afternoon":
-        if "culture" in text or "scenic" in text or "exploration" in text:
+        if "culture" in text or "scenic" in text or "exploration" in text or "garden" in text:
             bonus += 2.0
     elif slot_type == "evening":
-        if "ambience" in text or "nightlife" in text or "atmosphere" in text:
+        if "ambience" in text or "nightlife" in text or "atmosphere" in text or "lanes" in text:
             bonus += 2.0
 
     if pace == "relaxed" and ("calm" in text or "walkable" in text or "relaxed" in text):
@@ -721,7 +739,7 @@ def _rank_replacement_candidates(
     mode: str,
     current_assigned_location_id: str | None,
     preferred_location_id: str | None,
-) -> list[TripCandidatePlace]:
+) -> list[tuple[float, TripCandidatePlace]]:
     scored: list[tuple[float, TripCandidatePlace]] = []
 
     for candidate in candidate_places:
@@ -744,7 +762,7 @@ def _rank_replacement_candidates(
         scored.append((replacement_score, candidate))
 
     scored.sort(key=lambda item: item[0], reverse=True)
-    return [candidate for _, candidate in scored]
+    return scored
 
 
 def _refresh_slot_and_day_metadata(
@@ -872,7 +890,7 @@ def update_trip_plan(
     if payload.group_type is not None:
         record.group_type = payload.group_type
     if payload.interests is not None:
-        record.interests = list(payload.interests)[:3]
+        record.interests = _normalize_interests(list(payload.interests))
     if payload.pace_preference is not None:
         record.pace_preference = payload.pace_preference
     if payload.budget is not None:
@@ -912,29 +930,52 @@ def replace_trip_plan_slot(
     day = _get_day_or_raise(itinerary_skeleton, payload.day_number)
     slot = _get_slot_or_raise(day, payload.slot_type)
 
+    current_assigned_location_id = slot.assigned_location_id
+
     ranked_candidates = _rank_replacement_candidates(
         candidate_places=candidate_places,
         day=day,
         slot_type=payload.slot_type,
         parsed_constraints=parsed_constraints,
         mode=payload.replacement_mode,
-        current_assigned_location_id=slot.assigned_location_id,
+        current_assigned_location_id=current_assigned_location_id,
         preferred_location_id=payload.preferred_location_id,
     )
 
     if not ranked_candidates:
         raise RuntimeError("No replacement candidates available for this slot.")
 
-    chosen = ranked_candidates[0]
+    same_candidate = next(
+        (candidate for _, candidate in ranked_candidates if candidate.location_id == current_assigned_location_id),
+        None,
+    )
+    alternative_candidates = [
+        candidate
+        for _, candidate in ranked_candidates
+        if candidate.location_id != current_assigned_location_id
+    ]
+
+    if alternative_candidates:
+        chosen = alternative_candidates[0]
+        slot.rationale = _slot_rationale(
+            slot_type=payload.slot_type,
+            candidate=chosen,
+            day_title=day.title,
+            mode="replaced",
+        )
+    elif same_candidate is not None:
+        chosen = same_candidate
+        slot.rationale = _slot_rationale(
+            slot_type=payload.slot_type,
+            candidate=chosen,
+            day_title=day.title,
+            mode="retained_best_fit",
+        )
+    else:
+        raise RuntimeError("No replacement candidates available for this slot.")
 
     slot.assigned_place_name = chosen.name
     slot.assigned_location_id = chosen.location_id
-    slot.rationale = _slot_rationale(
-        slot_type=payload.slot_type,
-        candidate=chosen,
-        day_title=day.title,
-        mode="replaced",
-    )
 
     day = _refresh_slot_and_day_metadata(
         day=day,
