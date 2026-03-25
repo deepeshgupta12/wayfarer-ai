@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -41,9 +41,40 @@ def enable_pgvector_extension() -> None:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
 
+def _ensure_trip_plan_step2_columns() -> None:
+    inspector = inspect(engine)
+
+    if "trip_plans" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("trip_plans")}
+
+    statements: list[str] = []
+
+    if "candidate_places" not in existing_columns:
+        statements.append(
+            "ALTER TABLE trip_plans "
+            "ADD COLUMN candidate_places JSON NOT NULL DEFAULT '[]'::json"
+        )
+
+    if "itinerary_skeleton" not in existing_columns:
+        statements.append(
+            "ALTER TABLE trip_plans "
+            "ADD COLUMN itinerary_skeleton JSON NOT NULL DEFAULT '[]'::json"
+        )
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
 def create_db_tables() -> None:
     enable_pgvector_extension()
     Base.metadata.create_all(bind=engine)
+    _ensure_trip_plan_step2_columns()
 
 
 def get_db_session() -> Session:

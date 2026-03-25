@@ -7,6 +7,7 @@ import LoadingState from '../components/ui/LoadingState';
 import PlaceCard from '../components/cards/PlaceCard';
 import {
   createTravellerMemory,
+  enrichTripPlan,
   generateDestinationGuide,
   parseAndSaveTripBrief,
   refreshTravellerPersonaFromMemory,
@@ -142,6 +143,20 @@ function buildAssistantMessageFromTripPlan(result) {
   };
 }
 
+function buildAssistantMessageFromEnrichedTripPlan(result) {
+  const dayCount = result.itinerary_skeleton?.length || 0;
+  const candidateCount = result.candidate_places?.length || 0;
+
+  return {
+    role: 'assistant',
+    type: 'trip_plan_enriched',
+    content: `I enriched your planning session into a first draft itinerary skeleton with ${candidateCount} candidate places across ${dayCount} days.`,
+    planningSession: result,
+    chips: ['Refine pace', 'Swap candidates', 'Make it more relaxed'],
+    timestamp: new Date().toISOString(),
+  };
+}
+
 export default function Assistant() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -209,6 +224,25 @@ export default function Assistant() {
             missing_fields: planResult.missing_fields,
           },
         });
+
+        if ((planResult.missing_fields || []).length === 0) {
+          const enrichedResult = await enrichTripPlan(planResult.planning_session_id);
+
+          await createTravellerMemory({
+            traveller_id: travellerId,
+            event_type: 'trip_plan_enriched',
+            source_surface: 'assistant',
+            payload: {
+              planning_session_id: enrichedResult.planning_session_id,
+              candidate_count: (enrichedResult.candidate_places || []).length,
+              day_count: (enrichedResult.itinerary_skeleton || []).length,
+              destination: enrichedResult.parsed_constraints?.destination || null,
+            },
+          });
+
+          const enrichedMsg = buildAssistantMessageFromEnrichedTripPlan(enrichedResult);
+          setMessages((prev) => [...prev, enrichedMsg]);
+        }
 
         return;
       }
@@ -490,6 +524,70 @@ function PlanningSessionCard({ planningSession, onChipClick, chips }) {
   );
 }
 
+function ItinerarySkeletonCard({ planningSession }) {
+  const itinerary = planningSession?.itinerary_skeleton || [];
+  const candidates = planningSession?.candidate_places || [];
+
+  if (!itinerary.length) return null;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-border bg-card p-4 space-y-4">
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+          Draft itinerary skeleton
+        </div>
+        <div className="text-sm text-foreground">
+          {candidates.length} candidate places used to shape this first draft.
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {itinerary.map((day) => (
+          <div key={day.day_number} className="rounded-xl bg-secondary/40 px-4 py-3">
+            <div className="text-sm font-medium text-foreground">
+              Day {day.day_number} — {day.title}
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">{day.summary}</div>
+            {day.place_names?.length > 0 ? (
+              <div className="mt-2 text-xs text-muted-foreground">
+                Suggested places: <span className="font-medium">{day.place_names.join(', ')}</span>
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      {candidates.length > 0 ? (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+            Candidate places
+          </div>
+          <div className="space-y-2">
+            {candidates.map((candidate, index) => (
+              <div key={`${candidate.location_id}-${index}`} className="rounded-xl border border-border bg-background px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-foreground">{candidate.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {candidate.city}, {candidate.country} · {candidate.category}
+                    </div>
+                  </div>
+                  <div className="text-xs font-medium text-muted-foreground">
+                    Score {candidate.score}
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {candidate.why_selected}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageBubble({ message, onChipClick }) {
   if (message.role === 'user') {
     return (
@@ -517,12 +615,16 @@ function MessageBubble({ message, onChipClick }) {
       <div className="flex-1 min-w-0">
         <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
 
-        {message.type === 'trip_plan' ? (
+        {message.type === 'trip_plan' || message.type === 'trip_plan_enriched' ? (
           <PlanningSessionCard
             planningSession={message.planningSession}
             chips={message.chips}
             onChipClick={onChipClick}
           />
+        ) : null}
+
+        {message.type === 'trip_plan_enriched' ? (
+          <ItinerarySkeletonCard planningSession={message.planningSession} />
         ) : null}
 
         {message.places?.length > 0 ? (
@@ -544,7 +646,7 @@ function MessageBubble({ message, onChipClick }) {
           </div>
         ) : null}
 
-        {message.type !== 'trip_plan' ? (
+        {message.type === 'destination_guide' ? (
           <InsightSection
             reviewInsight={message.reviewInsight}
             chips={message.chips}
