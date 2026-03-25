@@ -36,17 +36,29 @@ def create_traveller_memory(
     )
 
 
-def list_traveller_memory(
+def get_recent_traveller_memory_records(
     db: Session,
     traveller_id: str,
     limit: int = 20,
-) -> TravellerMemoryListResponse:
-    records = (
+) -> list[TravellerMemoryRecord]:
+    return (
         db.query(TravellerMemoryRecord)
         .filter(TravellerMemoryRecord.traveller_id == traveller_id)
         .order_by(desc(TravellerMemoryRecord.created_at), desc(TravellerMemoryRecord.id))
         .limit(limit)
         .all()
+    )
+
+
+def list_traveller_memory(
+    db: Session,
+    traveller_id: str,
+    limit: int = 20,
+) -> TravellerMemoryListResponse:
+    records = get_recent_traveller_memory_records(
+        db=db,
+        traveller_id=traveller_id,
+        limit=limit,
     )
 
     items = [

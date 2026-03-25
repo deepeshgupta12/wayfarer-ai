@@ -1,5 +1,10 @@
 const TRAVELLER_ID_KEY = 'wayfarer_traveller_id';
 const TRAVELLER_PERSONA_KEY = 'wayfarer_persona';
+const PERSONA_UPDATED_EVENT = 'wayfarer-persona-updated';
+
+function emitPersonaUpdated() {
+  window.dispatchEvent(new CustomEvent(PERSONA_UPDATED_EVENT));
+}
 
 export function getOrCreateTravellerId() {
   const existing = window.localStorage.getItem(TRAVELLER_ID_KEY);
@@ -14,6 +19,10 @@ export function getTravellerId() {
   return window.localStorage.getItem(TRAVELLER_ID_KEY);
 }
 
+export function getPersonaUpdatedEventName() {
+  return PERSONA_UPDATED_EVENT;
+}
+
 function normalizePersona(persona) {
   if (!persona || typeof persona !== 'object') return null;
 
@@ -26,6 +35,11 @@ function normalizePersona(persona) {
       pace_preference: persona?.signals?.pace_preference || 'balanced',
       group_type: persona?.signals?.group_type || 'solo',
       interests: Array.isArray(persona?.signals?.interests) ? persona.signals.interests : [],
+      memory_events_used:
+        typeof persona?.signals?.memory_events_used === 'number'
+          ? persona.signals.memory_events_used
+          : 0,
+      updated_from_memory: Boolean(persona?.signals?.updated_from_memory),
     },
     saved_at: new Date().toISOString(),
   };
@@ -36,6 +50,7 @@ export function saveTravellerPersona(persona) {
   if (!normalized) return;
 
   window.localStorage.setItem(TRAVELLER_PERSONA_KEY, JSON.stringify(normalized));
+  emitPersonaUpdated();
 }
 
 export function getTravellerPersona() {
@@ -51,9 +66,13 @@ export function getTravellerPersona() {
 
 export function clearTravellerPersona() {
   window.localStorage.removeItem(TRAVELLER_PERSONA_KEY);
+  emitPersonaUpdated();
 }
 
 export function replaceTravellerPersona(persona) {
-  clearTravellerPersona();
-  saveTravellerPersona(persona);
+  const normalized = normalizePersona(persona);
+  if (!normalized) return;
+
+  window.localStorage.setItem(TRAVELLER_PERSONA_KEY, JSON.stringify(normalized));
+  emitPersonaUpdated();
 }
