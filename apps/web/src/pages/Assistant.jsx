@@ -132,7 +132,11 @@ function isRefinementFollowUp(rawInput, currentPlanningSession) {
 
   if (/(\d+)\s*days?/.test(lowered)) return true;
   if (KNOWN_DESTINATIONS.some((destination) => lowered.includes(destination.toLowerCase()))) return true;
-  if (['budget', 'mid-budget', 'mid budget', 'midrange', 'luxury', 'balanced', 'fast'].some((term) => lowered.includes(term))) {
+  if (
+    ['budget', 'mid-budget', 'mid budget', 'midrange', 'luxury', 'balanced', 'fast'].some((term) =>
+      lowered.includes(term)
+    )
+  ) {
     return true;
   }
 
@@ -277,7 +281,7 @@ function buildAssistantMessageFromEnrichedTripPlan(result, followupText = null) 
   const candidateCount = result.candidate_places?.length || 0;
   const content = followupText
     ? `I regenerated your itinerary after "${followupText}" and now have ${candidateCount} candidate places across ${dayCount} days.`
-    : `I enriched your planning session into a first draft itinerary skeleton with ${candidateCount} candidate places across ${dayCount} days.`;
+    : `I enriched your planning session into a first draft slot-based itinerary with ${candidateCount} candidate places across ${dayCount} days.`;
 
   return {
     role: 'assistant',
@@ -706,6 +710,33 @@ function PlanningSessionCard({ planningSession, onChipClick, chips }) {
   );
 }
 
+function SlotCard({ slot }) {
+  return (
+    <div className="rounded-xl bg-secondary/40 px-4 py-3 space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-medium text-foreground">{slot.label}</div>
+          <div className="text-xs text-muted-foreground">{slot.summary}</div>
+        </div>
+        {slot.assigned_place_name ? (
+          <div className="text-xs font-medium text-foreground">{slot.assigned_place_name}</div>
+        ) : (
+          <div className="text-xs text-muted-foreground">Flexible</div>
+        )}
+      </div>
+
+      <div className="text-xs text-muted-foreground">{slot.rationale}</div>
+
+      {slot.fallback_candidate_names?.length > 0 ? (
+        <div className="text-[11px] text-muted-foreground">
+          Fallback options:{' '}
+          <span className="font-medium">{slot.fallback_candidate_names.join(', ')}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ItinerarySkeletonCard({ planningSession }) {
   const itinerary = planningSession?.itinerary_skeleton || [];
   const candidates = planningSession?.candidate_places || [];
@@ -716,23 +747,39 @@ function ItinerarySkeletonCard({ planningSession }) {
     <div className="mt-4 rounded-2xl border border-border bg-card p-4 space-y-4">
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
-          Draft itinerary skeleton
+          Slot-based itinerary workspace
         </div>
         <div className="text-sm text-foreground">
-          {candidates.length} candidate places used to shape this first draft.
+          {candidates.length} candidate places currently support this draft.
         </div>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         {itinerary.map((day) => (
-          <div key={day.day_number} className="rounded-xl bg-secondary/40 px-4 py-3">
-            <div className="text-sm font-medium text-foreground">
-              Day {day.day_number} — {day.title}
+          <div key={day.day_number} className="rounded-2xl border border-border bg-background px-4 py-4 space-y-3">
+            <div>
+              <div className="text-sm font-medium text-foreground">
+                Day {day.day_number} — {day.title}
+              </div>
+              <div className="mt-1 text-sm text-muted-foreground">{day.summary}</div>
             </div>
-            <div className="mt-1 text-sm text-muted-foreground">{day.summary}</div>
-            {day.place_names?.length > 0 ? (
-              <div className="mt-2 text-xs text-muted-foreground">
-                Suggested places: <span className="font-medium">{day.place_names.join(', ')}</span>
+
+            <div className="text-xs text-muted-foreground">
+              <span className="font-medium">Day rationale:</span> {day.day_rationale}
+            </div>
+
+            {day.slots?.length > 0 ? (
+              <div className="grid gap-3">
+                {day.slots.map((slot, index) => (
+                  <SlotCard key={`${day.day_number}-${slot.slot_type}-${index}`} slot={slot} />
+                ))}
+              </div>
+            ) : null}
+
+            {day.fallback_candidate_names?.length > 0 ? (
+              <div className="text-xs text-muted-foreground">
+                <span className="font-medium">Day-level fallback direction:</span>{' '}
+                {day.fallback_candidate_names.join(', ')}
               </div>
             ) : null}
           </div>
