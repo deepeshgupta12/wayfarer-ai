@@ -21,17 +21,30 @@ function normalizeDayActivities(day) {
   }
 
   if (Array.isArray(day.slots) && day.slots.length > 0) {
-    return day.slots.map((slot) => ({
-      time: slot.label,
-      name: slot.assigned_place_name || 'Flexible slot',
-      description: slot.summary,
-      type: 'culture',
-      location: slot.assigned_place_name || day.title,
-      rating: undefined,
-      reason: slot.rationale,
-      fallbackNames: slot.fallback_candidate_names || [],
-      slotType: slot.slot_type,
-    }));
+    return day.slots.map((slot) => {
+      const reasonText = slot.rationale || '';
+      const loweredReason = reasonText.toLowerCase();
+
+      let replacementStatus = 'original';
+      if (loweredReason.includes('now anchors')) {
+        replacementStatus = 'replaced';
+      } else if (loweredReason.includes('remains in the')) {
+        replacementStatus = 'retained_best_fit';
+      }
+
+      return {
+        time: slot.label,
+        name: slot.assigned_place_name || 'Flexible slot',
+        description: slot.summary,
+        type: slot.slot_type === 'lunch' ? 'food' : slot.slot_type === 'evening' ? 'nightlife' : 'culture',
+        location: slot.assigned_place_name || day.title,
+        rating: undefined,
+        reason: slot.rationale,
+        fallbackNames: slot.fallback_candidate_names || [],
+        slotType: slot.slot_type,
+        replacementStatus,
+      };
+    });
   }
 
   return [];
@@ -157,6 +170,12 @@ export default function Itinerary() {
                         </div>
                       ) : null}
 
+                      {day.geo_cluster ? (
+                        <div className="text-xs text-muted-foreground">
+                          <span className="font-medium">Geo cluster:</span> {day.geo_cluster}
+                        </div>
+                      ) : null}
+
                       {activities.map((activity, j) => (
                         <ActivityCard key={j} {...activity} index={j} onSwap={() => {}} />
                       ))}
@@ -194,17 +213,17 @@ export default function Itinerary() {
             <div className="space-y-3">
               <div className="p-3 rounded-xl bg-accent/5 border border-accent/10">
                 <p className="text-xs text-muted-foreground">
-                  This itinerary workspace now distinguishes between a true slot replacement and a case where the current option still remains the strongest fit.
+                  This itinerary now reflects slot-aware sequencing more explicitly, including lunch and evening specialization.
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-sage-light border border-sage/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Tip:</strong> Use slot replacement when one part of the day feels too packed instead of rebuilding the whole trip.
+                  <strong>Guardrail:</strong> a replacement should only happen when a genuinely stronger alternative preserves day coherence.
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-ocean-light border border-ocean/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Alternative:</strong> Day-level fallback candidates now act as the clearer next-best options when a stronger replacement exists.
+                  <strong>Signal:</strong> when the current slot still remains the strongest fit, the itinerary now shows that decision explicitly instead of implying a hidden swap.
                 </p>
               </div>
             </div>

@@ -13,6 +13,8 @@ export default function ActivityCard({
   onExpand,
   index = 0,
   fallbackNames = [],
+  replacementStatus = 'original',
+  slotType,
 }) {
   const typeIcons = {
     food: '🍽️',
@@ -24,6 +26,13 @@ export default function ActivityCard({
     nightlife: '🌙',
     transport: '🚗',
   };
+
+  const replacementBadge =
+    replacementStatus === 'replaced'
+      ? 'Replacement applied'
+      : replacementStatus === 'retained_best_fit'
+        ? 'Strongest fit retained'
+        : null;
 
   return (
     <motion.div
@@ -62,6 +71,20 @@ export default function ActivityCard({
               <img src={image} alt={name} className="w-full h-full object-cover" />
             </div>
           )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          {slotType ? (
+            <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground capitalize">
+              {slotType}
+            </span>
+          ) : null}
+
+          {replacementBadge ? (
+            <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+              {replacementBadge}
+            </span>
+          ) : null}
         </div>
 
         {description && (

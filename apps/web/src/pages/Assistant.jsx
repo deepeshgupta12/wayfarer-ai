@@ -843,6 +843,9 @@ function SlotCard({ slot, onChipClick, dayNumber }) {
       ? `Replace Day ${dayNumber} evening slot`
       : `Replace Day ${dayNumber} ${slot.slot_type}`;
 
+  const isRetained = (slot.rationale || '').toLowerCase().includes('remains in the');
+  const isReplaced = (slot.rationale || '').toLowerCase().includes('now anchors');
+
   return (
     <div className="rounded-xl bg-secondary/40 px-4 py-3 space-y-2">
       <div className="flex items-start justify-between gap-3">
@@ -856,6 +859,14 @@ function SlotCard({ slot, onChipClick, dayNumber }) {
           <div className="text-xs text-muted-foreground">Flexible</div>
         )}
       </div>
+
+      {(isRetained || isReplaced) ? (
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {isReplaced ? 'Replacement applied' : 'Strongest fit retained'}
+          </span>
+        </div>
+      ) : null}
 
       <div className="text-xs text-muted-foreground">{slot.rationale}</div>
 
