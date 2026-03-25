@@ -8,6 +8,7 @@ import PlaceCard from '../components/cards/PlaceCard';
 import {
   createTravellerMemory,
   generateDestinationGuide,
+  parseAndSaveTripBrief,
   refreshTravellerPersonaFromMemory,
 } from '@/api/wayfarerApi';
 import {
@@ -20,9 +21,9 @@ import {
 const suggestedChips = [
   '3 days in Kyoto for food and culture',
   'Couple-friendly Lisbon guide',
-  'Relaxed Prague itinerary',
-  'Best city for a family cultural break',
-  'Hidden gem city for food lovers',
+  'I have 4 days in Tokyo, mid-budget, love food and calm neighborhoods',
+  'Compare Prague and Budapest for a couple trip',
+  'Replace Day 2 with something less hectic',
 ];
 
 function deriveGuidePayload(rawInput, persona) {
@@ -32,6 +33,8 @@ function deriveGuidePayload(rawInput, persona) {
   if (normalized.includes('lisbon')) destination = 'Lisbon';
   else if (normalized.includes('prague')) destination = 'Prague';
   else if (normalized.includes('kyoto')) destination = 'Kyoto';
+  else if (normalized.includes('tokyo')) destination = 'Tokyo';
+  else if (normalized.includes('budapest')) destination = 'Budapest';
 
   const durationMatch = normalized.match(/(\d+)\s*days?/);
   const durationDays = durationMatch ? Number(durationMatch[1]) : 3;
@@ -46,9 +49,46 @@ function deriveGuidePayload(rawInput, persona) {
   };
 }
 
+function isPlanningBrief(rawInput) {
+  const lowered = rawInput.toLowerCase().trim();
+
+  const explicitPlanningStarts = [
+    'i have ',
+    'plan ',
+    'build ',
+    'create ',
+    'make ',
+    'help me plan',
+    'itinerary',
+    'replace day',
+    'replan',
+    'compare ',
+  ];
+
+  if (explicitPlanningStarts.some((term) => lowered.startsWith(term) || lowered.includes(term))) {
+    return true;
+  }
+
+  const strongPlanningPatterns = [
+    /i have\s+\d+\s*days?\s+in\s+/,
+    /plan\s+(me\s+)?a\s+trip/,
+    /build\s+(me\s+)?an?\s+itinerary/,
+    /create\s+(me\s+)?an?\s+itinerary/,
+    /replace\s+day\s+\d+/,
+    /compare\s+[a-z\s]+\s+and\s+[a-z\s]+/,
+  ];
+
+  if (strongPlanningPatterns.some((pattern) => pattern.test(lowered))) {
+    return true;
+  }
+
+  return false;
+}
+
 function buildAssistantMessageFromGuide(result) {
   return {
     role: 'assistant',
+    type: 'destination_guide',
     content: result.overview,
     places:
       result.area_cards?.map((area) => ({
@@ -63,6 +103,41 @@ function buildAssistantMessageFromGuide(result) {
     reviewInsight: result.review_insight || null,
     reviewSignals: result.review_signals || {},
     reviewAuthenticity: result.review_authenticity || null,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function buildAssistantMessageFromTripPlan(result) {
+  const constraints = result.parsed_constraints || {};
+
+  const summaryParts = [
+    constraints.destination ? `destination: ${constraints.destination}` : null,
+    constraints.duration_days ? `duration: ${constraints.duration_days} days` : null,
+    constraints.group_type ? `group: ${constraints.group_type}` : null,
+    constraints.budget ? `budget: ${constraints.budget}` : null,
+    constraints.pace_preference ? `pace: ${constraints.pace_preference}` : null,
+  ].filter(Boolean);
+
+  const content =
+    summaryParts.length > 0
+      ? `I parsed your planning brief and created a draft planning session with ${summaryParts.join(', ')}.`
+      : 'I created a draft planning session, but I still need a few core details before generating a full itinerary.';
+
+  return {
+    role: 'assistant',
+    type: 'trip_plan',
+    content,
+    planningSession: result,
+    chips:
+      (result.missing_fields || []).map((field) => {
+        if (field === 'destination') return 'Add destination';
+        if (field === 'duration_days') return 'Add duration';
+        if (field === 'group_type') return 'Add group type';
+        if (field === 'budget') return 'Add budget';
+        if (field === 'pace_preference') return 'Add pace';
+        if (field === 'interests') return 'Add interests';
+        return `Add ${field}`;
+      }) || [],
     timestamp: new Date().toISOString(),
   };
 }
@@ -113,6 +188,31 @@ export default function Assistant() {
     setIsLoading(true);
 
     try {
+      if (isPlanningBrief(msg)) {
+        const planResult = await parseAndSaveTripBrief({
+          traveller_id: travellerId,
+          brief: msg,
+          source_surface: 'assistant',
+        });
+
+        const assistantMsg = buildAssistantMessageFromTripPlan(planResult);
+        setMessages((prev) => [...prev, assistantMsg]);
+
+        await createTravellerMemory({
+          traveller_id: travellerId,
+          event_type: 'trip_plan_brief_parsed',
+          source_surface: 'assistant',
+          payload: {
+            planning_session_id: planResult.planning_session_id,
+            brief: msg,
+            parsed_constraints: planResult.parsed_constraints,
+            missing_fields: planResult.missing_fields,
+          },
+        });
+
+        return;
+      }
+
       await createTravellerMemory({
         traveller_id: travellerId,
         event_type: 'destination_guide_requested',
@@ -155,10 +255,10 @@ export default function Assistant() {
         replaceTravellerPersona(refreshedPersona);
         setPersona(refreshedPersona);
       } catch {
-        // Non-blocking. The guide already succeeded.
+        // Non-blocking
       }
     } catch (error) {
-      setErrorMessage(error.message || 'Unable to generate a destination guide right now.');
+      setErrorMessage(error.message || 'Unable to process your request right now.');
     } finally {
       setIsLoading(false);
     }
@@ -176,7 +276,7 @@ export default function Assistant() {
           <div>
             <h1 className="font-semibold text-sm">Wayfarer Assistant</h1>
             <p className="text-xs text-muted-foreground">
-              Persona-aware destination guide powered by the V1 backend
+              Destination intelligence + trip planning foundation
             </p>
           </div>
         </div>
@@ -205,7 +305,7 @@ export default function Assistant() {
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-accent to-sunset flex items-center justify-center flex-shrink-0">
                   <Sparkles className="w-3.5 h-3.5 text-white" />
                 </div>
-                <LoadingState compact message="Building your destination guide..." />
+                <LoadingState compact message="Processing your travel request..." />
               </div>
             ) : null}
 
@@ -225,7 +325,7 @@ export default function Assistant() {
           <input
             ref={inputRef}
             type="text"
-            placeholder="Ask for a destination guide, e.g. 3 days in Kyoto for food and culture..."
+            placeholder="Try: I have 4 days in Tokyo, mid-budget, love food and calm neighborhoods..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
@@ -260,12 +360,12 @@ function EmptyChat({ onSuggestionClick, persona }) {
       </motion.div>
       <h2 className="font-serif text-2xl font-bold mb-2">Where to next?</h2>
       <p className="text-muted-foreground text-sm max-w-sm mb-4">
-        Ask for a destination guide and Wayfarer will use the current V1 backend contracts to build a structured response.
+        Ask for destination guidance or start a planning brief for your next trip.
       </p>
       <p className="text-xs text-muted-foreground max-w-md mb-8">
         {persona?.summary
           ? persona.summary
-          : 'Complete onboarding first to make destination guidance more personalized.'}
+          : 'Complete onboarding first to make planning and destination guidance more personalized.'}
       </p>
       <div className="flex flex-wrap justify-center gap-2 max-w-md">
         {suggestedChips.map((chip) => (
@@ -325,6 +425,71 @@ function InsightSection({ reviewInsight, chips, onChipClick }) {
   );
 }
 
+function PlanningSessionCard({ planningSession, onChipClick, chips }) {
+  const constraints = planningSession?.parsed_constraints || {};
+
+  return (
+    <div className="mt-4 rounded-2xl border border-border bg-card p-4 space-y-3">
+      <div>
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+          Planning session
+        </div>
+        <div className="text-sm font-medium text-foreground">
+          {planningSession.planning_session_id}
+        </div>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3 text-sm">
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Destination</div>
+          <div>{constraints.destination || 'Missing'}</div>
+        </div>
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Duration</div>
+          <div>{constraints.duration_days ? `${constraints.duration_days} days` : 'Missing'}</div>
+        </div>
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Group</div>
+          <div>{constraints.group_type || 'Missing'}</div>
+        </div>
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Budget</div>
+          <div>{constraints.budget || 'Missing'}</div>
+        </div>
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Pace</div>
+          <div>{constraints.pace_preference || 'Missing'}</div>
+        </div>
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Interests</div>
+          <div>{constraints.interests?.length ? constraints.interests.join(', ') : 'Missing'}</div>
+        </div>
+      </div>
+
+      {planningSession.missing_fields?.length > 0 ? (
+        <div className="text-xs text-muted-foreground">
+          Missing before itinerary generation:{' '}
+          <span className="font-medium">{planningSession.missing_fields.join(', ')}</span>
+        </div>
+      ) : null}
+
+      {chips?.length > 0 ? (
+        <div className="flex flex-wrap gap-2 pt-1">
+          {chips.map((chip, i) => (
+            <button
+              key={i}
+              onClick={() => onChipClick(chip)}
+              className="px-3 py-1.5 rounded-full bg-secondary text-secondary-foreground text-xs font-medium hover:bg-secondary/80 transition-colors border border-border"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MessageBubble({ message, onChipClick }) {
   if (message.role === 'user') {
     return (
@@ -352,6 +517,14 @@ function MessageBubble({ message, onChipClick }) {
       <div className="flex-1 min-w-0">
         <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
 
+        {message.type === 'trip_plan' ? (
+          <PlanningSessionCard
+            planningSession={message.planningSession}
+            chips={message.chips}
+            onChipClick={onChipClick}
+          />
+        ) : null}
+
         {message.places?.length > 0 ? (
           <div className="mt-4 space-y-2">
             {message.places.map((place, i) => (
@@ -371,11 +544,13 @@ function MessageBubble({ message, onChipClick }) {
           </div>
         ) : null}
 
-        <InsightSection
-          reviewInsight={message.reviewInsight}
-          chips={message.chips}
-          onChipClick={onChipClick}
-        />
+        {message.type !== 'trip_plan' ? (
+          <InsightSection
+            reviewInsight={message.reviewInsight}
+            chips={message.chips}
+            onChipClick={onChipClick}
+          />
+        ) : null}
       </div>
     </motion.div>
   );
