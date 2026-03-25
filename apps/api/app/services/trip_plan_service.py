@@ -55,6 +55,19 @@ SLOT_SEQUENCE = [
     ("evening", "Evening"),
 ]
 
+CLUSTER_TRAVEL_COSTS: dict[tuple[str, str], float] = {
+    ("central_core", "central_core"): 0.0,
+    ("central_core", "heritage_core"): 1.5,
+    ("central_core", "urban_core"): 1.5,
+    ("central_core", "scenic_zone"): 3.0,
+    ("heritage_core", "heritage_core"): 0.0,
+    ("heritage_core", "urban_core"): 2.0,
+    ("heritage_core", "scenic_zone"): 3.5,
+    ("urban_core", "urban_core"): 0.0,
+    ("urban_core", "scenic_zone"): 4.0,
+    ("scenic_zone", "scenic_zone"): 0.0,
+}
+
 tripadvisor_client = TripadvisorClient()
 
 
@@ -278,11 +291,11 @@ def _score_candidate_place(
 def _infer_geo_cluster(place_name: str, city: str, country: str) -> str:
     lowered = f"{place_name} {city} {country}".lower()
 
-    if any(term in lowered for term in ["gion", "higashiyama", "temple", "heritage", "museum", "fushimi"]):
+    if any(term in lowered for term in ["gion", "higashiyama", "temple", "heritage", "museum", "fushimi", "asakusa"]):
         return "heritage_core"
-    if any(term in lowered for term in ["alfama", "chiado", "bairro", "nightlife", "bar", "shibuya", "pontocho"]):
+    if any(term in lowered for term in ["alfama", "chiado", "bairro", "nightlife", "bar", "shibuya", "pontocho", "kagurazaka"]):
         return "urban_core"
-    if any(term in lowered for term in ["park", "garden", "scenic", "river", "arashiyama", "nature", "bamboo"]):
+    if any(term in lowered for term in ["park", "garden", "scenic", "river", "arashiyama", "nature", "bamboo", "ueno"]):
         return "scenic_zone"
 
     return "central_core"
@@ -428,7 +441,7 @@ def _candidate_has_any(candidate: TripCandidatePlace, terms: list[str]) -> bool:
 
 
 def _is_food_candidate(candidate: TripCandidatePlace) -> bool:
-    return _candidate_has_any(candidate, ["food", "dining", "cuisine", "market", "restaurant"])
+    return _candidate_has_any(candidate, ["food", "dining", "cuisine", "market", "restaurant", "bites"])
 
 
 def _is_culture_candidate(candidate: TripCandidatePlace) -> bool:
@@ -436,17 +449,33 @@ def _is_culture_candidate(candidate: TripCandidatePlace) -> bool:
 
 
 def _is_evening_candidate(candidate: TripCandidatePlace) -> bool:
-    return _candidate_has_any(candidate, ["ambience", "atmosphere", "nightlife", "bar", "lanes", "evening"])
+    return _candidate_has_any(candidate, ["ambience", "atmosphere", "nightlife", "bar", "lanes", "evening", "romantic"])
 
 
 def _is_relaxed_candidate(candidate: TripCandidatePlace) -> bool:
-    return _candidate_has_any(candidate, ["calm", "walkable", "garden", "scenic", "relaxed", "river"])
+    return _candidate_has_any(candidate, ["calm", "walkable", "garden", "scenic", "relaxed", "river", "breathing room"])
 
 
-def _cross_day_usage_penalty(candidate: TripCandidatePlace, prior_day_ids: set[str]) -> float:
-    if candidate.location_id in prior_day_ids:
-        return 7.0
-    return 0.0
+def _cluster_transition_cost(from_cluster: str | None, to_cluster: str | None) -> float:
+    if not from_cluster or not to_cluster:
+        return 1.5
+    if (from_cluster, to_cluster) in CLUSTER_TRAVEL_COSTS:
+        return CLUSTER_TRAVEL_COSTS[(from_cluster, to_cluster)]
+    if (to_cluster, from_cluster) in CLUSTER_TRAVEL_COSTS:
+        return CLUSTER_TRAVEL_COSTS[(to_cluster, from_cluster)]
+    return 3.0
+
+
+def _clusters_are_coherent(cluster_a: str | None, cluster_b: str | None) -> bool:
+    return _cluster_transition_cost(cluster_a, cluster_b) <= 2.0
+
+
+def _cross_day_usage_penalty(candidate: TripCandidatePlace, usage_counts: dict[str, int], previous_day_ids: set[str]) -> float:
+    usage_count = usage_counts.get(candidate.location_id, 0)
+    penalty = usage_count * 8.0
+    if candidate.location_id in previous_day_ids:
+        penalty += 4.0
+    return penalty
 
 
 def _final_day_bonus(candidate: TripCandidatePlace, pace: str | None) -> float:
@@ -455,57 +484,123 @@ def _final_day_bonus(candidate: TripCandidatePlace, pace: str | None) -> float:
     return 0.0
 
 
-def _select_day_candidates(
+def _base_day_candidate_score(
+    candidate: TripCandidatePlace,
+    day_number: int,
+    duration_days: int,
+    pace: str | None,
+    usage_counts: dict[str, int],
+    previous_day_ids: set[str],
+) -> float:
+    score = candidate.score
+    score -= _cross_day_usage_penalty(candidate, usage_counts, previous_day_ids)
+
+    if day_number == 1 and candidate.geo_cluster == "central_core":
+        score += 3.0
+    if day_number == duration_days:
+        score += _final_day_bonus(candidate, pace)
+    if pace == "relaxed" and _is_relaxed_candidate(candidate):
+        score += 1.5
+
+    return score
+
+
+def _choose_day_dominant_cluster(
+    candidate_places: list[TripCandidatePlace],
+    day_number: int,
+    duration_days: int,
+    pace: str | None,
+    usage_counts: dict[str, int],
+    previous_day_ids: set[str],
+) -> str | None:
+    if not candidate_places:
+        return None
+
+    ranked = sorted(
+        candidate_places,
+        key=lambda candidate: _base_day_candidate_score(
+            candidate,
+            day_number=day_number,
+            duration_days=duration_days,
+            pace=pace,
+            usage_counts=usage_counts,
+            previous_day_ids=previous_day_ids,
+        ),
+        reverse=True,
+    )
+
+    return ranked[0].geo_cluster if ranked else None
+
+
+def _build_day_candidate_pool(
     day_number: int,
     duration_days: int,
     candidate_places: list[TripCandidatePlace],
-    prior_day_ids: set[str],
+    dominant_cluster: str | None,
     pace: str | None,
+    usage_counts: dict[str, int],
+    previous_day_ids: set[str],
 ) -> list[TripCandidatePlace]:
     if not candidate_places:
         return []
 
-    scored_primary: list[tuple[float, TripCandidatePlace]] = []
-    for candidate in candidate_places:
-        score = candidate.score
-        score -= _cross_day_usage_penalty(candidate, prior_day_ids)
+    scored: list[tuple[float, TripCandidatePlace]] = []
 
-        if day_number == 1 and candidate.geo_cluster == "central_core":
-            score += 3.0
-        if day_number == duration_days:
-            score += _final_day_bonus(candidate, pace)
-        if pace == "relaxed" and _is_relaxed_candidate(candidate):
+    for candidate in candidate_places:
+        score = _base_day_candidate_score(
+            candidate,
+            day_number=day_number,
+            duration_days=duration_days,
+            pace=pace,
+            usage_counts=usage_counts,
+            previous_day_ids=previous_day_ids,
+        )
+
+        if dominant_cluster and candidate.geo_cluster == dominant_cluster:
+            score += 4.0
+        elif dominant_cluster and _clusters_are_coherent(candidate.geo_cluster, dominant_cluster):
             score += 1.5
 
-        scored_primary.append((score, candidate))
+        if pace == "relaxed" and candidate.geo_cluster == "scenic_zone":
+            score += 1.0
 
-    scored_primary.sort(key=lambda item: item[0], reverse=True)
-    primary = scored_primary[0][1]
+        scored.append((score, candidate))
 
-    secondary_scored: list[tuple[float, TripCandidatePlace]] = []
-    for candidate in candidate_places:
-        if candidate.location_id == primary.location_id:
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    pool: list[TripCandidatePlace] = []
+    seen_ids: set[str] = set()
+    reused_from_previous_day = 0
+    max_previous_day_reuse = 1 if previous_day_ids else 0
+
+    for _, candidate in scored:
+        if candidate.location_id in seen_ids:
             continue
 
-        score = candidate.score
-        score -= _cross_day_usage_penalty(candidate, prior_day_ids)
+        is_previous_day_candidate = candidate.location_id in previous_day_ids
 
-        if candidate.geo_cluster == primary.geo_cluster:
-            score += 3.0
-        if _is_food_candidate(candidate):
-            score += 1.0
-        if _is_evening_candidate(candidate):
-            score += 0.5
+        if is_previous_day_candidate and reused_from_previous_day >= max_previous_day_reuse:
+            continue
 
-        secondary_scored.append((score, candidate))
+        pool.append(candidate)
+        seen_ids.add(candidate.location_id)
 
-    secondary_scored.sort(key=lambda item: item[0], reverse=True)
+        if is_previous_day_candidate:
+            reused_from_previous_day += 1
 
-    if not secondary_scored:
-        return [primary]
+        if len(pool) >= 5:
+            break
 
-    secondary = secondary_scored[0][1]
-    return [primary, secondary]
+    if len(pool) < 5:
+        for _, candidate in scored:
+            if candidate.location_id in seen_ids:
+                continue
+            pool.append(candidate)
+            seen_ids.add(candidate.location_id)
+            if len(pool) >= 5:
+                break
+
+    return pool
 
 
 def _build_day_fallbacks(
@@ -582,21 +677,23 @@ def _slot_specialization_score(
     if slot_type == "morning":
         if _is_culture_candidate(candidate) or _is_relaxed_candidate(candidate):
             score += 4.0
+        if candidate.geo_cluster == "heritage_core":
+            score += 1.5
     elif slot_type == "lunch":
         if _is_food_candidate(candidate):
             score += 8.0
         if candidate.geo_cluster in {"central_core", "urban_core"}:
-            score += 1.0
+            score += 1.5
     elif slot_type == "afternoon":
         if _is_culture_candidate(candidate) or _is_relaxed_candidate(candidate):
             score += 4.0
         if candidate.geo_cluster == "scenic_zone":
-            score += 1.0
+            score += 1.5
     elif slot_type == "evening":
         if _is_evening_candidate(candidate):
             score += 7.0
         if candidate.geo_cluster in {"urban_core", "heritage_core"}:
-            score += 1.5
+            score += 2.0
 
     if pace == "relaxed" and _is_relaxed_candidate(candidate):
         score += 2.0
@@ -610,92 +707,137 @@ def _slot_specialization_score(
     return score
 
 
+def _same_day_usage_penalty(candidate: TripCandidatePlace, slot_usage_counts: dict[str, int]) -> float:
+    usage_count = slot_usage_counts.get(candidate.location_id, 0)
+    return usage_count * 12.0
+
+
+def _route_continuity_bonus(
+    slot_type: str,
+    candidate: TripCandidatePlace,
+    dominant_cluster: str | None,
+    previous_candidate: TripCandidatePlace | None,
+    pace: str | None,
+) -> float:
+    bonus = 0.0
+
+    if dominant_cluster and candidate.geo_cluster == dominant_cluster:
+        bonus += 3.5
+    elif dominant_cluster and _clusters_are_coherent(candidate.geo_cluster, dominant_cluster):
+        bonus += 1.5
+
+    if previous_candidate is not None:
+        transition_cost = _cluster_transition_cost(previous_candidate.geo_cluster, candidate.geo_cluster)
+        if transition_cost == 0.0:
+            bonus += 2.5
+        elif transition_cost <= 1.5:
+            bonus += 1.5
+
+    if slot_type == "evening" and candidate.geo_cluster in {"urban_core", "heritage_core"}:
+        bonus += 1.0
+
+    if slot_type == "afternoon" and pace == "relaxed" and candidate.geo_cluster == "scenic_zone":
+        bonus += 1.0
+
+    return bonus
+
+
+def _travel_friction_penalty(
+    candidate: TripCandidatePlace,
+    previous_candidate: TripCandidatePlace | None,
+    pace: str | None,
+) -> float:
+    if previous_candidate is None:
+        return 0.0
+
+    transition_cost = _cluster_transition_cost(previous_candidate.geo_cluster, candidate.geo_cluster)
+    penalty = transition_cost * 2.5
+
+    if previous_candidate.location_id == candidate.location_id:
+        penalty += 6.0
+
+    if pace == "relaxed" and transition_cost >= 3.0:
+        penalty += 2.0
+
+    return penalty
+
+
+def _movement_note(
+    candidate: TripCandidatePlace | None,
+    previous_candidate: TripCandidatePlace | None,
+) -> str | None:
+    if candidate is None:
+        return None
+    if previous_candidate is None:
+        return f"Starts the day with a natural opening in {candidate.geo_cluster or 'the core area'}."
+
+    cost = _cluster_transition_cost(previous_candidate.geo_cluster, candidate.geo_cluster)
+    if cost == 0.0:
+        return f"Keeps movement light by staying within {candidate.geo_cluster or 'the same cluster'}."
+    if cost <= 1.5:
+        return f"Maintains a fairly easy transition from {previous_candidate.name} into a nearby cluster."
+    if cost <= 2.5:
+        return f"Accepts a moderate transfer from {previous_candidate.name} to improve slot fit."
+    return f"Takes a longer transfer from {previous_candidate.name} because the slot fit is materially stronger."
+
+
+def _continuity_note(
+    candidate: TripCandidatePlace | None,
+    dominant_cluster: str | None,
+) -> str | None:
+    if candidate is None:
+        return None
+    if not dominant_cluster:
+        return None
+    if candidate.geo_cluster == dominant_cluster:
+        return f"Supports the day’s main continuity around {dominant_cluster}."
+    if _clusters_are_coherent(candidate.geo_cluster, dominant_cluster):
+        return f"Works as a nearby extension from the day’s {dominant_cluster} anchor."
+    return f"Acts as a deliberate detour away from the day’s {dominant_cluster} anchor."
+
+
 def _assign_slots_for_day(
-    assigned_candidates: list[TripCandidatePlace],
+    day_pool: list[TripCandidatePlace],
     fallback_candidates: list[TripCandidatePlace],
     pace: str | None,
     interests: list[str],
-) -> dict[str, TripCandidatePlace | None]:
-    pool: list[TripCandidatePlace] = list(assigned_candidates)
+    dominant_cluster: str | None,
+) -> list[TripCandidatePlace | None]:
+    pool: list[TripCandidatePlace] = list(day_pool)
+    pool_ids = {candidate.location_id for candidate in pool}
+
     for fallback in fallback_candidates:
-        if fallback.location_id not in {candidate.location_id for candidate in pool}:
+        if fallback.location_id not in pool_ids:
             pool.append(fallback)
+            pool_ids.add(fallback.location_id)
 
     if not pool:
-        return {slot_type: None for slot_type, _ in SLOT_SEQUENCE}
+        return [None, None, None, None]
 
-    slot_assignments: dict[str, TripCandidatePlace | None] = {}
-    used_once_ids: set[str] = set()
+    slot_assignments: list[TripCandidatePlace | None] = []
+    slot_usage_counts: dict[str, int] = {}
+    previous_candidate: TripCandidatePlace | None = None
 
     for slot_type, _ in SLOT_SEQUENCE:
         ranked = sorted(
             pool,
             key=lambda candidate: (
                 _slot_specialization_score(slot_type, candidate, pace, interests)
-                - (3.5 if candidate.location_id in used_once_ids and len(pool) > 2 else 0.0)
+                + _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)
+                - _travel_friction_penalty(candidate, previous_candidate, pace)
+                - _same_day_usage_penalty(candidate, slot_usage_counts)
             ),
             reverse=True,
         )
 
         chosen = ranked[0] if ranked else None
-        slot_assignments[slot_type] = chosen
+        slot_assignments.append(chosen)
 
         if chosen is not None:
-            used_once_ids.add(chosen.location_id)
+            slot_usage_counts[chosen.location_id] = slot_usage_counts.get(chosen.location_id, 0) + 1
+            previous_candidate = chosen
 
     return slot_assignments
-
-
-def _build_day_slots(
-    day_number: int,
-    day_title: str,
-    destination: str,
-    interests: list[str],
-    pace: str | None,
-    assigned_candidates: list[TripCandidatePlace],
-    all_candidates: list[TripCandidatePlace],
-) -> list[TripSlotAssignment]:
-    _ = day_number
-    slots: list[TripSlotAssignment] = []
-
-    fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, all_candidates)
-    fallback_candidates = [
-        candidate for candidate in all_candidates if candidate.location_id in set(fallback_candidate_ids)
-    ]
-    slot_candidates = _assign_slots_for_day(
-        assigned_candidates=assigned_candidates,
-        fallback_candidates=fallback_candidates,
-        pace=pace,
-        interests=interests,
-    )
-
-    for slot_type, label in SLOT_SEQUENCE:
-        candidate = slot_candidates.get(slot_type)
-
-        slots.append(
-            TripSlotAssignment(
-                slot_type=slot_type,
-                label=label,
-                summary=_slot_summary(
-                    slot_type=slot_type,
-                    destination=destination,
-                    interests=interests,
-                    pace=pace,
-                    place_name=candidate.name if candidate else None,
-                ),
-                assigned_place_name=candidate.name if candidate else None,
-                assigned_location_id=candidate.location_id if candidate else None,
-                rationale=_slot_rationale(
-                    slot_type=slot_type,
-                    candidate=candidate,
-                    day_title=day_title,
-                ),
-                fallback_candidate_ids=fallback_candidate_ids,
-                fallback_candidate_names=fallback_candidate_names,
-            )
-        )
-
-    return slots
 
 
 def _build_day_rationale(
@@ -730,6 +872,257 @@ def _choose_day_cluster(assigned_candidates: list[TripCandidatePlace]) -> str | 
     return max(cluster_counts.items(), key=lambda item: item[1])[0]
 
 
+def _build_continuity_strategy(
+    dominant_cluster: str | None,
+    ordered_day_candidates: list[TripCandidatePlace],
+) -> str | None:
+    if not ordered_day_candidates:
+        return None
+
+    if dominant_cluster:
+        unique_clusters = {
+            candidate.geo_cluster
+            for candidate in ordered_day_candidates
+            if candidate.geo_cluster is not None
+        }
+        if len(unique_clusters) <= 1:
+            return f"The day stays tightly anchored in {dominant_cluster} for stronger route coherence."
+        return f"The day is anchored in {dominant_cluster} with only nearby cluster deviations where slot fit improves."
+
+    return "The day balances slot fit while trying to keep movement reasonably light."
+
+
+def _candidate_lookup(candidate_places: list[TripCandidatePlace]) -> dict[str, TripCandidatePlace]:
+    return {candidate.location_id: candidate for candidate in candidate_places}
+
+
+def _ordered_unique_candidates_from_slots(
+    slots: list[TripSlotAssignment],
+    candidate_places: list[TripCandidatePlace],
+) -> list[TripCandidatePlace]:
+    candidate_map = _candidate_lookup(candidate_places)
+    ordered: list[TripCandidatePlace] = []
+    seen_ids: set[str] = set()
+
+    for slot in slots:
+        if not slot.assigned_location_id:
+            continue
+        candidate = candidate_map.get(slot.assigned_location_id)
+        if candidate is None:
+            continue
+        if candidate.location_id in seen_ids:
+            continue
+        ordered.append(candidate)
+        seen_ids.add(candidate.location_id)
+
+    return ordered
+
+
+def _limit_cross_day_overlap(
+    ordered_candidates: list[TripCandidatePlace],
+    previous_day_ids: set[str],
+    max_overlap: int = 1,
+) -> list[TripCandidatePlace]:
+    if not ordered_candidates or not previous_day_ids:
+        return ordered_candidates
+
+    kept: list[TripCandidatePlace] = []
+    repeated_count = 0
+
+    for candidate in ordered_candidates:
+        is_repeat = candidate.location_id in previous_day_ids
+
+        if is_repeat and repeated_count >= max_overlap:
+            continue
+
+        kept.append(candidate)
+
+        if is_repeat:
+            repeated_count += 1
+
+    return kept
+
+
+def _best_non_repeated_candidate_for_slot(
+    slot_type: str,
+    candidate_places: list[TripCandidatePlace],
+    previous_day_ids: set[str],
+    already_used_ids: set[str],
+    dominant_cluster: str | None,
+    previous_candidate: TripCandidatePlace | None,
+    pace: str | None,
+    interests: list[str],
+) -> TripCandidatePlace | None:
+    strict_pool = [
+        candidate
+        for candidate in candidate_places
+        if candidate.location_id not in previous_day_ids and candidate.location_id not in already_used_ids
+    ]
+
+    relaxed_pool = [
+        candidate
+        for candidate in candidate_places
+        if candidate.location_id not in previous_day_ids
+    ]
+
+    fallback_pool = [
+        candidate
+        for candidate in candidate_places
+        if candidate.location_id not in already_used_ids
+    ]
+
+    pool = strict_pool or relaxed_pool or fallback_pool
+    if not pool:
+        return None
+
+    ranked = sorted(
+        pool,
+        key=lambda candidate: (
+            _slot_specialization_score(slot_type, candidate, pace, interests)
+            + _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)
+            - _travel_friction_penalty(candidate, previous_candidate, pace)
+        ),
+        reverse=True,
+    )
+
+    return ranked[0] if ranked else None
+
+
+def _enforce_cross_day_overlap_cap_on_slots(
+    slots: list[TripSlotAssignment],
+    candidate_places: list[TripCandidatePlace],
+    previous_day_ids: set[str],
+    max_overlap: int,
+    day_title: str,
+    destination: str,
+    interests: list[str],
+    pace: str | None,
+    dominant_cluster: str | None,
+) -> list[TripSlotAssignment]:
+    if not previous_day_ids or not slots:
+        return slots
+
+    candidate_map = _candidate_lookup(candidate_places)
+    repeat_count = 0
+    already_used_ids: set[str] = set()
+    previous_candidate: TripCandidatePlace | None = None
+
+    for slot in slots:
+        current_candidate = (
+            candidate_map.get(slot.assigned_location_id)
+            if slot.assigned_location_id
+            else None
+        )
+
+        is_repeat = (
+            current_candidate is not None
+            and current_candidate.location_id in previous_day_ids
+        )
+
+        if is_repeat and repeat_count >= max_overlap:
+            replacement_candidate = _best_non_repeated_candidate_for_slot(
+                slot_type=slot.slot_type,
+                candidate_places=candidate_places,
+                previous_day_ids=previous_day_ids,
+                already_used_ids=already_used_ids,
+                dominant_cluster=dominant_cluster,
+                previous_candidate=previous_candidate,
+                pace=pace,
+                interests=interests,
+            )
+
+            if replacement_candidate is not None:
+                current_candidate = replacement_candidate
+                slot.assigned_location_id = replacement_candidate.location_id
+                slot.assigned_place_name = replacement_candidate.name
+                slot.rationale = (
+                    f"{replacement_candidate.name} was selected to keep {day_title.lower()} "
+                    f"more distinct from the previous day while preserving day coherence."
+                )
+                is_repeat = current_candidate.location_id in previous_day_ids
+
+        slot.summary = _slot_summary(
+            slot_type=slot.slot_type,
+            destination=destination,
+            interests=interests,
+            pace=pace,
+            place_name=current_candidate.name if current_candidate else None,
+        )
+        slot.continuity_note = _continuity_note(current_candidate, dominant_cluster)
+        slot.movement_note = _movement_note(current_candidate, previous_candidate)
+
+        if current_candidate is not None:
+            if current_candidate.location_id in previous_day_ids and repeat_count < max_overlap:
+                repeat_count += 1
+            already_used_ids.add(current_candidate.location_id)
+            previous_candidate = current_candidate
+
+    return slots
+
+
+def _build_day_slots(
+    day_number: int,
+    day_title: str,
+    destination: str,
+    interests: list[str],
+    pace: str | None,
+    day_pool: list[TripCandidatePlace],
+    all_candidates: list[TripCandidatePlace],
+    dominant_cluster: str | None,
+) -> tuple[list[TripSlotAssignment], list[TripCandidatePlace]]:
+    _ = day_number
+    slots: list[TripSlotAssignment] = []
+
+    fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(day_pool, all_candidates)
+    fallback_candidates = [candidate for candidate in all_candidates if candidate.location_id in set(fallback_candidate_ids)]
+
+    ordered_slot_candidates = _assign_slots_for_day(
+        day_pool=day_pool,
+        fallback_candidates=fallback_candidates,
+        pace=pace,
+        interests=interests,
+        dominant_cluster=dominant_cluster,
+    )
+
+    previous_candidate: TripCandidatePlace | None = None
+    unique_assigned_candidates: list[TripCandidatePlace] = []
+    seen_ids: set[str] = set()
+
+    for (slot_type, label), candidate in zip(SLOT_SEQUENCE, ordered_slot_candidates, strict=False):
+        slots.append(
+            TripSlotAssignment(
+                slot_type=slot_type,
+                label=label,
+                summary=_slot_summary(
+                    slot_type=slot_type,
+                    destination=destination,
+                    interests=interests,
+                    pace=pace,
+                    place_name=candidate.name if candidate else None,
+                ),
+                assigned_place_name=candidate.name if candidate else None,
+                assigned_location_id=candidate.location_id if candidate else None,
+                rationale=_slot_rationale(
+                    slot_type=slot_type,
+                    candidate=candidate,
+                    day_title=day_title,
+                ),
+                continuity_note=_continuity_note(candidate, dominant_cluster),
+                movement_note=_movement_note(candidate, previous_candidate),
+                fallback_candidate_ids=fallback_candidate_ids,
+                fallback_candidate_names=fallback_candidate_names,
+            )
+        )
+
+        if candidate is not None:
+            previous_candidate = candidate
+            if candidate.location_id not in seen_ids:
+                unique_assigned_candidates.append(candidate)
+                seen_ids.add(candidate.location_id)
+
+    return slots, unique_assigned_candidates
+
+
 def _build_itinerary_skeleton(
     parsed_constraints: ParsedTripConstraints,
     candidate_places: list[TripCandidatePlace],
@@ -744,23 +1137,78 @@ def _build_itinerary_skeleton(
     if duration_days <= 0:
         return skeleton
 
-    prior_day_ids: set[str] = set()
+    usage_counts: dict[str, int] = {}
+    previous_day_ids: set[str] = set()
 
     for day_number in range(1, duration_days + 1):
-        assigned_candidates = _select_day_candidates(
+        dominant_cluster = _choose_day_dominant_cluster(
+            candidate_places=candidate_places,
+            day_number=day_number,
+            duration_days=duration_days,
+            pace=pace,
+            usage_counts=usage_counts,
+            previous_day_ids=previous_day_ids,
+        )
+
+        day_pool = _build_day_candidate_pool(
             day_number=day_number,
             duration_days=duration_days,
             candidate_places=candidate_places,
-            prior_day_ids=prior_day_ids,
+            dominant_cluster=dominant_cluster,
             pace=pace,
+            usage_counts=usage_counts,
+            previous_day_ids=previous_day_ids,
         )
 
-        place_names = [candidate.name for candidate in assigned_candidates]
-        candidate_ids = [candidate.location_id for candidate in assigned_candidates]
-        fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, candidate_places)
-
+        fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(day_pool, candidate_places)
         day_title = _day_title(day_number, duration_days, pace)
-        geo_cluster = _choose_day_cluster(assigned_candidates)
+
+        slots, ordered_day_candidates = _build_day_slots(
+            day_number=day_number,
+            day_title=day_title,
+            destination=destination,
+            interests=interests,
+            pace=pace,
+            day_pool=day_pool,
+            all_candidates=candidate_places,
+            dominant_cluster=dominant_cluster,
+        )
+
+        slots = _enforce_cross_day_overlap_cap_on_slots(
+            slots=slots,
+            candidate_places=candidate_places,
+            previous_day_ids=previous_day_ids,
+            max_overlap=1,
+            day_title=day_title,
+            destination=destination,
+            interests=interests,
+            pace=pace,
+            dominant_cluster=dominant_cluster,
+        )
+
+        ordered_day_candidates = _ordered_unique_candidates_from_slots(
+            slots=slots,
+            candidate_places=candidate_places,
+        )
+        ordered_day_candidates = _limit_cross_day_overlap(
+            ordered_candidates=ordered_day_candidates,
+            previous_day_ids=previous_day_ids,
+            max_overlap=1,
+        )
+
+        allowed_ids = {candidate.location_id for candidate in ordered_day_candidates}
+        if allowed_ids:
+            fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(
+                ordered_day_candidates,
+                candidate_places,
+            )
+            for slot in slots:
+                slot.fallback_candidate_ids = list(fallback_candidate_ids)
+                slot.fallback_candidate_names = list(fallback_candidate_names)
+
+        place_names = [candidate.name for candidate in ordered_day_candidates]
+        candidate_ids = [candidate.location_id for candidate in ordered_day_candidates]
+        geo_cluster = _choose_day_cluster(ordered_day_candidates)
 
         skeleton.append(
             TripDayPlan(
@@ -776,20 +1224,16 @@ def _build_itinerary_skeleton(
                 ),
                 place_names=place_names,
                 candidate_location_ids=candidate_ids,
-                slots=_build_day_slots(
-                    day_number=day_number,
-                    day_title=day_title,
-                    destination=destination,
-                    interests=interests,
-                    pace=pace,
-                    assigned_candidates=assigned_candidates,
-                    all_candidates=candidate_places,
-                ),
+                slots=slots,
                 day_rationale=_build_day_rationale(
                     day_title=day_title,
                     pace=pace,
                     interests=interests,
-                    assigned_candidates=assigned_candidates,
+                    assigned_candidates=ordered_day_candidates,
+                ),
+                continuity_strategy=_build_continuity_strategy(
+                    dominant_cluster=geo_cluster or dominant_cluster,
+                    ordered_day_candidates=ordered_day_candidates,
                 ),
                 fallback_candidate_ids=fallback_candidate_ids,
                 fallback_candidate_names=fallback_candidate_names,
@@ -797,7 +1241,10 @@ def _build_itinerary_skeleton(
             )
         )
 
-        prior_day_ids.update(candidate_ids)
+        for candidate_id in candidate_ids:
+            usage_counts[candidate_id] = usage_counts.get(candidate_id, 0) + 1
+
+        previous_day_ids = set(candidate_ids)
 
     return skeleton
 
@@ -829,6 +1276,31 @@ def _get_slot_or_raise(day: TripDayPlan, slot_type: str) -> TripSlotAssignment:
     raise RuntimeError(f"Slot {slot_type} not found in day {day.day_number}.")
 
 
+def _get_adjacent_slot_candidates(
+    day: TripDayPlan,
+    slot_type: str,
+    candidate_places: list[TripCandidatePlace],
+) -> tuple[TripCandidatePlace | None, TripCandidatePlace | None]:
+    slot_index_lookup = {slot_name: index for index, (slot_name, _) in enumerate(SLOT_SEQUENCE)}
+    candidate_map = _candidate_lookup(candidate_places)
+    current_index = slot_index_lookup[slot_type]
+
+    previous_candidate: TripCandidatePlace | None = None
+    next_candidate: TripCandidatePlace | None = None
+
+    if current_index > 0:
+        previous_slot = day.slots[current_index - 1]
+        if previous_slot.assigned_location_id:
+            previous_candidate = candidate_map.get(previous_slot.assigned_location_id)
+
+    if current_index < len(day.slots) - 1:
+        next_slot = day.slots[current_index + 1]
+        if next_slot.assigned_location_id:
+            next_candidate = candidate_map.get(next_slot.assigned_location_id)
+
+    return previous_candidate, next_candidate
+
+
 def _replacement_interest_boost(candidate: TripCandidatePlace, mode: str, interests: list[str]) -> float:
     text = _candidate_text(candidate)
     score = 0.0
@@ -838,7 +1310,7 @@ def _replacement_interest_boost(candidate: TripCandidatePlace, mode: str, intere
     if mode == "more_culture" and ("culture" in text or "heritage" in text or "history" in text or "museum" in text or "temple" in text):
         score += 6.0
     if mode == "less_hectic":
-        if "calm" in text or "relaxed" in text or "walkable" in text or "garden" in text:
+        if "calm" in text or "relaxed" in text or "walkable" in text or "garden" in text or "scenic" in text:
             score += 5.0
         if "nightlife" in text or "late" in text or "energy" in text or "busy" in text:
             score -= 2.0
@@ -859,15 +1331,15 @@ def _slot_fit_bonus(slot_type: str, candidate: TripCandidatePlace, pace: str | N
             bonus += 2.0
     elif slot_type == "lunch":
         if "food" in text or "dining" in text or "cuisine" in text or "market" in text:
-            bonus += 3.0
+            bonus += 4.0
     elif slot_type == "afternoon":
         if "culture" in text or "scenic" in text or "exploration" in text or "garden" in text:
-            bonus += 2.0
+            bonus += 2.5
     elif slot_type == "evening":
-        if "ambience" in text or "nightlife" in text or "atmosphere" in text or "lanes" in text:
-            bonus += 2.0
+        if "ambience" in text or "nightlife" in text or "atmosphere" in text or "lanes" in text or "romantic" in text:
+            bonus += 3.5
 
-    if pace == "relaxed" and ("calm" in text or "walkable" in text or "relaxed" in text):
+    if pace == "relaxed" and ("calm" in text or "walkable" in text or "relaxed" in text or "scenic" in text):
         bonus += 1.5
     if pace == "fast" and ("energy" in text or "broad" in text or "nightlife" in text):
         bonus += 1.0
@@ -883,14 +1355,32 @@ def _day_overlap_penalty(candidate: TripCandidatePlace, day: TripDayPlan, slot_t
         if slot.assigned_location_id and slot.slot_type != slot_type
     }
     if candidate.location_id in assigned_ids:
-        penalty += 5.0
+        penalty += 6.0
     return penalty
 
 
 def _cluster_bonus(candidate: TripCandidatePlace, day: TripDayPlan) -> float:
     if not day.geo_cluster or not candidate.geo_cluster:
         return 0.0
-    return 2.5 if candidate.geo_cluster == day.geo_cluster else 0.0
+    if candidate.geo_cluster == day.geo_cluster:
+        return 3.0
+    if _clusters_are_coherent(candidate.geo_cluster, day.geo_cluster):
+        return 1.0
+    return -2.0
+
+
+def _replacement_route_penalty(
+    candidate: TripCandidatePlace,
+    previous_candidate: TripCandidatePlace | None,
+    next_candidate: TripCandidatePlace | None,
+    pace: str | None,
+) -> float:
+    penalty = _travel_friction_penalty(candidate, previous_candidate, pace)
+
+    if next_candidate is not None:
+        penalty += _travel_friction_penalty(next_candidate, candidate, pace)
+
+    return penalty
 
 
 def _rank_replacement_candidates(
@@ -901,8 +1391,9 @@ def _rank_replacement_candidates(
     mode: str,
     current_assigned_location_id: str | None,
     preferred_location_id: str | None,
-) -> list[tuple[float, TripCandidatePlace]]:
-    scored: list[tuple[float, TripCandidatePlace]] = []
+) -> list[tuple[float, float, TripCandidatePlace]]:
+    scored: list[tuple[float, float, TripCandidatePlace]] = []
+    previous_candidate, next_candidate = _get_adjacent_slot_candidates(day, slot_type, candidate_places)
 
     for candidate in candidate_places:
         replacement_score = candidate.score
@@ -915,13 +1406,21 @@ def _rank_replacement_candidates(
         replacement_score += _cluster_bonus(candidate, day)
         replacement_score -= _day_overlap_penalty(candidate, day, slot_type)
 
+        route_penalty = _replacement_route_penalty(
+            candidate=candidate,
+            previous_candidate=previous_candidate,
+            next_candidate=next_candidate,
+            pace=parsed_constraints.pace_preference,
+        )
+        replacement_score -= route_penalty
+
         if current_assigned_location_id and candidate.location_id == current_assigned_location_id:
-            replacement_score -= 1.5
+            replacement_score += 1.0
 
         if preferred_location_id and candidate.location_id == preferred_location_id:
             replacement_score += 15.0
 
-        scored.append((replacement_score, candidate))
+        scored.append((replacement_score, route_penalty, candidate))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     return scored
@@ -932,22 +1431,28 @@ def _refresh_slot_and_day_metadata(
     parsed_constraints: ParsedTripConstraints,
     candidate_places: list[TripCandidatePlace],
 ) -> TripDayPlan:
+    candidate_lookup = _candidate_lookup(candidate_places)
+
     ordered_day_candidates: list[TripCandidatePlace] = []
     seen_ids: set[str] = set()
 
-    candidate_lookup = {candidate.location_id: candidate for candidate in candidate_places}
-
     for slot in day.slots:
         if slot.assigned_location_id and slot.assigned_location_id in candidate_lookup:
-            if slot.assigned_location_id not in seen_ids:
-                ordered_day_candidates.append(candidate_lookup[slot.assigned_location_id])
-                seen_ids.add(slot.assigned_location_id)
+            current_candidate = candidate_lookup[slot.assigned_location_id]
+            if current_candidate.location_id not in seen_ids:
+                ordered_day_candidates.append(current_candidate)
+                seen_ids.add(current_candidate.location_id)
 
     day.place_names = [candidate.name for candidate in ordered_day_candidates]
     day.candidate_location_ids = [candidate.location_id for candidate in ordered_day_candidates]
     day.fallback_candidate_ids, day.fallback_candidate_names = _build_day_fallbacks(ordered_day_candidates, candidate_places)
     day.geo_cluster = _choose_day_cluster(ordered_day_candidates)
+    day.continuity_strategy = _build_continuity_strategy(
+        dominant_cluster=day.geo_cluster,
+        ordered_day_candidates=ordered_day_candidates,
+    )
 
+    previous_candidate: TripCandidatePlace | None = None
     for slot in day.slots:
         current_candidate = (
             candidate_lookup.get(slot.assigned_location_id)
@@ -962,8 +1467,13 @@ def _refresh_slot_and_day_metadata(
             pace=parsed_constraints.pace_preference,
             place_name=current_candidate.name if current_candidate else None,
         )
+        slot.continuity_note = _continuity_note(current_candidate, day.geo_cluster)
+        slot.movement_note = _movement_note(current_candidate, previous_candidate)
         slot.fallback_candidate_ids = list(day.fallback_candidate_ids)
         slot.fallback_candidate_names = list(day.fallback_candidate_names)
+
+        if current_candidate is not None:
+            previous_candidate = current_candidate
 
     day.day_rationale = _build_day_rationale(
         day_title=day.title,
@@ -1107,21 +1617,28 @@ def replace_trip_plan_slot(
     if not ranked_candidates:
         raise RuntimeError("No replacement candidates available for this slot.")
 
-    ranked_lookup = {candidate.location_id: score for score, candidate in ranked_candidates}
-    current_score = ranked_lookup.get(current_assigned_location_id, float("-inf"))
-
-    alternative_candidates = [
-        (score, candidate)
-        for score, candidate in ranked_candidates
-        if candidate.location_id != current_assigned_location_id
-    ]
+    ranked_lookup = {candidate.location_id: (score, route_penalty) for score, route_penalty, candidate in ranked_candidates}
+    current_score, current_route_penalty = ranked_lookup.get(current_assigned_location_id, (float("-inf"), float("inf")))
 
     stronger_alternative: TripCandidatePlace | None = None
-    for score, candidate in alternative_candidates:
-        same_cluster = not day.geo_cluster or not candidate.geo_cluster or candidate.geo_cluster == day.geo_cluster
-        if score >= current_score + 2.0 and same_cluster:
-            stronger_alternative = candidate
-            break
+    for score, route_penalty, candidate in ranked_candidates:
+        if candidate.location_id == current_assigned_location_id:
+            continue
+
+        if score < current_score + 2.5:
+            continue
+
+        if route_penalty > current_route_penalty + 1.0:
+            continue
+
+        if _day_overlap_penalty(candidate, day, payload.slot_type) > 0:
+            continue
+
+        if day.geo_cluster and candidate.geo_cluster and not _clusters_are_coherent(candidate.geo_cluster, day.geo_cluster):
+            continue
+
+        stronger_alternative = candidate
+        break
 
     if stronger_alternative is not None:
         chosen = stronger_alternative
@@ -1133,7 +1650,7 @@ def replace_trip_plan_slot(
         )
     else:
         chosen = next(
-            (candidate for _, candidate in ranked_candidates if candidate.location_id == current_assigned_location_id),
+            (candidate for _, _, candidate in ranked_candidates if candidate.location_id == current_assigned_location_id),
             None,
         )
         if chosen is None:
@@ -1149,7 +1666,7 @@ def replace_trip_plan_slot(
     slot.assigned_place_name = chosen.name
     slot.assigned_location_id = chosen.location_id
 
-    day = _refresh_slot_and_day_metadata(
+    _refresh_slot_and_day_metadata(
         day=day,
         parsed_constraints=parsed_constraints,
         candidate_places=candidate_places,

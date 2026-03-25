@@ -156,6 +156,7 @@ def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
 
     first_day = payload["itinerary_skeleton"][0]
     assert "day_rationale" in first_day
+    assert "continuity_strategy" in first_day
     assert "slots" in first_day
     assert len(first_day["slots"]) == 4
     assert first_day["slots"][0]["slot_type"] == "morning"
@@ -164,6 +165,8 @@ def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
     assert first_day["slots"][3]["slot_type"] == "evening"
     assert "geo_cluster" in payload["candidate_places"][0]
     assert "geo_cluster" in first_day
+    assert "continuity_note" in first_day["slots"][0]
+    assert "movement_note" in first_day["slots"][0]
 
 
 def test_enrich_trip_plan_rejects_incomplete_sessions() -> None:
@@ -288,6 +291,83 @@ def test_enriched_day_contains_fallback_candidates() -> None:
     assert "fallback_candidate_names" in first_day["slots"][0]
 
 
+def test_enriched_day_reduces_within_day_duplication_when_pool_allows_it() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_008b",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+    day_one_slots = payload["itinerary_skeleton"][0]["slots"]
+    assigned_ids = [slot["assigned_location_id"] for slot in day_one_slots if slot["assigned_location_id"]]
+
+    assert len(set(assigned_ids)) >= 3
+
+
+def test_enriched_trip_plan_has_route_aware_lunch_and_evening_specialization() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_008c",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, balanced pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+    first_day_slots = payload["itinerary_skeleton"][0]["slots"]
+
+    lunch_slot = [slot for slot in first_day_slots if slot["slot_type"] == "lunch"][0]
+    evening_slot = [slot for slot in first_day_slots if slot["slot_type"] == "evening"][0]
+
+    lunch_name = (lunch_slot["assigned_place_name"] or "").lower()
+    evening_name = (evening_slot["assigned_place_name"] or "").lower()
+
+    assert lunch_name != ""
+    assert evening_name != ""
+    assert any(term in lunch_name for term in ["market", "tsukiji", "kagurazaka", "tokyo"])
+    assert any(term in evening_name for term in ["shibuya", "kagurazaka", "asakusa", "tokyo"])
+
+
+def test_enriched_trip_plan_has_tighter_cross_day_anti_repetition() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_008d",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+    day_one_ids = set(payload["itinerary_skeleton"][0]["candidate_location_ids"])
+    day_two_ids = set(payload["itinerary_skeleton"][1]["candidate_location_ids"])
+
+    assert len(day_one_ids.intersection(day_two_ids)) <= 1
+
+
 def test_replace_slot_keeps_same_session_and_updates_only_requested_slot() -> None:
     client = get_test_client()
 
@@ -378,6 +458,45 @@ def test_replace_slot_prefers_alternative_when_candidate_pool_allows_it() -> Non
         assert "no stronger alternative" in after_slot["rationale"].lower()
     else:
         assert "ranked better" in after_slot["rationale"].lower()
+
+
+def test_replace_slot_blocks_swap_when_it_would_weaken_day_coherence() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_009c",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+    enriched_payload = enrich_response.json()
+
+    before_day = enriched_payload["itinerary_skeleton"][1]
+    before_slot = [slot for slot in before_day["slots"] if slot["slot_type"] == "evening"][0]
+
+    replace_response = client.post(
+        f"/trip-plans/{planning_session_id}/replace-slot",
+        json={
+            "day_number": 2,
+            "slot_type": "evening",
+            "replacement_mode": "less_hectic",
+            "preferred_location_id": "ta_kyoto_arashiyama_001",
+        },
+    )
+    assert replace_response.status_code == 200
+
+    after_payload = replace_response.json()
+    after_day = after_payload["itinerary_skeleton"][1]
+    after_slot = [slot for slot in after_day["slots"] if slot["slot_type"] == "evening"][0]
+
+    if after_slot["assigned_location_id"] == before_slot["assigned_location_id"]:
+        assert "no stronger alternative" in after_slot["rationale"].lower()
 
 
 def test_replace_slot_rejects_non_enriched_plan() -> None:

@@ -66,6 +66,8 @@ class TripSlotAssignment(BaseModel):
     assigned_place_name: str | None = None
     assigned_location_id: str | None = None
     rationale: str
+    continuity_note: str | None = None
+    movement_note: str | None = None
     fallback_candidate_ids: list[str] = Field(default_factory=list)
     fallback_candidate_names: list[str] = Field(default_factory=list)
 
@@ -78,6 +80,7 @@ class TripDayPlan(BaseModel):
     candidate_location_ids: list[str] = Field(default_factory=list)
     slots: list[TripSlotAssignment] = Field(default_factory=list)
     day_rationale: str
+    continuity_strategy: str | None = None
     fallback_candidate_ids: list[str] = Field(default_factory=list)
     fallback_candidate_names: list[str] = Field(default_factory=list)
     geo_cluster: str | None = None

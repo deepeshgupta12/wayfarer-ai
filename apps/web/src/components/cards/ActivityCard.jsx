@@ -15,6 +15,8 @@ export default function ActivityCard({
   fallbackNames = [],
   replacementStatus = 'original',
   slotType,
+  continuityNote,
+  movementNote,
 }) {
   const typeIcons = {
     food: '🍽️',
@@ -97,6 +99,18 @@ export default function ActivityCard({
             <p className="text-xs text-accent">{reason}</p>
           </div>
         )}
+
+        {continuityNote ? (
+          <div className="mt-2 text-[11px] text-muted-foreground">
+            <span className="font-medium">Continuity:</span> {continuityNote}
+          </div>
+        ) : null}
+
+        {movementNote ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            <span className="font-medium">Movement:</span> {movementNote}
+          </div>
+        ) : null}
 
         {fallbackNames?.length > 0 ? (
           <div className="mt-2 text-[11px] text-muted-foreground">

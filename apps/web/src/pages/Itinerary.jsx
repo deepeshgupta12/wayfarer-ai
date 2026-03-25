@@ -11,15 +11,11 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { base44 } from '@/api/base44Client';
 import LoadingState from '../components/ui/LoadingState';
 import ActivityCard from '../components/cards/ActivityCard';
+import { getStoredTripById, listStoredTrips } from '@/lib/tripStorage';
 
 function normalizeDayActivities(day) {
-  if (Array.isArray(day.activities) && day.activities.length > 0) {
-    return day.activities;
-  }
-
   if (Array.isArray(day.slots) && day.slots.length > 0) {
     return day.slots.map((slot) => {
       const reasonText = slot.rationale || '';
@@ -36,18 +32,49 @@ function normalizeDayActivities(day) {
         time: slot.label,
         name: slot.assigned_place_name || 'Flexible slot',
         description: slot.summary,
-        type: slot.slot_type === 'lunch' ? 'food' : slot.slot_type === 'evening' ? 'nightlife' : 'culture',
+        type:
+          slot.slot_type === 'lunch'
+            ? 'food'
+            : slot.slot_type === 'evening'
+              ? 'nightlife'
+              : slot.slot_type === 'afternoon'
+                ? 'nature'
+                : 'culture',
         location: slot.assigned_place_name || day.title,
         rating: undefined,
         reason: slot.rationale,
         fallbackNames: slot.fallback_candidate_names || [],
         slotType: slot.slot_type,
         replacementStatus,
+        continuityNote: slot.continuity_note || null,
+        movementNote: slot.movement_note || null,
       };
     });
   }
 
+  if (Array.isArray(day.activities) && day.activities.length > 0) {
+    return day.activities;
+  }
+
   return [];
+}
+
+function deriveCanonicalItinerary(trip) {
+  if (
+    Array.isArray(trip.itinerary) &&
+    trip.itinerary.some((day) => Array.isArray(day?.slots) && day.slots.length > 0)
+  ) {
+    return trip.itinerary;
+  }
+
+  if (
+    Array.isArray(trip.itinerary_skeleton) &&
+    trip.itinerary_skeleton.some((day) => Array.isArray(day?.slots) && day.slots.length > 0)
+  ) {
+    return trip.itinerary_skeleton;
+  }
+
+  return trip.itinerary || [];
 }
 
 export default function Itinerary() {
@@ -58,33 +85,41 @@ export default function Itinerary() {
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
     const tripId = urlParams.get('trip');
+
     if (tripId) {
-      base44.entities.Trip.filter({ id: tripId }).then((trips) => {
-        if (trips.length > 0) setTrip(trips[0]);
-        setLoading(false);
-      });
-    } else {
-      base44.entities.Trip.list('-created_date', 1).then((trips) => {
-        if (trips.length > 0) setTrip(trips[0]);
-        setLoading(false);
-      });
+      const storedTrip = getStoredTripById(tripId);
+      setTrip(storedTrip);
+      setLoading(false);
+      return;
     }
+
+    const latestTrip = listStoredTrips()[0] || null;
+    setTrip(latestTrip);
+    setLoading(false);
   }, []);
 
-  if (loading) return <LoadingState message="Loading your itinerary..." />;
+  if (loading) {
+    return <LoadingState message="Loading your itinerary..." />;
+  }
+
   if (!trip) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-20 text-center">
         <h2 className="font-serif text-2xl font-bold mb-3">No itinerary found</h2>
-        <p className="text-muted-foreground mb-6">Create a trip first to see your itinerary here.</p>
-        <Link to="/plan" className="px-5 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-medium">
+        <p className="text-muted-foreground mb-6">
+          Create a trip first to see your itinerary here.
+        </p>
+        <Link
+          to="/plan"
+          className="px-5 py-2.5 bg-primary text-primary-foreground rounded-xl text-sm font-medium"
+        >
           Go to Planner
         </Link>
       </div>
     );
   }
 
-  const itinerary = trip.itinerary || [];
+  const itinerary = deriveCanonicalItinerary(trip);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
@@ -95,6 +130,7 @@ export default function Itinerary() {
         >
           <ArrowLeft className="w-4 h-4" /> Back to trips
         </Link>
+
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
             <h1 className="font-serif text-2xl sm:text-3xl font-bold mb-1">{trip.title}</h1>
@@ -102,17 +138,20 @@ export default function Itinerary() {
               <span className="flex items-center gap-1">
                 <MapPin className="w-3.5 h-3.5" /> {trip.destination}
               </span>
-              {trip.start_date && (
+
+              {trip.start_date ? (
                 <span className="flex items-center gap-1">
                   <Calendar className="w-3.5 h-3.5" /> {trip.start_date}
                 </span>
-              )}
+              ) : null}
             </div>
           </div>
+
           <div className="flex items-center gap-2">
             <button className="px-3 py-2 rounded-lg border border-border text-sm hover:bg-secondary transition-colors">
               <Share2 className="w-4 h-4" />
             </button>
+
             <button className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent/10 text-accent text-sm font-medium hover:bg-accent/20 transition-colors">
               <RefreshCw className="w-3.5 h-3.5" /> Regenerate
             </button>
@@ -143,17 +182,23 @@ export default function Itinerary() {
                         D{day.day || day.day_number || i + 1}
                       </div>
                       <div className="text-left">
-                        <h3 className="font-semibold text-sm">{day.title || `Day ${day.day || i + 1}`}</h3>
-                        <p className="text-xs text-muted-foreground">{activities.length} activities</p>
+                        <h3 className="font-semibold text-sm">
+                          {day.title || `Day ${day.day || i + 1}`}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          {activities.length} activities
+                        </p>
                       </div>
                     </div>
+
                     {expandedDay === i ? (
                       <ChevronUp className="w-4 h-4 text-muted-foreground" />
                     ) : (
                       <ChevronDown className="w-4 h-4 text-muted-foreground" />
                     )}
                   </button>
-                  {expandedDay === i && (
+
+                  {expandedDay === i ? (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
@@ -167,6 +212,13 @@ export default function Itinerary() {
                       {day.day_rationale ? (
                         <div className="text-xs text-muted-foreground">
                           <span className="font-medium">Day rationale:</span> {day.day_rationale}
+                        </div>
+                      ) : null}
+
+                      {day.continuity_strategy ? (
+                        <div className="text-xs text-muted-foreground">
+                          <span className="font-medium">Continuity strategy:</span>{' '}
+                          {day.continuity_strategy}
                         </div>
                       ) : null}
 
@@ -187,7 +239,7 @@ export default function Itinerary() {
                         </div>
                       ) : null}
                     </motion.div>
-                  )}
+                  ) : null}
                 </motion.div>
               );
             })
@@ -210,20 +262,26 @@ export default function Itinerary() {
             <h3 className="font-semibold text-sm mb-3 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-accent" /> AI Insights
             </h3>
+
             <div className="space-y-3">
               <div className="p-3 rounded-xl bg-accent/5 border border-accent/10">
                 <p className="text-xs text-muted-foreground">
-                  This itinerary now reflects slot-aware sequencing more explicitly, including lunch and evening specialization.
+                  This saved itinerary now treats the enriched slot-based trip plan as the primary
+                  source of truth whenever it exists.
                 </p>
               </div>
+
               <div className="p-3 rounded-xl bg-sage-light border border-sage/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Guardrail:</strong> a replacement should only happen when a genuinely stronger alternative preserves day coherence.
+                  <strong>Route realism:</strong> slot flow now reflects continuity strategy and
+                  movement notes across the day instead of generic activity ordering.
                 </p>
               </div>
+
               <div className="p-3 rounded-xl bg-ocean-light border border-ocean/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Signal:</strong> when the current slot still remains the strongest fit, the itinerary now shows that decision explicitly instead of implying a hidden swap.
+                  <strong>Guardrail:</strong> replacements are surfaced explicitly so you can
+                  distinguish a real slot swap from a strongest-fit retention decision.
                 </p>
               </div>
             </div>
