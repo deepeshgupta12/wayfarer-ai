@@ -418,21 +418,94 @@ def _day_summary(
     )
 
 
+def _candidate_text(candidate: TripCandidatePlace) -> str:
+    return f"{candidate.name} {candidate.category} {candidate.review_summary or ''} {candidate.why_selected}".lower()
+
+
+def _candidate_has_any(candidate: TripCandidatePlace, terms: list[str]) -> bool:
+    text = _candidate_text(candidate)
+    return any(term in text for term in terms)
+
+
+def _is_food_candidate(candidate: TripCandidatePlace) -> bool:
+    return _candidate_has_any(candidate, ["food", "dining", "cuisine", "market", "restaurant"])
+
+
+def _is_culture_candidate(candidate: TripCandidatePlace) -> bool:
+    return _candidate_has_any(candidate, ["culture", "heritage", "history", "museum", "temple", "shrine"])
+
+
+def _is_evening_candidate(candidate: TripCandidatePlace) -> bool:
+    return _candidate_has_any(candidate, ["ambience", "atmosphere", "nightlife", "bar", "lanes", "evening"])
+
+
+def _is_relaxed_candidate(candidate: TripCandidatePlace) -> bool:
+    return _candidate_has_any(candidate, ["calm", "walkable", "garden", "scenic", "relaxed", "river"])
+
+
+def _cross_day_usage_penalty(candidate: TripCandidatePlace, prior_day_ids: set[str]) -> float:
+    if candidate.location_id in prior_day_ids:
+        return 7.0
+    return 0.0
+
+
+def _final_day_bonus(candidate: TripCandidatePlace, pace: str | None) -> float:
+    if pace == "relaxed" and candidate.geo_cluster == "scenic_zone":
+        return 3.5
+    return 0.0
+
+
 def _select_day_candidates(
     day_number: int,
     duration_days: int,
     candidate_places: list[TripCandidatePlace],
+    prior_day_ids: set[str],
+    pace: str | None,
 ) -> list[TripCandidatePlace]:
-    assigned = [
-        candidate
-        for index, candidate in enumerate(candidate_places)
-        if index % duration_days == (day_number - 1) % duration_days
-    ]
+    if not candidate_places:
+        return []
 
-    if not assigned and candidate_places:
-        assigned = [candidate_places[min(day_number - 1, len(candidate_places) - 1)]]
+    scored_primary: list[tuple[float, TripCandidatePlace]] = []
+    for candidate in candidate_places:
+        score = candidate.score
+        score -= _cross_day_usage_penalty(candidate, prior_day_ids)
 
-    return assigned
+        if day_number == 1 and candidate.geo_cluster == "central_core":
+            score += 3.0
+        if day_number == duration_days:
+            score += _final_day_bonus(candidate, pace)
+        if pace == "relaxed" and _is_relaxed_candidate(candidate):
+            score += 1.5
+
+        scored_primary.append((score, candidate))
+
+    scored_primary.sort(key=lambda item: item[0], reverse=True)
+    primary = scored_primary[0][1]
+
+    secondary_scored: list[tuple[float, TripCandidatePlace]] = []
+    for candidate in candidate_places:
+        if candidate.location_id == primary.location_id:
+            continue
+
+        score = candidate.score
+        score -= _cross_day_usage_penalty(candidate, prior_day_ids)
+
+        if candidate.geo_cluster == primary.geo_cluster:
+            score += 3.0
+        if _is_food_candidate(candidate):
+            score += 1.0
+        if _is_evening_candidate(candidate):
+            score += 0.5
+
+        secondary_scored.append((score, candidate))
+
+    secondary_scored.sort(key=lambda item: item[0], reverse=True)
+
+    if not secondary_scored:
+        return [primary]
+
+    secondary = secondary_scored[0][1]
+    return [primary, secondary]
 
 
 def _build_day_fallbacks(
@@ -498,6 +571,81 @@ def _slot_rationale(
     )
 
 
+def _slot_specialization_score(
+    slot_type: str,
+    candidate: TripCandidatePlace,
+    pace: str | None,
+    interests: list[str],
+) -> float:
+    score = candidate.score
+
+    if slot_type == "morning":
+        if _is_culture_candidate(candidate) or _is_relaxed_candidate(candidate):
+            score += 4.0
+    elif slot_type == "lunch":
+        if _is_food_candidate(candidate):
+            score += 8.0
+        if candidate.geo_cluster in {"central_core", "urban_core"}:
+            score += 1.0
+    elif slot_type == "afternoon":
+        if _is_culture_candidate(candidate) or _is_relaxed_candidate(candidate):
+            score += 4.0
+        if candidate.geo_cluster == "scenic_zone":
+            score += 1.0
+    elif slot_type == "evening":
+        if _is_evening_candidate(candidate):
+            score += 7.0
+        if candidate.geo_cluster in {"urban_core", "heritage_core"}:
+            score += 1.5
+
+    if pace == "relaxed" and _is_relaxed_candidate(candidate):
+        score += 2.0
+    if pace == "fast" and _is_evening_candidate(candidate):
+        score += 1.0
+
+    for interest in interests[:2]:
+        if interest in _candidate_text(candidate):
+            score += 1.0
+
+    return score
+
+
+def _assign_slots_for_day(
+    assigned_candidates: list[TripCandidatePlace],
+    fallback_candidates: list[TripCandidatePlace],
+    pace: str | None,
+    interests: list[str],
+) -> dict[str, TripCandidatePlace | None]:
+    pool: list[TripCandidatePlace] = list(assigned_candidates)
+    for fallback in fallback_candidates:
+        if fallback.location_id not in {candidate.location_id for candidate in pool}:
+            pool.append(fallback)
+
+    if not pool:
+        return {slot_type: None for slot_type, _ in SLOT_SEQUENCE}
+
+    slot_assignments: dict[str, TripCandidatePlace | None] = {}
+    used_once_ids: set[str] = set()
+
+    for slot_type, _ in SLOT_SEQUENCE:
+        ranked = sorted(
+            pool,
+            key=lambda candidate: (
+                _slot_specialization_score(slot_type, candidate, pace, interests)
+                - (3.5 if candidate.location_id in used_once_ids and len(pool) > 2 else 0.0)
+            ),
+            reverse=True,
+        )
+
+        chosen = ranked[0] if ranked else None
+        slot_assignments[slot_type] = chosen
+
+        if chosen is not None:
+            used_once_ids.add(chosen.location_id)
+
+    return slot_assignments
+
+
 def _build_day_slots(
     day_number: int,
     day_title: str,
@@ -511,10 +659,18 @@ def _build_day_slots(
     slots: list[TripSlotAssignment] = []
 
     fallback_candidate_ids, fallback_candidate_names = _build_day_fallbacks(assigned_candidates, all_candidates)
-    total_assigned = len(assigned_candidates)
+    fallback_candidates = [
+        candidate for candidate in all_candidates if candidate.location_id in set(fallback_candidate_ids)
+    ]
+    slot_candidates = _assign_slots_for_day(
+        assigned_candidates=assigned_candidates,
+        fallback_candidates=fallback_candidates,
+        pace=pace,
+        interests=interests,
+    )
 
-    for slot_index, (slot_type, label) in enumerate(SLOT_SEQUENCE):
-        candidate = assigned_candidates[slot_index % total_assigned] if total_assigned > 0 else None
+    for slot_type, label in SLOT_SEQUENCE:
+        candidate = slot_candidates.get(slot_type)
 
         slots.append(
             TripSlotAssignment(
@@ -588,11 +744,15 @@ def _build_itinerary_skeleton(
     if duration_days <= 0:
         return skeleton
 
+    prior_day_ids: set[str] = set()
+
     for day_number in range(1, duration_days + 1):
         assigned_candidates = _select_day_candidates(
             day_number=day_number,
             duration_days=duration_days,
             candidate_places=candidate_places,
+            prior_day_ids=prior_day_ids,
+            pace=pace,
         )
 
         place_names = [candidate.name for candidate in assigned_candidates]
@@ -637,6 +797,8 @@ def _build_itinerary_skeleton(
             )
         )
 
+        prior_day_ids.update(candidate_ids)
+
     return skeleton
 
 
@@ -668,7 +830,7 @@ def _get_slot_or_raise(day: TripDayPlan, slot_type: str) -> TripSlotAssignment:
 
 
 def _replacement_interest_boost(candidate: TripCandidatePlace, mode: str, interests: list[str]) -> float:
-    text = f"{candidate.name} {candidate.review_summary or ''} {candidate.why_selected}".lower()
+    text = _candidate_text(candidate)
     score = 0.0
 
     if mode == "more_food" and ("food" in text or "dining" in text or "cuisine" in text or "market" in text):
@@ -689,7 +851,7 @@ def _replacement_interest_boost(candidate: TripCandidatePlace, mode: str, intere
 
 
 def _slot_fit_bonus(slot_type: str, candidate: TripCandidatePlace, pace: str | None) -> float:
-    text = f"{candidate.name} {candidate.review_summary or ''} {candidate.why_selected}".lower()
+    text = _candidate_text(candidate)
     bonus = 0.0
 
     if slot_type == "morning":
@@ -754,7 +916,7 @@ def _rank_replacement_candidates(
         replacement_score -= _day_overlap_penalty(candidate, day, slot_type)
 
         if current_assigned_location_id and candidate.location_id == current_assigned_location_id:
-            replacement_score -= 10.0
+            replacement_score -= 1.5
 
         if preferred_location_id and candidate.location_id == preferred_location_id:
             replacement_score += 15.0
@@ -945,34 +1107,44 @@ def replace_trip_plan_slot(
     if not ranked_candidates:
         raise RuntimeError("No replacement candidates available for this slot.")
 
-    same_candidate = next(
-        (candidate for _, candidate in ranked_candidates if candidate.location_id == current_assigned_location_id),
-        None,
-    )
+    ranked_lookup = {candidate.location_id: score for score, candidate in ranked_candidates}
+    current_score = ranked_lookup.get(current_assigned_location_id, float("-inf"))
+
     alternative_candidates = [
-        candidate
-        for _, candidate in ranked_candidates
+        (score, candidate)
+        for score, candidate in ranked_candidates
         if candidate.location_id != current_assigned_location_id
     ]
 
-    if alternative_candidates:
-        chosen = alternative_candidates[0]
+    stronger_alternative: TripCandidatePlace | None = None
+    for score, candidate in alternative_candidates:
+        same_cluster = not day.geo_cluster or not candidate.geo_cluster or candidate.geo_cluster == day.geo_cluster
+        if score >= current_score + 2.0 and same_cluster:
+            stronger_alternative = candidate
+            break
+
+    if stronger_alternative is not None:
+        chosen = stronger_alternative
         slot.rationale = _slot_rationale(
             slot_type=payload.slot_type,
             candidate=chosen,
             day_title=day.title,
             mode="replaced",
         )
-    elif same_candidate is not None:
-        chosen = same_candidate
+    else:
+        chosen = next(
+            (candidate for _, candidate in ranked_candidates if candidate.location_id == current_assigned_location_id),
+            None,
+        )
+        if chosen is None:
+            raise RuntimeError("No replacement candidates available for this slot.")
+
         slot.rationale = _slot_rationale(
             slot_type=payload.slot_type,
             candidate=chosen,
             day_title=day.title,
             mode="retained_best_fit",
         )
-    else:
-        raise RuntimeError("No replacement candidates available for this slot.")
 
     slot.assigned_place_name = chosen.name
     slot.assigned_location_id = chosen.location_id

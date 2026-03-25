@@ -374,6 +374,11 @@ def test_replace_slot_prefers_alternative_when_candidate_pool_allows_it() -> Non
     assert after_slot["assigned_place_name"] is not None
     assert after_slot["assigned_location_id"] != ""
 
+    if after_slot["assigned_location_id"] == before_slot["assigned_location_id"]:
+        assert "no stronger alternative" in after_slot["rationale"].lower()
+    else:
+        assert "ranked better" in after_slot["rationale"].lower()
+
 
 def test_replace_slot_rejects_non_enriched_plan() -> None:
     client = get_test_client()
