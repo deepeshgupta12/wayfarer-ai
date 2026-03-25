@@ -66,6 +66,26 @@ export async function generateDestinationGuide(payload) {
   return parseJsonResponse(response);
 }
 
+export async function parseAndSaveTripBrief(payload) {
+  const response = await fetch(`${API_BASE_URL}/trip-plans/parse-and-save`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return parseJsonResponse(response);
+}
+
+export async function getTripPlan(planningSessionId) {
+  const response = await fetch(
+    `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}`
+  );
+
+  return parseJsonResponse(response);
+}
+
 export async function createTravellerMemory(payload) {
   const response = await fetch(`${API_BASE_URL}/traveller-memory`, {
     method: 'POST',

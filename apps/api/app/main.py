@@ -11,6 +11,7 @@ from app.api.routes.persona_embeddings import router as persona_embeddings_route
 from app.api.routes.providers import router as providers_router
 from app.api.routes.review_intelligence import router as review_intelligence_router
 from app.api.routes.traveller_memory import router as traveller_memory_router
+from app.api.routes.trip_plan import router as trip_plan_router
 from app.core.config import get_settings
 from app.db.session import create_db_tables
 
@@ -59,6 +60,7 @@ app.include_router(persona_embeddings_router)
 app.include_router(review_intelligence_router)
 app.include_router(destinations_router)
 app.include_router(traveller_memory_router)
+app.include_router(trip_plan_router)
 
 
 @app.get("/")

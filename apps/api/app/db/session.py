@@ -9,6 +9,7 @@ from app.models import (
     TravellerMemoryRecord,
     TravellerPersonaEmbeddingRecord,
     TravellerPersonaRecord,
+    TripPlanRecord,
 )  # noqa: F401
 
 settings = get_settings()
