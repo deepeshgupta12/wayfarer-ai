@@ -104,3 +104,7 @@ def test_refresh_persona_from_memory_updates_signals() -> None:
     assert "food" in payload["signals"]["interests"]
     assert payload["signals"]["updated_from_memory"] is True
     assert payload["signals"]["memory_events_used"] >= 2
+    assert payload["signals"]["bayesian_update_v1"] is True
+    assert "posterior" in payload["signals"]
+    assert "group_type" in payload["signals"]["posterior"]
+    assert payload["signals"]["posterior"]["group_type"]["couple"] > payload["signals"]["posterior"]["group_type"]["solo"]

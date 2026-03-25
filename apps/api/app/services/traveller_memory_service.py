@@ -39,7 +39,7 @@ def create_traveller_memory(
 def get_recent_traveller_memory_records(
     db: Session,
     traveller_id: str,
-    limit: int = 25,
+    limit: int = 20,
 ) -> list[TravellerMemoryRecord]:
     return (
         db.query(TravellerMemoryRecord)

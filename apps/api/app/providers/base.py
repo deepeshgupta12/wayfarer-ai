@@ -8,3 +8,7 @@ class BaseChatProvider(ABC):
     @abstractmethod
     def get_status(self) -> dict[str, Any]:
         raise NotImplementedError
+
+    @abstractmethod
+    def generate_json(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+        raise NotImplementedError

@@ -1,12 +1,16 @@
+from typing import Any
+
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.review_intelligence import ReviewIntelligenceRecord
+from app.providers.ollama_provider import OllamaChatProvider
+from app.providers.openai_provider import OpenAIChatProvider
 from app.schemas.review_intelligence import (
     ReviewIntelligenceOutput,
     ReviewIntelligencePersistedOutput,
     ReviewIntelligenceRequest,
 )
-
 
 THEME_KEYWORDS: dict[str, dict[str, list[str]]] = {
     "service": {
@@ -27,13 +31,96 @@ THEME_KEYWORDS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+ALLOWED_THEME_LABELS = {"positive", "neutral", "caution"}
+
+
+def _resolve_chat_provider():
+    settings = get_settings()
+    if settings.default_llm_provider == "ollama":
+        return OllamaChatProvider()
+    return OpenAIChatProvider()
+
+
+def _build_review_theme_prompt(
+    location_name: str,
+    reviews: list[dict[str, object]],
+) -> str:
+    review_lines = []
+    for index, review in enumerate(reviews[:8], start=1):
+        review_lines.append(
+            f"{index}. rating={review['rating']} text={str(review['text']).strip()}"
+        )
+
+    return (
+        "You are extracting structured travel review themes.\n"
+        f"Location: {location_name}\n"
+        "Classify each theme with one label: positive, neutral, or caution.\n"
+        "Themes: service, food_quality, value, ambience.\n"
+        "Return JSON only.\n"
+        "Reviews:\n"
+        + "\n".join(review_lines)
+    )
+
+
+def _build_review_theme_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "service": {"type": "string", "enum": ["positive", "neutral", "caution"]},
+            "food_quality": {"type": "string", "enum": ["positive", "neutral", "caution"]},
+            "value": {"type": "string", "enum": ["positive", "neutral", "caution"]},
+            "ambience": {"type": "string", "enum": ["positive", "neutral", "caution"]},
+        },
+        "required": ["service", "food_quality", "value", "ambience"],
+        "additionalProperties": False,
+    }
+
+
+def _sanitize_llm_theme_output(payload: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    cleaned: dict[str, str] = {}
+    for theme_name in THEME_KEYWORDS:
+        value = payload.get(theme_name)
+        if not isinstance(value, str):
+            return None
+
+        normalized = value.strip().lower()
+        if normalized not in ALLOWED_THEME_LABELS:
+            return None
+
+        cleaned[theme_name] = normalized
+
+    return cleaned
+
+
+def _extract_themes_with_llm(
+    location_name: str,
+    reviews: list[dict[str, object]],
+) -> dict[str, str] | None:
+    provider = _resolve_chat_provider()
+    prompt = _build_review_theme_prompt(location_name=location_name, reviews=reviews)
+    schema = _build_review_theme_schema()
+
+    try:
+        raw_output = provider.generate_json(prompt=prompt, schema=schema)
+    except Exception:
+        return None
+
+    return _sanitize_llm_theme_output(raw_output)
+
 
 def _count_keyword_hits(text: str, keywords: list[str]) -> int:
     lowered = text.lower()
     return sum(1 for keyword in keywords if keyword in lowered)
 
 
-def _classify_theme(combined_text: str, positive_keywords: list[str], negative_keywords: list[str]) -> str:
+def _classify_theme(
+    combined_text: str,
+    positive_keywords: list[str],
+    negative_keywords: list[str],
+) -> str:
     positive_hits = _count_keyword_hits(combined_text, positive_keywords)
     negative_hits = _count_keyword_hits(combined_text, negative_keywords)
 
@@ -46,6 +133,19 @@ def _classify_theme(combined_text: str, positive_keywords: list[str], negative_k
     if positive_hits == negative_hits:
         return "neutral"
     return "caution"
+
+
+def _extract_themes_heuristically(
+    combined_text: str,
+) -> dict[str, str]:
+    return {
+        theme_name: _classify_theme(
+            combined_text=combined_text,
+            positive_keywords=theme_keywords["positive"],
+            negative_keywords=theme_keywords["negative"],
+        )
+        for theme_name, theme_keywords in THEME_KEYWORDS.items()
+    }
 
 
 def _compute_trust_score(reviews: list[dict[str, object]]) -> float:
@@ -79,14 +179,11 @@ def analyze_review_bundle(
     combined_text = " ".join(str(review["text"]) for review in reviews)
     average_rating = sum(float(review["rating"]) for review in reviews) / len(reviews)
 
-    themes = {
-        theme_name: _classify_theme(
-            combined_text=combined_text,
-            positive_keywords=theme_keywords["positive"],
-            negative_keywords=theme_keywords["negative"],
-        )
-        for theme_name, theme_keywords in THEME_KEYWORDS.items()
-    }
+    llm_themes = _extract_themes_with_llm(
+        location_name=location_name,
+        reviews=reviews,
+    )
+    themes = llm_themes or _extract_themes_heuristically(combined_text)
 
     if average_rating >= 4.3:
         verdict_prefix = "Travellers consistently rate this place highly."

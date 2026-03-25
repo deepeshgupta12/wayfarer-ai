@@ -1,3 +1,6 @@
+import math
+from collections.abc import Iterable
+
 from sqlalchemy.orm import Session
 
 from app.models.persona import TravellerPersonaRecord
@@ -68,6 +71,137 @@ def _infer_interests_from_query(query: str) -> list[str]:
     return inferred
 
 
+def _normalize_distribution(scores: dict[str, float]) -> dict[str, float]:
+    total = sum(scores.values())
+    if total <= 0:
+        uniform = 1.0 / len(scores)
+        return {key: uniform for key in scores}
+
+    return {key: value / total for key, value in scores.items()}
+
+
+def _build_prior_distribution(
+    allowed_values: Iterable[str],
+    current_value: str,
+    selected_weight: float = 0.64,
+) -> dict[str, float]:
+    allowed = list(allowed_values)
+    if current_value not in allowed:
+        current_value = allowed[0]
+
+    remaining = max(1e-6, 1.0 - selected_weight)
+    other_weight = remaining / max(1, len(allowed) - 1)
+
+    priors: dict[str, float] = {}
+    for value in allowed:
+        priors[value] = selected_weight if value == current_value else other_weight
+    return priors
+
+
+def _build_interest_beta_priors(
+    current_interests: list[str],
+) -> dict[str, tuple[float, float]]:
+    priors: dict[str, tuple[float, float]] = {}
+
+    for interest in ALLOWED_INTERESTS:
+        if interest in current_interests:
+            priors[interest] = (2.5, 1.2)
+        else:
+            priors[interest] = (1.2, 2.0)
+
+    return priors
+
+
+def _posterior_from_likelihoods(
+    prior: dict[str, float],
+    likelihoods: list[dict[str, float]],
+) -> dict[str, float]:
+    log_scores = {key: math.log(max(value, 1e-9)) for key, value in prior.items()}
+
+    for likelihood in likelihoods:
+        for key, value in likelihood.items():
+            log_scores[key] += math.log(max(value, 1e-9))
+
+    max_log = max(log_scores.values())
+    stabilized = {key: math.exp(value - max_log) for key, value in log_scores.items()}
+    return _normalize_distribution(stabilized)
+
+
+def _build_group_likelihood(payload: dict[str, object]) -> dict[str, float] | None:
+    traveller_type = payload.get("traveller_type")
+    if traveller_type not in ALLOWED_GROUPS:
+        return None
+
+    likelihood = {group: 0.85 / (len(ALLOWED_GROUPS) - 1) for group in ALLOWED_GROUPS}
+    likelihood[traveller_type] = 0.85
+    return _normalize_distribution(likelihood)
+
+
+def _build_style_likelihood(payload: dict[str, object]) -> dict[str, float] | None:
+    budget = payload.get("budget")
+    if budget not in ALLOWED_STYLES:
+        return None
+
+    likelihood = {style: 0.8 / (len(ALLOWED_STYLES) - 1) for style in ALLOWED_STYLES}
+    likelihood[budget] = 0.8
+    return _normalize_distribution(likelihood)
+
+
+def _build_pace_likelihood(payload: dict[str, object]) -> dict[str, float] | None:
+    duration_days = payload.get("duration_days")
+    if not isinstance(duration_days, int):
+        return None
+
+    if duration_days <= 2:
+        target = "fast"
+    elif duration_days >= 6:
+        target = "relaxed"
+    else:
+        target = "balanced"
+
+    likelihood = {pace: 0.8 / (len(ALLOWED_PACES) - 1) for pace in ALLOWED_PACES}
+    likelihood[target] = 0.8
+    return _normalize_distribution(likelihood)
+
+
+def _update_interest_posteriors(
+    priors: dict[str, tuple[float, float]],
+    memory_payloads: list[dict[str, object]],
+) -> dict[str, float]:
+    posteriors: dict[str, tuple[float, float]] = {key: (a, b) for key, (a, b) in priors.items()}
+
+    for payload in memory_payloads:
+        declared_interests = payload.get("interests", [])
+        declared_set = {
+            interest
+            for interest in declared_interests
+            if isinstance(declared_interests, list) and interest in ALLOWED_INTERESTS
+        }
+
+        query = payload.get("query")
+        inferred_set = set(_infer_interests_from_query(query)) if isinstance(query, str) else set()
+
+        positive_evidence = declared_set | inferred_set
+        if not positive_evidence:
+            continue
+
+        event_type = str(payload.get("_event_type", ""))
+        weight = 1.35 if event_type == "destination_guide_generated" else 1.0
+
+        for interest in ALLOWED_INTERESTS:
+            alpha, beta = posteriors[interest]
+            if interest in positive_evidence:
+                alpha += 1.4 * weight
+            else:
+                beta += 0.15 * weight
+            posteriors[interest] = (alpha, beta)
+
+    return {
+        interest: round(alpha / (alpha + beta), 4)
+        for interest, (alpha, beta) in posteriors.items()
+    }
+
+
 def build_initial_persona(payload: TravellerPersonaInput) -> TravellerPersonaOutput:
     archetype = _detect_archetype(payload)
 
@@ -124,69 +258,53 @@ def refresh_persona_from_memory(
         limit=25,
     )
 
-    interest_scores = {interest: 0.0 for interest in ALLOWED_INTERESTS}
-    pace_scores = {pace: 0.0 for pace in ALLOWED_PACES}
-    group_scores = {group: 0.0 for group in ALLOWED_GROUPS}
-    style_scores = {style: 0.0 for style in ALLOWED_STYLES}
-
-    for interest in record.interests:
-        if interest in interest_scores:
-            interest_scores[interest] += 2.0
-
-    pace_scores[record.pace_preference] += 2.0
-    group_scores[record.group_type] += 2.0
-    style_scores[record.travel_style] += 2.0
-
-    events_used = 0
-
+    memory_payloads: list[dict[str, object]] = []
     for memory_record in memory_records:
         payload = memory_record.payload if isinstance(memory_record.payload, dict) else {}
-        event_weight = 1.5 if memory_record.event_type == "destination_guide_generated" else 1.0
+        payload = dict(payload)
+        payload["_event_type"] = memory_record.event_type
+        memory_payloads.append(payload)
 
-        payload_interests = payload.get("interests", [])
-        if isinstance(payload_interests, list):
-            for interest in payload_interests:
-                if interest in interest_scores:
-                    interest_scores[interest] += 2.0 * event_weight
+    group_prior = _build_prior_distribution(ALLOWED_GROUPS, record.group_type)
+    pace_prior = _build_prior_distribution(ALLOWED_PACES, record.pace_preference)
+    style_prior = _build_prior_distribution(ALLOWED_STYLES, record.travel_style)
+    interest_priors = _build_interest_beta_priors(list(record.interests))
 
-        query = payload.get("query")
-        if isinstance(query, str) and query.strip():
-            for interest in _infer_interests_from_query(query):
-                interest_scores[interest] += 1.0 * event_weight
+    group_likelihoods = [
+        likelihood
+        for payload in memory_payloads
+        if (likelihood := _build_group_likelihood(payload)) is not None
+    ]
+    pace_likelihoods = [
+        likelihood
+        for payload in memory_payloads
+        if (likelihood := _build_pace_likelihood(payload)) is not None
+    ]
+    style_likelihoods = [
+        likelihood
+        for payload in memory_payloads
+        if (likelihood := _build_style_likelihood(payload)) is not None
+    ]
 
-        traveller_type = payload.get("traveller_type")
-        if traveller_type in group_scores:
-            group_scores[traveller_type] += 2.5 * event_weight
+    group_posterior = _posterior_from_likelihoods(group_prior, group_likelihoods)
+    pace_posterior = _posterior_from_likelihoods(pace_prior, pace_likelihoods)
+    style_posterior = _posterior_from_likelihoods(style_prior, style_likelihoods)
+    interest_posteriors = _update_interest_posteriors(interest_priors, memory_payloads)
 
-        duration_days = payload.get("duration_days")
-        if isinstance(duration_days, int):
-            if duration_days <= 2:
-                pace_scores["fast"] += 1.5 * event_weight
-            elif duration_days >= 6:
-                pace_scores["relaxed"] += 1.5 * event_weight
-            else:
-                pace_scores["balanced"] += 1.5 * event_weight
-
-        budget = payload.get("budget")
-        if budget in style_scores:
-            style_scores[budget] += 2.0 * event_weight
-
-        events_used += 1
+    updated_group = max(group_posterior.items(), key=lambda item: item[1])[0]
+    updated_pace = max(pace_posterior.items(), key=lambda item: item[1])[0]
+    updated_style = max(style_posterior.items(), key=lambda item: item[1])[0]
 
     ranked_interests = [
         interest
-        for interest, score in sorted(
-            interest_scores.items(),
+        for interest, probability in sorted(
+            interest_posteriors.items(),
             key=lambda item: (item[1], item[0]),
             reverse=True,
         )
-        if score > 0
+        if probability >= 0.45
     ]
     updated_interests = ranked_interests[:3] or list(record.interests)
-
-    updated_pace = max(pace_scores.items(), key=lambda item: item[1])[0]
-    updated_group = max(group_scores.items(), key=lambda item: item[1])[0]
-    updated_style = max(style_scores.items(), key=lambda item: item[1])[0]
 
     refined_payload = TravellerPersonaInput(
         travel_style=updated_style,
@@ -216,7 +334,14 @@ def refresh_persona_from_memory(
             "pace_preference": updated_pace,
             "group_type": updated_group,
             "interests": updated_interests,
-            "memory_events_used": events_used,
+            "memory_events_used": len(memory_payloads),
             "updated_from_memory": True,
+            "bayesian_update_v1": True,
+            "posterior": {
+                "group_type": group_posterior,
+                "pace_preference": pace_posterior,
+                "travel_style": style_posterior,
+                "interests": interest_posteriors,
+            },
         },
     )
