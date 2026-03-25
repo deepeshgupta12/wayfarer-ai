@@ -117,7 +117,7 @@ def test_enrich_trip_plan_returns_candidates_and_itinerary_skeleton() -> None:
         "/trip-plans/parse-and-save",
         json={
             "traveller_id": "traveller_trip_plan_004",
-            "brief": "I have 4 days in Tokyo, mid-budget, love food and calm neighborhoods",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, love food and calm neighborhoods",
             "source_surface": "assistant",
         },
     )
@@ -156,3 +156,78 @@ def test_enrich_trip_plan_rejects_incomplete_sessions() -> None:
     enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
     assert enrich_response.status_code == 400
     assert "Missing fields" in enrich_response.json()["detail"]
+
+
+def test_update_trip_plan_keeps_same_session_and_clears_old_enrichment() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_006",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, love food and calm neighborhoods",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+    assert enrich_response.json()["status"] == "enriched"
+
+    update_response = client.patch(
+        f"/trip-plans/{planning_session_id}",
+        json={
+            "pace_preference": "fast",
+            "group_type": "couple",
+            "interests": ["food", "culture"],
+        },
+    )
+    assert update_response.status_code == 200
+
+    payload = update_response.json()
+
+    assert payload["planning_session_id"] == planning_session_id
+    assert payload["status"] == "draft"
+    assert payload["parsed_constraints"]["pace_preference"] == "fast"
+    assert payload["parsed_constraints"]["group_type"] == "couple"
+    assert payload["parsed_constraints"]["interests"] == ["food", "culture"]
+    assert payload["candidate_places"] == []
+    assert payload["itinerary_skeleton"] == []
+
+
+def test_update_then_regenerate_enriched_trip_plan() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_007",
+            "brief": "I have 4 days in Tokyo for a solo trip, mid-budget, love food and calm neighborhoods",
+            "source_surface": "assistant",
+        },
+    )
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    update_response = client.patch(
+        f"/trip-plans/{planning_session_id}",
+        json={
+            "pace_preference": "relaxed",
+            "group_type": "couple",
+            "interests": ["food", "culture"],
+        },
+    )
+    assert update_response.status_code == 200
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+
+    assert payload["planning_session_id"] == planning_session_id
+    assert payload["status"] == "enriched"
+    assert payload["parsed_constraints"]["group_type"] == "couple"
+    assert payload["parsed_constraints"]["pace_preference"] == "relaxed"
+    assert payload["parsed_constraints"]["interests"] == ["food", "culture"]
+    assert len(payload["candidate_places"]) >= 1
+    assert len(payload["itinerary_skeleton"]) == 4

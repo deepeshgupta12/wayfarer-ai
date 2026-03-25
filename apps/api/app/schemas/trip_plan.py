@@ -16,6 +16,15 @@ class TripBriefParseRequest(BaseModel):
     source_surface: str = Field(default="assistant")
 
 
+class TripPlanUpdateRequest(BaseModel):
+    destination: str | None = None
+    duration_days: int | None = Field(default=None, ge=1, le=30)
+    group_type: TripGroup | None = None
+    interests: list[TripInterest] | None = None
+    pace_preference: TripPace | None = None
+    budget: TripBudget | None = None
+
+
 class ParsedTripConstraints(BaseModel):
     destination: str | None = None
     duration_days: int | None = None
