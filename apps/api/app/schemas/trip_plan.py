@@ -9,6 +9,7 @@ TripPace = Literal["relaxed", "balanced", "fast"]
 TripGroup = Literal["solo", "couple", "family", "friends"]
 TripInterest = Literal["food", "culture", "adventure", "nature", "luxury", "nightlife", "wellness"]
 TripSlotType = Literal["morning", "lunch", "afternoon", "evening"]
+TripSignalType = Literal["selected_place", "skipped_recommendation", "replaced_slot"]
 
 
 class TripBriefParseRequest(BaseModel):
@@ -138,3 +139,99 @@ class TripPlanEnrichResponse(BaseModel):
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     saved: bool
     updated_at: datetime
+
+
+class TripPromoteRequest(BaseModel):
+    title: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    companions: TripGroup | None = None
+    status: str = Field(default="planning")
+    source_surface: str = Field(default="planner_modal")
+
+
+class SavedTripSummaryResponse(BaseModel):
+    trip_id: str
+    traveller_id: str
+    planning_session_id: str | None = None
+    title: str
+    destination: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    companions: str | None = None
+    status: str
+    source_surface: str
+    current_version_number: int
+    selected_places_count: int
+    skipped_recommendations_count: int
+    replaced_slots_count: int
+    parsed_constraints: ParsedTripConstraints
+    candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
+    itinerary: list[dict[str, object]] = Field(default_factory=list)
+    itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class SavedTripListResponse(BaseModel):
+    traveller_id: str
+    total: int
+    items: list[SavedTripSummaryResponse]
+
+
+class TripVersionSnapshotRequest(BaseModel):
+    snapshot_reason: str = Field(default="manual_snapshot", min_length=1)
+    parsed_constraints: ParsedTripConstraints | None = None
+    candidate_places: list[TripCandidatePlace] | None = None
+    itinerary: list[dict[str, object]] | None = None
+    itinerary_skeleton: list[TripDayPlan] | None = None
+    status: str | None = None
+
+
+class TripVersionResponse(BaseModel):
+    version_id: str
+    trip_id: str
+    traveller_id: str
+    planning_session_id: str | None = None
+    version_number: int
+    snapshot_reason: str
+    source_surface: str
+    status: str
+    parsed_constraints: ParsedTripConstraints
+    candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
+    itinerary: list[dict[str, object]] = Field(default_factory=list)
+    itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    created_at: datetime
+
+
+class TripVersionListResponse(BaseModel):
+    trip_id: str
+    total: int
+    items: list[TripVersionResponse]
+
+
+class TripSignalCreateRequest(BaseModel):
+    signal_type: TripSignalType
+    location_id: str | None = None
+    day_number: int | None = Field(default=None, ge=1, le=30)
+    slot_type: TripSlotType | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class TripSignalResponse(BaseModel):
+    signal_id: str
+    trip_id: str
+    traveller_id: str
+    planning_session_id: str | None = None
+    signal_type: str
+    location_id: str | None = None
+    day_number: int | None = None
+    slot_type: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class TripSignalListResponse(BaseModel):
+    trip_id: str
+    total: int
+    items: list[TripSignalResponse]

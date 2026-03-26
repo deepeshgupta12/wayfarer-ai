@@ -5,11 +5,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.db.base import Base
 from app.models import (
+    ItineraryVersionRecord,
     ReviewIntelligenceRecord,
+    SavedTripRecord,
     TravellerMemoryRecord,
     TravellerPersonaEmbeddingRecord,
     TravellerPersonaRecord,
     TripPlanRecord,
+    TripSignalRecord,
 )  # noqa: F401
 
 settings = get_settings()
@@ -31,7 +34,7 @@ def check_database_connection() -> bool:
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
-        return True
+            return True
     except Exception:
         return False
 
