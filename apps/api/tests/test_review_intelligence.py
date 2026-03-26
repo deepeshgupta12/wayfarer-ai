@@ -201,10 +201,12 @@ def test_review_intelligence_falls_back_when_llm_output_is_invalid(monkeypatch) 
 
 
 def test_review_intelligence_reuses_cached_analysis_when_reviews_are_unchanged(monkeypatch) -> None:
+    from uuid import uuid4
+
     db = get_db_session()
     try:
         payload = ReviewIntelligenceRequest(
-            location_id="loc_cache_test_001",
+            location_id=f"loc_cache_test_{uuid4().hex}",
             location_name="Cache Test Cafe",
             reviews=[
                 {"rating": 5, "text": "Friendly staff and tasty food."},
@@ -217,7 +219,7 @@ def test_review_intelligence_reuses_cached_analysis_when_reviews_are_unchanged(m
         assert first_result.cache_status == "persisted"
 
         def _should_not_reanalyze(*args, **kwargs):
-            raise AssertionError("Live re-analysis should not run when cached review intelligence is reusable.")
+            raise AssertionError("Expected cached review intelligence reuse, but live analysis ran again.")
 
         monkeypatch.setattr(
             review_intelligence_service,
@@ -225,15 +227,12 @@ def test_review_intelligence_reuses_cached_analysis_when_reviews_are_unchanged(m
             _should_not_reanalyze,
         )
 
-        second_result = review_intelligence_service.get_or_refresh_review_intelligence(
-            db=db,
-            location_id=payload.location_id,
-            location_name=payload.location_name,
-            reviews=[{"rating": review.rating, "text": review.text} for review in payload.reviews],
-        )
-
+        second_result = review_intelligence_service.analyze_and_persist_reviews(db, payload)
         assert second_result.saved is True
         assert second_result.cache_status == "reused"
-        assert second_result.location_id == payload.location_id
+        assert second_result.location_id == first_result.location_id
+        assert second_result.quick_verdict == first_result.quick_verdict
+        assert second_result.themes == first_result.themes
+        assert second_result.review_count == first_result.review_count
     finally:
         db.close()
