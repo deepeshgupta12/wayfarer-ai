@@ -1025,7 +1025,10 @@ def get_similar_places(
             why_similar=item["why_similar"],
             relation_type=item["relation_type"],
             source=item["source"],
-            city_match=item["city_match"],
+            city_match=(
+                payload.city_filter is None
+                or item["city"].strip().lower() == payload.city_filter.strip().lower()
+            ),
         )
         for item in related_matches
     ]
@@ -1061,7 +1064,10 @@ def get_similar_places(
                     ),
                     relation_type=None,
                     source="embedding",
-                    city_match=(record.city == payload.city_filter) if payload.city_filter else False,
+                    city_match=(
+                        payload.city_filter is None
+                        or record.city.strip().lower() == payload.city_filter.strip().lower()
+                    ),
                 )
             )
 
