@@ -299,10 +299,7 @@ def _score_candidate_place(
     persona_bonus = (persona_relevance_score or 0.0) * 30.0
 
     return round(
-        min(
-            99.0,
-            base_score + volume_bonus + authenticity_bonus + positive_theme_bonus - caution_penalty + persona_bonus,
-        ),
+        base_score + volume_bonus + authenticity_bonus + positive_theme_bonus - caution_penalty + persona_bonus,
         1,
     )
 
