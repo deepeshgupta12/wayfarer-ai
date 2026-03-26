@@ -97,6 +97,7 @@ def test_destination_place_similarity_supports_city_filter() -> None:
 
     for match in payload["matches"]:
         assert match["city"] == "Kyoto"
+        assert match["city_match"] is True
 
 
 def test_destination_guide_returns_youd_also_love_recommendations() -> None:

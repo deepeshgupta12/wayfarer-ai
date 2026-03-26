@@ -61,6 +61,10 @@ class DestinationAlternative(BaseModel):
     category: str
     match_score: float
     reason: str
+    source_location_id: str | None = None
+    relation_type: str | None = None
+    source: str = "profile"
+    city_match: bool = False
 
 
 class DestinationGuideResponse(BaseModel):
@@ -108,6 +112,9 @@ class SimilarPlaceMatch(BaseModel):
     category: str
     similarity_score: float
     why_similar: str | None = None
+    relation_type: str | None = None
+    source: str = "embedding"
+    city_match: bool = False
 
 
 class SimilarPlaceRequest(BaseModel):
@@ -134,6 +141,7 @@ class DestinationComparisonRequest(BaseModel):
 
 
 class DestinationComparisonSide(BaseModel):
+    location_id: str | None = None
     name: str
     city: str
     country: str
@@ -163,3 +171,4 @@ class DestinationComparisonResponse(BaseModel):
     verdict: str
     planning_recommendation: str
     next_step_suggestions: list[str] = Field(default_factory=list)
+    youd_also_love: list[DestinationAlternative] = Field(default_factory=list)

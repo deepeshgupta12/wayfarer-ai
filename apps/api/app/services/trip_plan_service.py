@@ -31,6 +31,10 @@ from app.schemas.trip_plan import (
     TripVersionResponse,
     TripVersionSnapshotRequest,
 )
+from app.services.destination_service import (
+    get_related_location_suggestions,
+    persist_place_embeddings_and_relations,
+)
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 from app.services.review_intelligence_service import analyze_review_bundle
 
@@ -273,6 +277,7 @@ def _build_summary_response(record: TripPlanRecord) -> TripPlanSummaryResponse:
         status=record.status,
         candidate_places=candidate_places,
         itinerary_skeleton=itinerary_skeleton,
+        workspace_alternatives=_build_workspace_alternatives(candidate_places),
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
@@ -406,6 +411,80 @@ def _compute_trip_candidate_persona_relevance(
         text=embedding_text,
     )
 
+def _build_trip_related_locations(
+    db: Session,
+    source_location_id: str,
+    city_filter: str | None,
+    allowed_location_ids: set[str],
+    top_k: int = 3,
+) -> list[TripAlternativeSuggestion]:
+    suggestions = get_related_location_suggestions(
+        db=db,
+        source_location_id=source_location_id,
+        top_k=top_k,
+        city_filter=city_filter,
+        exclude_location_ids={source_location_id},
+        allowed_location_ids=allowed_location_ids,
+    )
+
+    return [
+        TripAlternativeSuggestion(
+            location_id=item["location_id"],
+            name=item["name"],
+            city=item["city"],
+            country=item["country"],
+            category=item["category"],
+            score=item["score"],
+            why_alternative=item["why_alternative"],
+            geo_cluster=None,
+            source_location_id=source_location_id,
+            relation_type=item["relation_type"],
+            city_match=item["city_match"],
+        )
+        for item in suggestions
+    ]
+
+
+def _build_workspace_alternatives(
+    candidate_places: list[TripCandidatePlace],
+    max_items: int = 6,
+) -> list[TripAlternativeSuggestion]:
+    alternatives: list[TripAlternativeSuggestion] = []
+    seen_ids: set[str] = set()
+
+    for candidate in candidate_places[:3]:
+        for related in candidate.related_locations:
+            if related.location_id in seen_ids:
+                continue
+            seen_ids.add(related.location_id)
+            alternatives.append(related)
+            if len(alternatives) >= max_items:
+                return alternatives
+
+    if alternatives:
+        return alternatives[:max_items]
+
+    for candidate in candidate_places[1:]:
+        if candidate.location_id in seen_ids:
+            continue
+        seen_ids.add(candidate.location_id)
+        alternatives.append(
+            TripAlternativeSuggestion(
+                location_id=candidate.location_id,
+                name=candidate.name,
+                city=candidate.city,
+                country=candidate.country,
+                category=candidate.category,
+                score=candidate.score,
+                why_alternative="A strong backup option from the current candidate pool.",
+                geo_cluster=candidate.geo_cluster,
+            )
+        )
+        if len(alternatives) >= max_items:
+            break
+
+    return alternatives[:max_items]
+
 
 def _build_candidate_places(
     db: Session,
@@ -422,9 +501,20 @@ def _build_candidate_places(
         interests=list(parsed_constraints.interests or []),
     )
 
+    scoped_results = list(results[:8])
+    allowed_location_ids = {result.location_id for result in scoped_results}
+
+    persist_place_embeddings_and_relations(
+        db=db,
+        destination=destination,
+        traveller_type=parsed_constraints.group_type,
+        interests=list(parsed_constraints.interests or []),
+        results=scoped_results,
+    )
+
     candidates: list[TripCandidatePlace] = []
 
-    for result in results[:8]:
+    for result in scoped_results:
         review_bundle = tripadvisor_client.get_destination_reviews(result.name)
         review_analysis = analyze_review_bundle(
             location_id=str(review_bundle["location_id"]),
@@ -477,6 +567,13 @@ def _build_candidate_places(
                     place_name=result.name,
                     city=result.city,
                     country=result.country,
+                ),
+                related_locations=_build_trip_related_locations(
+                    db=db,
+                    source_location_id=result.location_id,
+                    city_filter=result.city,
+                    allowed_location_ids=allowed_location_ids,
+                    top_k=3,
                 ),
             )
         )
@@ -1010,21 +1107,52 @@ def _build_slot_alternatives(
     exclude_ids: set[str],
     max_items: int = 3,
 ) -> list[TripAlternativeSuggestion]:
-    alternatives: list[tuple[float, TripCandidatePlace]] = []
+    candidate_map = _candidate_lookup(candidate_places)
+    ranked_rows: list[tuple[float, TripCandidatePlace, str, str | None, str | None, bool]] = []
+    seen_ids: set[str] = set()
+
+    if current_candidate is not None:
+        for related in current_candidate.related_locations:
+            if related.location_id in exclude_ids or related.location_id in seen_ids:
+                continue
+            candidate = candidate_map.get(related.location_id)
+            if candidate is None:
+                continue
+
+            seen_ids.add(candidate.location_id)
+            ranked_rows.append(
+                (
+                    round(float(related.score) + 25.0, 1),
+                    candidate,
+                    related.why_alternative,
+                    related.relation_type,
+                    related.source_location_id,
+                    related.city_match,
+                )
+            )
 
     for candidate in candidate_places:
         if current_candidate is not None and candidate.location_id == current_candidate.location_id:
             continue
-        if candidate.location_id in exclude_ids:
+        if candidate.location_id in exclude_ids or candidate.location_id in seen_ids:
             continue
 
         score = _slot_specialization_score(slot_type, candidate, pace, interests)
         score += _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)
         score -= _travel_friction_penalty(candidate, previous_candidate, pace)
 
-        alternatives.append((score, candidate))
+        ranked_rows.append(
+            (
+                score,
+                candidate,
+                f"A viable {slot_type} alternative that preserves a similar pacing and route-coherence profile.",
+                None,
+                current_candidate.location_id if current_candidate else None,
+                (candidate.city == current_candidate.city) if current_candidate else False,
+            )
+        )
 
-    alternatives.sort(key=lambda item: item[0], reverse=True)
+    ranked_rows.sort(key=lambda item: item[0], reverse=True)
 
     return [
         TripAlternativeSuggestion(
@@ -1034,12 +1162,13 @@ def _build_slot_alternatives(
             country=candidate.country,
             category=candidate.category,
             score=round(score, 1),
-            why_alternative=(
-                f"A viable {slot_type} alternative that preserves a similar pacing and route-coherence profile."
-            ),
+            why_alternative=why_alternative,
             geo_cluster=candidate.geo_cluster,
+            source_location_id=source_location_id,
+            relation_type=relation_type,
+            city_match=city_match,
         )
-        for score, candidate in alternatives[:max_items]
+        for score, candidate, why_alternative, relation_type, source_location_id, city_match in ranked_rows[:max_items]
     ]
 
 
@@ -1874,6 +2003,7 @@ def parse_and_save_trip_brief(
         status=record.status,
         candidate_places=[],
         itinerary_skeleton=[],
+        workspace_alternatives=[],
         saved=True,
         created_at=record.created_at,
     )
@@ -2065,6 +2195,7 @@ def enrich_trip_plan(
         status=record.status,
         candidate_places=candidate_places,
         itinerary_skeleton=itinerary_skeleton,
+        workspace_alternatives=_build_workspace_alternatives(candidate_places),
         saved=True,
         updated_at=record.updated_at,
     )

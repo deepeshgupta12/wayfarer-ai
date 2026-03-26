@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.clients.google_places_client import GooglePlacesClient
 from app.clients.tripadvisor_client import TripadvisorClient
 from app.db.session import get_db_session
+from app.models.location_relation import LocationRelationRecord
+from app.models.place_embedding import PlaceEmbeddingRecord
 from app.models.place_embedding import PlaceEmbeddingRecord
 from app.schemas.destination import (
     DestinationAlternative,
@@ -214,6 +216,244 @@ def _cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
         return 0.0
 
     return round(dot_product / (magnitude_a * magnitude_b), 4)
+
+def _relation_id(source_location_id: str, target_location_id: str) -> str:
+    return f"{source_location_id}::{target_location_id}"
+
+
+def _relation_type_for_pair(source: dict[str, Any], target: dict[str, Any], similarity: float) -> str:
+    same_city = source["city"].strip().lower() == target["city"].strip().lower()
+    same_category = source["category"].strip().lower() == target["category"].strip().lower()
+
+    if same_city and same_category:
+        return "same_city_peer"
+    if same_city:
+        return "same_city_match"
+    if similarity >= 0.93:
+        return "high_similarity"
+    if source["source_destination"].strip().lower() == target["source_destination"].strip().lower():
+        return "same_destination_context"
+    return "contextual_match"
+
+
+def _persist_related_location_links(
+    db: Session,
+    source_destination: str,
+    embedded_items: list[dict[str, Any]],
+) -> None:
+    if len(embedded_items) < 2:
+        return
+
+    for source in embedded_items:
+        for target in embedded_items:
+            if source["location_id"] == target["location_id"]:
+                continue
+
+            similarity = _cosine_similarity(source["embedding_vector"], target["embedding_vector"])
+            same_city = source["city"].strip().lower() == target["city"].strip().lower()
+
+            if not same_city and similarity < 0.55:
+                continue
+
+            relation_record = LocationRelationRecord(
+                relation_id=_relation_id(source["location_id"], target["location_id"]),
+                source_location_id=source["location_id"],
+                source_name=source["name"],
+                source_city=source["city"],
+                source_country=source["country"],
+                target_location_id=target["location_id"],
+                target_name=target["name"],
+                target_city=target["city"],
+                target_country=target["country"],
+                target_category=target["category"],
+                relation_type=_relation_type_for_pair(source, target, similarity),
+                relation_score=round(similarity * 100.0, 1),
+                city_match=same_city,
+                destination_context=source_destination,
+                target_rating=float(target["rating"]),
+                target_review_count=int(target["review_count"]),
+                relation_metadata={
+                    "embedding_similarity": similarity,
+                    "source_destination": source_destination,
+                },
+            )
+            db.merge(relation_record)
+
+
+def persist_place_embeddings_and_relations(
+    db: Session,
+    destination: str,
+    traveller_type: str | None,
+    interests: list[str],
+    results: list[Any],
+) -> list[dict[str, Any]]:
+    persisted_items: list[dict[str, Any]] = []
+
+    for result in results:
+        embedding_text = _build_place_embedding_text(
+            destination=destination,
+            place=result,
+            traveller_type=traveller_type,
+            interests=interests,
+        )
+        embedding = get_embedding(embedding_text)
+
+        record = PlaceEmbeddingRecord(
+            location_id=result.location_id,
+            name=result.name,
+            city=result.city,
+            country=result.country,
+            category=result.category,
+            source_destination=destination,
+            embedding_provider=embedding.provider,
+            embedding_model=embedding.model,
+            embedding_dimensions=embedding.dimensions,
+            embedding_vector=embedding.vector,
+            rating=result.rating,
+            review_count=result.review_count,
+        )
+
+        db.merge(record)
+
+        persisted_items.append(
+            {
+                "location_id": result.location_id,
+                "name": result.name,
+                "city": result.city,
+                "country": result.country,
+                "category": result.category,
+                "source_destination": destination,
+                "rating": result.rating,
+                "review_count": result.review_count,
+                "embedding_dimensions": embedding.dimensions,
+                "embedding_vector": embedding.vector,
+            }
+        )
+
+    db.commit()
+    _persist_related_location_links(db, destination, persisted_items)
+    db.commit()
+
+    return persisted_items
+
+
+def get_related_location_suggestions(
+    db: Session,
+    source_location_id: str,
+    top_k: int = 3,
+    city_filter: str | None = None,
+    exclude_location_ids: set[str] | None = None,
+    allowed_location_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    exclude_location_ids = exclude_location_ids or set()
+
+    query = db.query(LocationRelationRecord).filter(
+        LocationRelationRecord.source_location_id == source_location_id
+    )
+    if city_filter:
+        query = query.filter(LocationRelationRecord.target_city == city_filter)
+
+    rows = query.all()
+
+    suggestions: list[dict[str, Any]] = []
+    for row in rows:
+        if row.target_location_id in exclude_location_ids:
+            continue
+        if allowed_location_ids is not None and row.target_location_id not in allowed_location_ids:
+            continue
+
+        suggestions.append(
+            {
+                "location_id": row.target_location_id,
+                "name": row.target_name,
+                "city": row.target_city,
+                "country": row.target_country,
+                "category": row.target_category,
+                "score": round(float(row.relation_score), 1),
+                "relation_type": row.relation_type,
+                "source": "relation",
+                "city_match": bool(row.city_match),
+                "why_alternative": (
+                    f"Related via {row.relation_type.replace('_', ' ')} signals"
+                    + (f" within {city_filter}." if city_filter else ".")
+                ),
+                "why_similar": (
+                    f"Related via {row.relation_type.replace('_', ' ')} signals"
+                    + (f" within {city_filter}." if city_filter else ".")
+                ),
+                "review_count": int(row.target_review_count),
+            }
+        )
+
+    suggestions.sort(
+        key=lambda item: (item["score"], item["review_count"]),
+        reverse=True,
+    )
+    return suggestions[:top_k]
+
+
+def _build_profile_based_you_would_also_love(
+    payload: DestinationGuideRequest,
+    db: Session | None = None,
+    existing_ids: set[str] | None = None,
+) -> list[DestinationAlternative]:
+    existing_ids = existing_ids or set()
+    alternatives: list[DestinationAlternative] = []
+
+    for candidate_destination in DESTINATION_PROFILES:
+        if candidate_destination == payload.destination.strip().lower():
+            continue
+
+        search_results = tripadvisor_client.search_locations(
+            query=candidate_destination.title(),
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+        if not search_results:
+            continue
+
+        result = search_results[0]
+        if result.location_id in existing_ids:
+            continue
+
+        match_score = _profile_similarity_score(
+            source_destination=payload.destination,
+            candidate_destination=result.name,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+
+        persona_relevance = _compute_persona_relevance_for_place(
+            db=db,
+            traveller_id=payload.traveller_id,
+            destination=payload.destination,
+            place=result,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+
+        if persona_relevance is not None:
+            match_score = min(100.0, round(match_score + (persona_relevance * 12.0), 1))
+
+        alternatives.append(
+            DestinationAlternative(
+                location_id=result.location_id,
+                name=result.name,
+                city=result.city,
+                country=result.country,
+                category=result.category,
+                match_score=match_score,
+                reason=(
+                    f"A strong alternate if you want a trip with a comparable fit for "
+                    f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
+                ),
+                source="profile",
+                city_match=False,
+            )
+        )
+
+    alternatives.sort(key=lambda item: item.match_score, reverse=True)
+    return alternatives
 
 def _base_destination_result_rank_score(result: Any) -> float:
     review_volume_bonus = min(float(result.review_count) / 5000.0, 1.0) * 5.0
@@ -488,6 +728,7 @@ def _build_comparison_side(
             db.close()
 
     return DestinationComparisonSide(
+        location_id=primary.location_id,
         name=primary.name,
         city=primary.city,
         country=primary.country,
@@ -610,61 +851,68 @@ def _build_you_would_also_love(
     payload: DestinationGuideRequest,
 ) -> list[DestinationAlternative]:
     alternatives: list[DestinationAlternative] = []
+    seen_ids: set[str] = set()
 
-    db: Session | None = None
-    if payload.traveller_id:
-        db = get_db_session()
-
+    db = get_db_session()
     try:
-        for candidate_destination in DESTINATION_PROFILES:
-            if candidate_destination == payload.destination.strip().lower():
-                continue
+        source_results = tripadvisor_client.search_locations(
+            query=payload.destination,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
 
-            search_results = tripadvisor_client.search_locations(
-                query=candidate_destination.title(),
-                traveller_type=payload.traveller_type,
-                interests=payload.interests,
-            )
-            if not search_results:
-                continue
-
-            result = search_results[0]
-            match_score = _profile_similarity_score(
-                source_destination=payload.destination,
-                candidate_destination=result.name,
-                traveller_type=payload.traveller_type,
-                interests=payload.interests,
-            )
-
-            persona_relevance = _compute_persona_relevance_for_place(
+        if source_results:
+            persisted_items = persist_place_embeddings_and_relations(
                 db=db,
-                traveller_id=payload.traveller_id,
                 destination=payload.destination,
-                place=result,
                 traveller_type=payload.traveller_type,
                 interests=payload.interests,
+                results=list(source_results[:8]),
             )
 
-            if persona_relevance is not None:
-                match_score = min(100.0, round(match_score + (persona_relevance * 12.0), 1))
+            primary_item = persisted_items[0]
+            relation_suggestions = get_related_location_suggestions(
+                db=db,
+                source_location_id=primary_item["location_id"],
+                top_k=3,
+                city_filter=primary_item["city"],
+                exclude_location_ids={primary_item["location_id"]},
+            )
 
-            alternatives.append(
-                DestinationAlternative(
-                    location_id=result.location_id,
-                    name=result.name,
-                    city=result.city,
-                    country=result.country,
-                    category=result.category,
-                    match_score=match_score,
-                    reason=(
-                        f"A strong alternate if you want a trip with a comparable fit for "
-                        f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
-                    ),
+            for suggestion in relation_suggestions:
+                if suggestion["location_id"] in seen_ids:
+                    continue
+                seen_ids.add(suggestion["location_id"])
+
+                alternatives.append(
+                    DestinationAlternative(
+                        location_id=suggestion["location_id"],
+                        name=suggestion["name"],
+                        city=suggestion["city"],
+                        country=suggestion["country"],
+                        category=suggestion["category"],
+                        match_score=suggestion["score"],
+                        reason=suggestion["why_alternative"],
+                        source_location_id=primary_item["location_id"],
+                        relation_type=suggestion["relation_type"],
+                        source=suggestion["source"],
+                        city_match=suggestion["city_match"],
+                    )
                 )
-            )
+
+        profile_based = _build_profile_based_you_would_also_love(
+            payload=payload,
+            db=db,
+            existing_ids=seen_ids,
+        )
+        for item in profile_based:
+            if item.location_id in seen_ids:
+                continue
+            seen_ids.add(item.location_id)
+            alternatives.append(item)
+
     finally:
-        if db is not None:
-            db.close()
+        db.close()
 
     alternatives.sort(key=lambda item: item.match_score, reverse=True)
     return alternatives[:3]
@@ -720,53 +968,31 @@ def index_destination_places(
         interests=payload.interests,
     )
 
-    indexed_items: list[DestinationPlaceIndexItem] = []
+    persisted_items = persist_place_embeddings_and_relations(
+        db=db,
+        destination=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+        results=list(results),
+    )
 
-    for result in results:
-        embedding_text = _build_place_embedding_text(
-            destination=payload.destination,
-            place=result,
-            traveller_type=payload.traveller_type,
-            interests=payload.interests,
+    indexed_items = [
+        DestinationPlaceIndexItem(
+            location_id=item["location_id"],
+            name=item["name"],
+            city=item["city"],
+            country=item["country"],
+            category=item["category"],
+            embedding_dimensions=item["embedding_dimensions"],
         )
-        embedding = get_embedding(embedding_text)
-
-        record = PlaceEmbeddingRecord(
-            location_id=result.location_id,
-            name=result.name,
-            city=result.city,
-            country=result.country,
-            category=result.category,
-            source_destination=payload.destination,
-            embedding_provider=embedding.provider,
-            embedding_model=embedding.model,
-            embedding_dimensions=embedding.dimensions,
-            embedding_vector=embedding.vector,
-            rating=result.rating,
-            review_count=result.review_count,
-        )
-
-        db.merge(record)
-
-        indexed_items.append(
-            DestinationPlaceIndexItem(
-                location_id=result.location_id,
-                name=result.name,
-                city=result.city,
-                country=result.country,
-                category=result.category,
-                embedding_dimensions=embedding.dimensions,
-            )
-        )
-
-    db.commit()
+        for item in persisted_items
+    ]
 
     return DestinationPlaceIndexResponse(
         destination=payload.destination,
         indexed_count=len(indexed_items),
         items=indexed_items,
     )
-
 
 def get_similar_places(
     db: Session,
@@ -780,47 +1006,75 @@ def get_similar_places(
             matches=[],
         )
 
-    query = db.query(PlaceEmbeddingRecord)
-    if payload.city_filter:
-        query = query.filter(PlaceEmbeddingRecord.city == payload.city_filter)
+    related_matches = get_related_location_suggestions(
+        db=db,
+        source_location_id=payload.source_location_id,
+        top_k=payload.top_k,
+        city_filter=payload.city_filter,
+        exclude_location_ids={payload.source_location_id},
+    )
 
-    all_records = query.all()
-
-    scored_matches: list[SimilarPlaceMatch] = []
-    for record in all_records:
-        if record.location_id == source_record.location_id:
-            continue
-
-        similarity_score = _cosine_similarity(
-            source_record.embedding_vector,
-            record.embedding_vector,
+    normalized_matches: list[SimilarPlaceMatch] = [
+        SimilarPlaceMatch(
+            location_id=item["location_id"],
+            name=item["name"],
+            city=item["city"],
+            country=item["country"],
+            category=item["category"],
+            similarity_score=round(item["score"] / 100.0, 4),
+            why_similar=item["why_similar"],
+            relation_type=item["relation_type"],
+            source=item["source"],
+            city_match=item["city_match"],
         )
+        for item in related_matches
+    ]
 
-        scored_matches.append(
-            SimilarPlaceMatch(
-                location_id=record.location_id,
-                name=record.name,
-                city=record.city,
-                country=record.country,
-                category=record.category,
-                similarity_score=similarity_score,
-                why_similar=(
-                    f"Similar embedding profile to {source_record.name}"
-                    + (f" within {payload.city_filter}." if payload.city_filter else ".")
-                ),
+    if len(normalized_matches) < payload.top_k:
+        query = db.query(PlaceEmbeddingRecord)
+        if payload.city_filter:
+            query = query.filter(PlaceEmbeddingRecord.city == payload.city_filter)
+
+        all_records = query.all()
+        existing_ids = {match.location_id for match in normalized_matches}
+
+        for record in all_records:
+            if record.location_id == source_record.location_id or record.location_id in existing_ids:
+                continue
+
+            similarity_score = _cosine_similarity(
+                source_record.embedding_vector,
+                record.embedding_vector,
             )
-        )
 
-    scored_matches = sorted(
-        scored_matches,
-        key=lambda item: item.similarity_score,
-        reverse=True,
-    )[: payload.top_k]
+            normalized_matches.append(
+                SimilarPlaceMatch(
+                    location_id=record.location_id,
+                    name=record.name,
+                    city=record.city,
+                    country=record.country,
+                    category=record.category,
+                    similarity_score=similarity_score,
+                    why_similar=(
+                        f"Similar embedding profile to {source_record.name}"
+                        + (f" within {payload.city_filter}." if payload.city_filter else ".")
+                    ),
+                    relation_type=None,
+                    source="embedding",
+                    city_match=(record.city == payload.city_filter) if payload.city_filter else False,
+                )
+            )
+
+        normalized_matches = sorted(
+            normalized_matches,
+            key=lambda item: item.similarity_score,
+            reverse=True,
+        )[: payload.top_k]
 
     return SimilarPlaceResponse(
         source_location_id=payload.source_location_id,
         city_filter_applied=payload.city_filter,
-        matches=scored_matches,
+        matches=normalized_matches[: payload.top_k],
     )
 
 
@@ -906,6 +1160,19 @@ def compare_destinations(payload: DestinationComparisonRequest) -> DestinationCo
         interests=payload.interests,
     )
 
+    better_side = side_a if side_a.weighted_score >= side_b.weighted_score else side_b
+    comparison_alternatives = _build_you_would_also_love(
+        DestinationGuideRequest(
+            destination=better_side.name,
+            traveller_id=payload.traveller_id,
+            duration_days=payload.duration_days,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+            pace_preference=payload.pace_preference,
+            budget=payload.budget,
+        )
+    )
+
     return DestinationComparisonResponse(
         destination_a=side_a,
         destination_b=side_b,
@@ -926,6 +1193,7 @@ def compare_destinations(payload: DestinationComparisonRequest) -> DestinationCo
             f"Plan {payload.duration_days} days in {side_b.name}",
             f"Use {side_b.name if side_a.weighted_score >= side_b.weighted_score else side_a.name} as a backup itinerary branch",
         ],
+        youd_also_love=comparison_alternatives,
     )
 
 

@@ -171,6 +171,9 @@ def test_enrich_trip_plan_returns_slot_based_itinerary() -> None:
     assert "continuity_note" in first_day["slots"][0]
     assert "movement_note" in first_day["slots"][0]
     assert "alternatives" in first_day["slots"][0]
+    assert "related_locations" in payload["candidate_places"][0]
+    assert "workspace_alternatives" in payload
+    assert isinstance(payload["workspace_alternatives"], list)
 
 
 def test_enrich_trip_plan_rejects_incomplete_sessions() -> None:
@@ -899,3 +902,5 @@ def test_enrich_trip_plan_applies_persona_embedding_in_candidate_ranking(monkeyp
     payload = enrich_response.json()
     assert payload["candidate_places"][0]["name"] == "Kyoto Quiet Heritage"
     assert "strong persona-embedding fit" in payload["candidate_places"][0]["why_selected"].lower()
+    assert "related_locations" in payload["candidate_places"][0]
+    assert isinstance(payload["candidate_places"][0]["related_locations"], list)
