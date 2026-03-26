@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from app.services import review_intelligence_service, trip_plan_service
 from tests.conftest import get_test_client
 
 
@@ -420,6 +423,143 @@ def test_enrich_trip_plan_persists_itinerary_version_snapshot_memory() -> None:
     assert payload["total"] >= 1
     assert payload["items"][0]["event_type"] == "itinerary_version_snapshot"
     assert payload["items"][0]["payload"]["planning_session_id"] == planning_session_id
+
+
+def test_enrich_trip_plan_reuses_persisted_review_intelligence(monkeypatch) -> None:
+    client = get_test_client()
+
+    cached_locations = [
+        SimpleNamespace(
+            location_id="cache_trip_kyoto_001",
+            name="Kyoto",
+            city="Kyoto",
+            country="Japan",
+            category="city",
+            rating=4.7,
+            review_count=12450,
+        ),
+        SimpleNamespace(
+            location_id="cache_trip_kyoto_002",
+            name="Gion",
+            city="Kyoto",
+            country="Japan",
+            category="neighborhood",
+            rating=4.8,
+            review_count=8750,
+        ),
+        SimpleNamespace(
+            location_id="cache_trip_kyoto_003",
+            name="Nishiki Market",
+            city="Kyoto",
+            country="Japan",
+            category="market",
+            rating=4.6,
+            review_count=6250,
+        ),
+        SimpleNamespace(
+            location_id="cache_trip_kyoto_004",
+            name="Arashiyama",
+            city="Kyoto",
+            country="Japan",
+            category="district",
+            rating=4.7,
+            review_count=7680,
+        ),
+    ]
+
+    review_map = {
+        "Kyoto": {
+            "location_id": "cache_trip_kyoto_001",
+            "location_name": "Kyoto",
+            "reviews": [
+                {"rating": 5, "text": "Friendly staff, delicious food, beautiful atmosphere."},
+                {"rating": 4, "text": "Fresh flavors and cozy ambience. Worth the price."},
+            ],
+        },
+        "Gion": {
+            "location_id": "cache_trip_kyoto_002",
+            "location_name": "Gion",
+            "reviews": [
+                {"rating": 5, "text": "Helpful service and lovely atmosphere."},
+                {"rating": 4, "text": "Beautiful lanes and good value."},
+            ],
+        },
+        "Nishiki Market": {
+            "location_id": "cache_trip_kyoto_003",
+            "location_name": "Nishiki Market",
+            "reviews": [
+                {"rating": 5, "text": "Delicious food and lively market atmosphere."},
+                {"rating": 4, "text": "Fresh flavors and good value."},
+            ],
+        },
+        "Arashiyama": {
+            "location_id": "cache_trip_kyoto_004",
+            "location_name": "Arashiyama",
+            "reviews": [
+                {"rating": 5, "text": "Scenic area, calm atmosphere, and beautiful walks."},
+                {"rating": 4, "text": "Relaxed pace and lovely ambience."},
+            ],
+        },
+    }
+
+    def fake_search_locations(query: str, traveller_type: str | None, interests: list[str]):
+        return cached_locations
+
+    def fake_get_destination_reviews(destination_name: str) -> dict[str, object]:
+        return review_map[destination_name]
+
+    monkeypatch.setattr(
+        trip_plan_service.tripadvisor_client,
+        "search_locations",
+        fake_search_locations,
+    )
+    monkeypatch.setattr(
+        trip_plan_service.tripadvisor_client,
+        "get_destination_reviews",
+        fake_get_destination_reviews,
+    )
+
+    first_create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_cache_001",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    assert first_create_response.status_code == 200
+    first_planning_session_id = first_create_response.json()["planning_session_id"]
+
+    first_enrich_response = client.post(f"/trip-plans/{first_planning_session_id}/enrich")
+    assert first_enrich_response.status_code == 200
+
+    def _should_not_reanalyze(*args, **kwargs):
+        raise AssertionError("Trip planning should reuse persisted review intelligence before re-analysis.")
+
+    monkeypatch.setattr(
+        review_intelligence_service,
+        "_analyze_review_bundle_live",
+        _should_not_reanalyze,
+    )
+
+    second_create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_cache_002",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    assert second_create_response.status_code == 200
+    second_planning_session_id = second_create_response.json()["planning_session_id"]
+
+    second_enrich_response = client.post(f"/trip-plans/{second_planning_session_id}/enrich")
+    assert second_enrich_response.status_code == 200
+
+    payload = second_enrich_response.json()
+    assert payload["status"] == "enriched"
+    assert len(payload["candidate_places"]) >= 4
+    assert len(payload["itinerary_skeleton"]) == 4
 
 
 def test_replace_slot_keeps_same_session_and_updates_only_requested_slot() -> None:
