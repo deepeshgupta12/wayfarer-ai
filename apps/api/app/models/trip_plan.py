@@ -28,6 +28,7 @@ class TripPlanRecord(Base):
 
     candidate_places: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+    comparison_context: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

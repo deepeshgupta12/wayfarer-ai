@@ -45,6 +45,38 @@ class ParsedTripConstraints(BaseModel):
     budget: TripBudget | None = None
 
 
+class ComparisonPlanningOption(BaseModel):
+    branch: Literal["destination_a", "destination_b"]
+    location_id: str | None = None
+    destination: str
+    weighted_score: float
+    why_pick_this: str
+
+
+class ComparisonContext(BaseModel):
+    comparison_id: str
+    source_surface: str = "compare"
+    destination_a: str
+    destination_b: str
+    selected_branch: Literal["destination_a", "destination_b"] | None = None
+    selected_destination: str | None = None
+    selected_location_id: str | None = None
+    verdict: str | None = None
+    planning_recommendation: str | None = None
+    options: list[ComparisonPlanningOption] = Field(default_factory=list)
+
+
+class TripPlanFromComparisonRequest(BaseModel):
+    traveller_id: str = Field(..., min_length=1)
+    source_surface: str = Field(default="compare")
+    duration_days: int = Field(..., ge=1, le=30)
+    group_type: TripGroup
+    interests: list[TripInterest] = Field(default_factory=list)
+    pace_preference: TripPace
+    budget: TripBudget
+    comparison_context: ComparisonContext
+
+
 class TripCandidatePlace(BaseModel):
     location_id: str
     name: str
@@ -114,6 +146,7 @@ class TripPlanResponse(BaseModel):
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
+    comparison_context: ComparisonContext | None = None
     saved: bool
     created_at: datetime
 
@@ -129,6 +162,7 @@ class TripPlanSummaryResponse(BaseModel):
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
+    comparison_context: ComparisonContext | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -144,6 +178,7 @@ class TripPlanEnrichResponse(BaseModel):
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
+    comparison_context: ComparisonContext | None = None
     saved: bool
     updated_at: datetime
 
@@ -169,6 +204,8 @@ class SavedTripSummaryResponse(BaseModel):
     status: str
     source_surface: str
     current_version_number: int
+    current_version_id: str | None = None
+    history_branch_label: str | None = None
     selected_places_count: int
     skipped_recommendations_count: int
     replaced_slots_count: int
@@ -176,6 +213,7 @@ class SavedTripSummaryResponse(BaseModel):
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary: list[dict[str, object]] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    comparison_context: ComparisonContext | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -188,11 +226,18 @@ class SavedTripListResponse(BaseModel):
 
 class TripVersionSnapshotRequest(BaseModel):
     snapshot_reason: str = Field(default="manual_snapshot", min_length=1)
+    branch_label: str | None = Field(default=None, min_length=1)
+    parent_version_number: int | None = Field(default=None, ge=1)
     parsed_constraints: ParsedTripConstraints | None = None
     candidate_places: list[TripCandidatePlace] | None = None
     itinerary: list[dict[str, object]] | None = None
     itinerary_skeleton: list[TripDayPlan] | None = None
+    comparison_context: ComparisonContext | None = None
     status: str | None = None
+
+class TripVersionRestoreRequest(BaseModel):
+    snapshot_reason: str = Field(default="restore_selected_version", min_length=1)
+    branch_label: str | None = Field(default=None, min_length=1)
 
 
 class TripVersionResponse(BaseModel):
@@ -204,10 +249,15 @@ class TripVersionResponse(BaseModel):
     snapshot_reason: str
     source_surface: str
     status: str
+    is_current: bool
+    branch_label: str | None = None
+    parent_version_number: int | None = None
+    restored_from_version_number: int | None = None
     parsed_constraints: ParsedTripConstraints
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary: list[dict[str, object]] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    comparison_context: ComparisonContext | None = None
     created_at: datetime
 
 
@@ -242,3 +292,11 @@ class TripSignalListResponse(BaseModel):
     trip_id: str
     total: int
     items: list[TripSignalResponse]
+
+TripCandidatePlace.model_rebuild()
+TripAlternativeSuggestion.model_rebuild()
+TripPlanResponse.model_rebuild()
+TripPlanSummaryResponse.model_rebuild()
+TripPlanEnrichResponse.model_rebuild()
+SavedTripSummaryResponse.model_rebuild()
+TripVersionResponse.model_rebuild()

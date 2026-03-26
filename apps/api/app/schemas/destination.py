@@ -163,8 +163,16 @@ class DestinationComparisonDimension(BaseModel):
     note_b: str
     winner: Literal["destination_a", "destination_b", "tie"]
 
+class ComparisonPlanStartOption(BaseModel):
+    branch: Literal["destination_a", "destination_b"]
+    location_id: str | None = None
+    destination: str
+    weighted_score: float
+    recommended: bool
+
 
 class DestinationComparisonResponse(BaseModel):
+    comparison_id: str
     destination_a: DestinationComparisonSide
     destination_b: DestinationComparisonSide
     dimensions: list[DestinationComparisonDimension] = Field(default_factory=list)
@@ -172,3 +180,4 @@ class DestinationComparisonResponse(BaseModel):
     planning_recommendation: str
     next_step_suggestions: list[str] = Field(default_factory=list)
     youd_also_love: list[DestinationAlternative] = Field(default_factory=list)
+    plan_start_options: list[ComparisonPlanStartOption] = Field(default_factory=list)

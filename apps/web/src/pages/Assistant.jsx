@@ -7,14 +7,22 @@ import PlaceCard from '../components/cards/PlaceCard';
 import {
   compareDestinations,
   createTravellerMemory,
+  createTripPlanFromComparison,
+  createTripSignal,
   enrichTripPlan,
   generateDestinationGuide,
+  generateDestinationGuideStream,
+  getSavedTrip,
   getSimilarPlaces,
   indexDestinationPlaces,
+  orchestrateAssistant,
   parseAndSaveTripBrief,
+  promoteTripPlanToSavedTrip,
   refreshTravellerPersonaFromMemory,
   replaceTripPlanSlot,
+  streamTripPlanEnrichment,
   updateTripPlan,
+  listSavedTrips,
 } from '@/api/wayfarerApi';
 import {
   getOrCreateTravellerId,
@@ -23,11 +31,9 @@ import {
   replaceTravellerPersona,
 } from '@/lib/travellerProfile';
 import {
-  appendTripVersion,
-  listStoredTrips,
-  recordSelectedPlace,
-  recordSkippedRecommendation,
-  updateStoredTrip,
+  cacheSavedTrip,
+  cacheSavedTrips,
+  cacheTripPlan,
 } from '@/lib/tripStorage';
 
 const suggestedChips = [
@@ -39,6 +45,10 @@ const suggestedChips = [
 ];
 
 const KNOWN_DESTINATIONS = ['Tokyo', 'Kyoto', 'Lisbon', 'Prague', 'Budapest'];
+
+function createMessageId() {
+  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function deriveGuidePayload(rawInput, persona) {
   const normalized = rawInput.toLowerCase();
@@ -92,16 +102,12 @@ function isPlanningBrief(rawInput) {
     /compare\s+[a-z\s]+\s+and\s+[a-z\s]+/,
   ];
 
-  if (strongPlanningPatterns.some((pattern) => pattern.test(lowered))) {
-    return true;
-  }
-
-  return false;
+  return strongPlanningPatterns.some((pattern) => pattern.test(lowered));
 }
 
 function isComparisonPrompt(rawInput) {
   const lowered = rawInput.toLowerCase().trim();
-  return /compare\s+[a-z\s]+\s+and\s+[a-z\s]+/.test(lowered);
+  return /compare\s+(.+?)\s+and\s+(.+)/i.test(lowered);
 }
 
 function extractComparisonPayload(rawInput, persona) {
@@ -126,6 +132,17 @@ function getLatestPlanningSessionMessage(messages) {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.planningSession?.planning_session_id) {
+      return message;
+    }
+  }
+
+  return null;
+}
+
+function getLatestSavedTripMessage(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.savedTrip?.trip_id) {
       return message;
     }
   }
@@ -171,7 +188,11 @@ function isRefinementFollowUp(rawInput, currentPlanningSession) {
 
   if (/(\d+)\s*days?/.test(lowered)) return true;
   if (KNOWN_DESTINATIONS.some((destination) => lowered.includes(destination.toLowerCase()))) return true;
-  if (['budget', 'mid-budget', 'mid budget', 'midrange', 'luxury', 'balanced', 'fast'].some((term) => lowered.includes(term))) {
+  if (
+    ['budget', 'mid-budget', 'mid budget', 'midrange', 'luxury', 'balanced', 'fast'].some((term) =>
+      lowered.includes(term)
+    )
+  ) {
     return true;
   }
 
@@ -287,11 +308,12 @@ function getSlotFromPlanningSession(planningSession, dayNumber, slotType) {
   return (day.slots || []).find((slot) => slot.slot_type === slotType) || null;
 }
 
-function buildAssistantMessageFromGuide(result) {
+function buildAssistantMessageFromGuide(result, contentOverride = null) {
   return {
+    id: createMessageId(),
     role: 'assistant',
     type: 'destination_guide',
-    content: result.overview,
+    content: contentOverride || result.overview,
     places:
       result.area_cards?.map((area) => ({
         name: area.name,
@@ -312,6 +334,7 @@ function buildAssistantMessageFromGuide(result) {
 
 function buildAssistantMessageFromComparison(result) {
   return {
+    id: createMessageId(),
     role: 'assistant',
     type: 'destination_comparison',
     content: result.verdict,
@@ -321,7 +344,7 @@ function buildAssistantMessageFromComparison(result) {
   };
 }
 
-function buildAssistantMessageFromTripPlan(result) {
+function buildAssistantMessageFromTripPlan(result, savedTrip = null) {
   const constraints = result.parsed_constraints || {};
 
   const summaryParts = [
@@ -338,10 +361,12 @@ function buildAssistantMessageFromTripPlan(result) {
       : 'I created a draft planning session, but I still need a few core details before generating a full itinerary.';
 
   return {
+    id: createMessageId(),
     role: 'assistant',
     type: 'trip_plan',
     content,
     planningSession: result,
+    savedTrip,
     chips:
       (result.missing_fields || []).map((field) => {
         if (field === 'destination') return 'Add destination';
@@ -356,12 +381,14 @@ function buildAssistantMessageFromTripPlan(result) {
   };
 }
 
-function buildAssistantMessageFromUpdatedTripPlan(result, followupText) {
+function buildAssistantMessageFromUpdatedTripPlan(result, followupText, savedTrip = null) {
   return {
+    id: createMessageId(),
     role: 'assistant',
     type: 'trip_plan',
     content: `I updated your existing planning session based on: "${followupText}".`,
     planningSession: result,
+    savedTrip,
     chips:
       (result.missing_fields || []).map((field) => {
         if (field === 'destination') return 'Add destination';
@@ -376,18 +403,22 @@ function buildAssistantMessageFromUpdatedTripPlan(result, followupText) {
   };
 }
 
-function buildAssistantMessageFromEnrichedTripPlan(result, followupText = null) {
+function buildAssistantMessageFromEnrichedTripPlan(result, savedTrip, followupText = null, contentOverride = null) {
   const dayCount = result.itinerary_skeleton?.length || 0;
   const candidateCount = result.candidate_places?.length || 0;
-  const content = followupText
-    ? `I regenerated your itinerary after "${followupText}" and now have ${candidateCount} candidate places across ${dayCount} days.`
-    : `I enriched your planning session into a first draft slot-based itinerary with ${candidateCount} candidate places across ${dayCount} days.`;
+  const content =
+    contentOverride ||
+    (followupText
+      ? `I regenerated your itinerary after "${followupText}" and now have ${candidateCount} candidate places across ${dayCount} days.`
+      : `I enriched your planning session into a first draft slot-based itinerary with ${candidateCount} candidate places across ${dayCount} days.`);
 
   return {
+    id: createMessageId(),
     role: 'assistant',
     type: 'trip_plan_enriched',
     content,
     planningSession: result,
+    savedTrip,
     chips: [
       'Make it more relaxed',
       'Make it food + culture',
@@ -399,7 +430,7 @@ function buildAssistantMessageFromEnrichedTripPlan(result, followupText = null) 
   };
 }
 
-function buildAssistantMessageFromSlotReplacement(result, followupText, previousPlanningSession, replacementPayload) {
+function buildAssistantMessageFromSlotReplacement(result, followupText, previousPlanningSession, replacementPayload, savedTrip) {
   const previousSlot = getSlotFromPlanningSession(
     previousPlanningSession,
     replacementPayload.day_number,
@@ -421,10 +452,12 @@ function buildAssistantMessageFromSlotReplacement(result, followupText, previous
     : `I checked that slot after "${followupText}", but the current option still looks like the strongest fit, so I kept it unchanged.`;
 
   return {
+    id: createMessageId(),
     role: 'assistant',
     type: 'trip_plan_enriched',
     content,
     planningSession: result,
+    savedTrip,
     chips: [
       'Replace Day 2 with something less hectic',
       'Replace evening slot',
@@ -432,6 +465,38 @@ function buildAssistantMessageFromSlotReplacement(result, followupText, previous
       'Change to couple trip',
     ],
     timestamp: new Date().toISOString(),
+  };
+}
+
+function buildComparisonPlanPayload(comparisonResult, chosenOption, travellerId, persona) {
+  return {
+    traveller_id: travellerId,
+    source_surface: 'compare',
+    duration_days: comparisonResult?.destination_a?.duration_days || 4,
+    group_type: persona?.signals?.group_type || 'solo',
+    interests: persona?.signals?.interests || ['food', 'culture'],
+    pace_preference: persona?.signals?.pace_preference || 'balanced',
+    budget: persona?.signals?.travel_style || 'midrange',
+    comparison_context: {
+      comparison_id: comparisonResult.comparison_id,
+      source_surface: 'compare',
+      destination_a: comparisonResult.destination_a.name,
+      destination_b: comparisonResult.destination_b.name,
+      selected_branch: chosenOption.branch,
+      selected_destination: chosenOption.destination,
+      selected_location_id: chosenOption.location_id,
+      verdict: comparisonResult.verdict,
+      planning_recommendation: comparisonResult.planning_recommendation,
+      options: (comparisonResult.plan_start_options || []).map((option) => ({
+        branch: option.branch,
+        location_id: option.location_id,
+        destination: option.destination,
+        weighted_score: option.weighted_score,
+        why_pick_this: option.recommended
+          ? 'Recommended from comparison result.'
+          : 'Alternate branch from comparison result.',
+      })),
+    },
   };
 }
 
@@ -480,41 +545,64 @@ export default function Assistant() {
     }
   }, [location.search, navigate]);
 
-  const persistEnrichedPlanToStoredTrip = (enrichedPlan) => {
-    const trips = listStoredTrips();
-    const matchingTrip = trips.find(
-      (trip) => trip.planning_session_id === enrichedPlan.planning_session_id
+  const updateMessageById = (messageId, patch) => {
+    setMessages((prev) =>
+      prev.map((message) => (message.id === messageId ? { ...message, ...patch } : message))
     );
-
-    if (!matchingTrip) return;
-
-    updateStoredTrip(matchingTrip.id, {
-      title: `${enrichedPlan.parsed_constraints.destination} ${enrichedPlan.itinerary_skeleton.length}-day plan`,
-      destination: enrichedPlan.parsed_constraints.destination,
-      itinerary: enrichedPlan.itinerary_skeleton || [],
-      itinerary_skeleton: enrichedPlan.itinerary_skeleton || [],
-      traveller_id: enrichedPlan.traveller_id,
-      source_surface: enrichedPlan.source_surface,
-    });
-
-    appendTripVersion(matchingTrip.id, 'assistant_regeneration');
   };
 
-  const handleSavePlace = async (place, planningSessionId = null) => {
-    const trips = listStoredTrips();
-    const targetTrip =
-      trips.find((trip) => trip.planning_session_id === planningSessionId) || trips[0];
+  const ensureSavedTripForPlan = async (plan, fallbackTitle = null) => {
+    const savedTripsResponse = await listSavedTrips(travellerId, 100);
+    cacheSavedTrips(travellerId, savedTripsResponse.items || []);
 
-    if (!targetTrip) return;
+    const existing = (savedTripsResponse.items || []).find(
+      (item) => item.planning_session_id === plan.planning_session_id
+    );
 
-    recordSelectedPlace(targetTrip.id, place);
+    if (existing) {
+      const fresh = await getSavedTrip(existing.trip_id);
+      cacheSavedTrip(fresh);
+      return fresh;
+    }
+
+    const destinationName = plan?.parsed_constraints?.destination || 'Trip';
+    const durationDays = plan?.parsed_constraints?.duration_days || plan?.itinerary_skeleton?.length || 0;
+
+    const promoted = await promoteTripPlanToSavedTrip(plan.planning_session_id, {
+      title: fallbackTitle || `${destinationName} ${durationDays}-day plan`,
+      companions: plan?.parsed_constraints?.group_type || null,
+      status: 'planning',
+      source_surface: 'assistant',
+    });
+
+    cacheSavedTrip(promoted);
+    return promoted;
+  };
+
+  const handleSavePlace = async (place, context = {}) => {
+    const tripId = context?.tripId;
+    if (!tripId) return;
+
+    await createTripSignal(tripId, {
+      signal_type: 'selected_place',
+      location_id: place.location_id || null,
+      payload: {
+        name: place.name,
+        city: place.city || null,
+        category: place.category || null,
+      },
+    });
+
+    const freshTrip = await getSavedTrip(tripId);
+    cacheSavedTrip(freshTrip);
 
     await createTravellerMemory({
       traveller_id: travellerId,
       event_type: 'selected_place_saved',
       source_surface: 'assistant',
       payload: {
-        planning_session_id: planningSessionId,
+        planning_session_id: context?.planningSessionId || null,
+        trip_id: tripId,
         location_id: place.location_id || null,
         name: place.name,
         city: place.city || null,
@@ -523,21 +611,30 @@ export default function Assistant() {
     });
   };
 
-  const handleSkipAlternative = async (alternative, planningSessionId = null) => {
-    const trips = listStoredTrips();
-    const targetTrip =
-      trips.find((trip) => trip.planning_session_id === planningSessionId) || trips[0];
+  const handleSkipAlternative = async (alternative, context = {}) => {
+    const tripId = context?.tripId;
+    if (!tripId) return;
 
-    if (!targetTrip) return;
+    await createTripSignal(tripId, {
+      signal_type: 'skipped_recommendation',
+      location_id: alternative.location_id || null,
+      payload: {
+        name: alternative.name,
+        city: alternative.city || null,
+        category: alternative.category || null,
+      },
+    });
 
-    recordSkippedRecommendation(targetTrip.id, alternative);
+    const freshTrip = await getSavedTrip(tripId);
+    cacheSavedTrip(freshTrip);
 
     await createTravellerMemory({
       traveller_id: travellerId,
       event_type: 'skipped_recommendation',
       source_surface: 'assistant',
       payload: {
-        planning_session_id: planningSessionId,
+        planning_session_id: context?.planningSessionId || null,
+        trip_id: tripId,
         location_id: alternative.location_id || null,
         name: alternative.name,
         city: alternative.city || null,
@@ -553,21 +650,64 @@ export default function Assistant() {
     setInput('');
     setErrorMessage('');
 
-    const payload = deriveGuidePayload(msg, persona);
     const currentPlanningSessionMessage = getLatestPlanningSessionMessage(messages);
     const currentPlanningSession = currentPlanningSessionMessage?.planningSession || null;
+    const currentSavedTripMessage = getLatestSavedTripMessage(messages);
+    const currentSavedTrip = currentSavedTripMessage?.savedTrip || currentPlanningSessionMessage?.savedTrip || null;
 
-    const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() };
+    const userMsg = {
+      id: createMessageId(),
+      role: 'user',
+      content: msg,
+      timestamp: new Date().toISOString(),
+    };
+
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
     try {
+      const orchestration = await orchestrateAssistant({
+        message: msg,
+        context: {
+          traveller_id: travellerId,
+          planning_session_id: currentPlanningSession?.planning_session_id || null,
+          trip_id: currentSavedTrip?.trip_id || null,
+        },
+        source_surface: 'assistant',
+        stream: false,
+      });
+
+      const intent = orchestration?.classification?.intent || 'unknown';
+
       if (currentPlanningSession && isRefinementFollowUp(msg, currentPlanningSession)) {
         const planningSessionId = currentPlanningSession.planning_session_id;
+        let savedTrip = currentSavedTrip;
 
         if (currentPlanningSession.status === 'enriched' && isSlotReplacementFollowUp(msg)) {
           const replacementPayload = inferReplacementPayload(msg, currentPlanningSession);
           const replacedPlan = await replaceTripPlanSlot(planningSessionId, replacementPayload);
+          cacheTripPlan(replacedPlan);
+
+          savedTrip = savedTrip || (await ensureSavedTripForPlan(replacedPlan));
+
+          await createTripSignal(savedTrip.trip_id, {
+            signal_type: 'replaced_slot',
+            location_id:
+              getSlotFromPlanningSession(
+                replacedPlan,
+                replacementPayload.day_number,
+                replacementPayload.slot_type
+              )?.assigned_location_id || null,
+            day_number: replacementPayload.day_number,
+            slot_type: replacementPayload.slot_type,
+            payload: {
+              replacement_mode: replacementPayload.replacement_mode,
+              followup_text: msg,
+            },
+          });
+
+          const freshTrip = await getSavedTrip(savedTrip.trip_id);
+          cacheSavedTrip(freshTrip);
 
           await createTravellerMemory({
             traveller_id: travellerId,
@@ -575,18 +715,18 @@ export default function Assistant() {
             source_surface: 'assistant',
             payload: {
               planning_session_id: planningSessionId,
+              trip_id: freshTrip.trip_id,
               replacement_payload: replacementPayload,
               followup_text: msg,
             },
           });
 
-          persistEnrichedPlanToStoredTrip(replacedPlan);
-
           const replacementMsg = buildAssistantMessageFromSlotReplacement(
             replacedPlan,
             msg,
             currentPlanningSession,
-            replacementPayload
+            replacementPayload,
+            freshTrip
           );
           setMessages((prev) => [...prev, replacementMsg]);
           return;
@@ -597,6 +737,7 @@ export default function Assistant() {
 
         if (Object.keys(updatePayload).length > 0) {
           updatedPlan = await updateTripPlan(planningSessionId, updatePayload);
+          cacheTripPlan(updatedPlan);
 
           await createTravellerMemory({
             traveller_id: travellerId,
@@ -604,17 +745,47 @@ export default function Assistant() {
             source_surface: 'assistant',
             payload: {
               planning_session_id: planningSessionId,
+              trip_id: savedTrip?.trip_id || null,
               update_payload: updatePayload,
               missing_fields: updatedPlan.missing_fields || [],
             },
           });
 
-          const updatedMsg = buildAssistantMessageFromUpdatedTripPlan(updatedPlan, msg);
+          const updatedMsg = buildAssistantMessageFromUpdatedTripPlan(updatedPlan, msg, savedTrip);
           setMessages((prev) => [...prev, updatedMsg]);
         }
 
         if ((updatedPlan.missing_fields || []).length === 0) {
-          const enrichedResult = await enrichTripPlan(planningSessionId);
+          const streamingMessageId = createMessageId();
+
+          const placeholder = buildAssistantMessageFromEnrichedTripPlan(
+            updatedPlan,
+            savedTrip,
+            msg,
+            'Regenerating your itinerary...'
+          );
+          placeholder.id = streamingMessageId;
+
+          setMessages((prev) => [...prev, placeholder]);
+
+          let streamedContent = '';
+
+          const enrichedResult =
+            (await streamTripPlanEnrichment(planningSessionId, {
+              onEvent: (event) => {
+                if (event?.type === 'content_delta' && event?.content) {
+                  streamedContent = `${streamedContent}${event.content}`;
+                  updateMessageById(streamingMessageId, {
+                    content: streamedContent,
+                  });
+                }
+              },
+            })) || (await enrichTripPlan(planningSessionId));
+
+          cacheTripPlan(enrichedResult);
+          savedTrip = await ensureSavedTripForPlan(enrichedResult);
+          const freshTrip = await getSavedTrip(savedTrip.trip_id);
+          cacheSavedTrip(freshTrip);
 
           await createTravellerMemory({
             traveller_id: travellerId,
@@ -622,6 +793,7 @@ export default function Assistant() {
             source_surface: 'assistant',
             payload: {
               planning_session_id: enrichedResult.planning_session_id,
+              trip_id: freshTrip.trip_id,
               candidate_count: (enrichedResult.candidate_places || []).length,
               day_count: (enrichedResult.itinerary_skeleton || []).length,
               destination: enrichedResult.parsed_constraints?.destination || null,
@@ -629,16 +801,16 @@ export default function Assistant() {
             },
           });
 
-          persistEnrichedPlanToStoredTrip(enrichedResult);
-
-          const enrichedMsg = buildAssistantMessageFromEnrichedTripPlan(enrichedResult, msg);
-          setMessages((prev) => [...prev, enrichedMsg]);
+          updateMessageById(
+            streamingMessageId,
+            buildAssistantMessageFromEnrichedTripPlan(enrichedResult, freshTrip, msg)
+          );
         }
 
         return;
       }
 
-      if (isComparisonPrompt(msg)) {
+      if (intent === 'destination_compare' || isComparisonPrompt(msg)) {
         const comparisonPayload = extractComparisonPayload(msg, persona);
 
         if (comparisonPayload) {
@@ -658,16 +830,72 @@ export default function Assistant() {
 
           const comparisonMsg = buildAssistantMessageFromComparison(comparisonResult);
           setMessages((prev) => [...prev, comparisonMsg]);
+
+          const recommendedOption = (comparisonResult.plan_start_options || []).find(
+            (option) => option.recommended
+          );
+
+          if (recommendedOption) {
+            const comparisonPlan = await createTripPlanFromComparison(
+              buildComparisonPlanPayload(comparisonResult, recommendedOption, travellerId, persona)
+            );
+            cacheTripPlan(comparisonPlan);
+
+            const tripPlanMsg = buildAssistantMessageFromTripPlan(comparisonPlan);
+            setMessages((prev) => [...prev, tripPlanMsg]);
+
+            const streamMessageId = createMessageId();
+            const placeholder = buildAssistantMessageFromEnrichedTripPlan(
+              comparisonPlan,
+              null,
+              null,
+              'Turning the recommended comparison branch into an itinerary...'
+            );
+            placeholder.id = streamMessageId;
+            setMessages((prev) => [...prev, placeholder]);
+
+            let streamedContent = '';
+
+            const enrichedPlan =
+              (await streamTripPlanEnrichment(comparisonPlan.planning_session_id, {
+                onEvent: (event) => {
+                  if (event?.type === 'content_delta' && event?.content) {
+                    streamedContent = `${streamedContent}${event.content}`;
+                    updateMessageById(streamMessageId, {
+                      content: streamedContent,
+                    });
+                  }
+                },
+              })) || (await enrichTripPlan(comparisonPlan.planning_session_id));
+
+            cacheTripPlan(enrichedPlan);
+            const savedTrip = await ensureSavedTripForPlan(enrichedPlan);
+            const freshTrip = await getSavedTrip(savedTrip.trip_id);
+            cacheSavedTrip(freshTrip);
+
+            updateMessageById(
+              streamMessageId,
+              buildAssistantMessageFromEnrichedTripPlan(
+                enrichedPlan,
+                freshTrip,
+                null,
+                `I created a comparison-started itinerary for ${recommendedOption.destination}.`
+              )
+            );
+          }
+
           return;
         }
       }
 
-      if (isPlanningBrief(msg)) {
+      if (intent === 'trip_plan_create' || isPlanningBrief(msg)) {
         const planResult = await parseAndSaveTripBrief({
           traveller_id: travellerId,
           brief: msg,
           source_surface: 'assistant',
         });
+
+        cacheTripPlan(planResult);
 
         const assistantMsg = buildAssistantMessageFromTripPlan(planResult);
         setMessages((prev) => [...prev, assistantMsg]);
@@ -685,7 +913,31 @@ export default function Assistant() {
         });
 
         if ((planResult.missing_fields || []).length === 0) {
-          const enrichedResult = await enrichTripPlan(planResult.planning_session_id);
+          const streamingMessageId = createMessageId();
+          const placeholder = buildAssistantMessageFromEnrichedTripPlan(
+            planResult,
+            null,
+            null,
+            'Generating your slot-based itinerary...'
+          );
+          placeholder.id = streamingMessageId;
+          setMessages((prev) => [...prev, placeholder]);
+
+          let streamedContent = '';
+
+          const enrichedResult =
+            (await streamTripPlanEnrichment(planResult.planning_session_id, {
+              onEvent: (event) => {
+                if (event?.type === 'content_delta' && event?.content) {
+                  streamedContent = `${streamedContent}${event.content}`;
+                  updateMessageById(streamingMessageId, {
+                    content: streamedContent,
+                  });
+                }
+              },
+            })) || (await enrichTripPlan(planResult.planning_session_id));
+
+          cacheTripPlan(enrichedResult);
 
           await createTravellerMemory({
             traveller_id: travellerId,
@@ -716,14 +968,20 @@ export default function Assistant() {
             }
           }
 
-          persistEnrichedPlanToStoredTrip(enrichedResult);
+          const savedTrip = await ensureSavedTripForPlan(enrichedResult);
+          const freshTrip = await getSavedTrip(savedTrip.trip_id);
+          cacheSavedTrip(freshTrip);
 
-          const enrichedMsg = buildAssistantMessageFromEnrichedTripPlan(enrichedResult);
-          setMessages((prev) => [...prev, enrichedMsg]);
+          updateMessageById(
+            streamingMessageId,
+            buildAssistantMessageFromEnrichedTripPlan(enrichedResult, freshTrip)
+          );
         }
 
         return;
       }
+
+      const guidePayload = deriveGuidePayload(msg, persona);
 
       await createTravellerMemory({
         traveller_id: travellerId,
@@ -731,18 +989,45 @@ export default function Assistant() {
         source_surface: 'assistant',
         payload: {
           query: msg,
-          destination: payload.destination,
-          duration_days: payload.duration_days,
-          traveller_type: payload.traveller_type,
-          interests: payload.interests,
-          budget: payload.budget,
+          destination: guidePayload.destination,
+          duration_days: guidePayload.duration_days,
+          traveller_type: guidePayload.traveller_type,
+          interests: guidePayload.interests,
+          budget: guidePayload.budget,
         },
       });
 
-      const result = await generateDestinationGuide(payload);
-      const assistantMsg = buildAssistantMessageFromGuide(result);
+      const streamingMessageId = createMessageId();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: streamingMessageId,
+          role: 'assistant',
+          type: 'destination_guide',
+          content: 'Building your destination guide...',
+          places: [],
+          alternatives: [],
+          chips: [],
+          timestamp: new Date().toISOString(),
+        },
+      ]);
 
-      setMessages((prev) => [...prev, assistantMsg]);
+      let streamedContent = '';
+
+      const result =
+        (await generateDestinationGuideStream(guidePayload, {
+          onEvent: (event) => {
+            if (event?.type === 'content_delta' && event?.content) {
+              streamedContent = `${streamedContent}${event.content}`;
+              updateMessageById(streamingMessageId, {
+                content: streamedContent,
+              });
+            }
+          },
+        })) || (await generateDestinationGuide(guidePayload));
+
+      const assistantMsg = buildAssistantMessageFromGuide(result);
+      updateMessageById(streamingMessageId, assistantMsg);
 
       await createTravellerMemory({
         traveller_id: travellerId,
@@ -756,9 +1041,9 @@ export default function Assistant() {
           highlights_count: (result.highlights || []).length,
           review_authenticity: result.review_authenticity || null,
           review_summary: result.review_summary || null,
-          traveller_type: payload.traveller_type,
-          interests: payload.interests,
-          budget: payload.budget,
+          traveller_type: guidePayload.traveller_type,
+          interests: guidePayload.interests,
+          budget: guidePayload.budget,
         },
       });
 
@@ -767,7 +1052,7 @@ export default function Assistant() {
         replaceTravellerPersona(refreshedPersona);
         setPersona(refreshedPersona);
       } catch {
-        // Non-blocking
+        // non-blocking
       }
     } catch (error) {
       setErrorMessage(error.message || 'Unable to process your request right now.');
@@ -788,7 +1073,7 @@ export default function Assistant() {
           <div>
             <h1 className="font-semibold text-sm">Wayfarer Assistant</h1>
             <p className="text-xs text-muted-foreground">
-              Destination intelligence + trip planning foundation
+              Backend-first planning + destination intelligence
             </p>
           </div>
         </div>
@@ -808,9 +1093,9 @@ export default function Assistant() {
           <EmptyChat onSuggestionClick={handleSend} persona={persona} />
         ) : (
           <div className="space-y-6">
-            {messages.map((msg, i) => (
+            {messages.map((msg) => (
               <MessageBubble
-                key={i}
+                key={msg.id}
                 message={msg}
                 onChipClick={handleSend}
                 onSavePlace={handleSavePlace}
@@ -943,7 +1228,7 @@ function InsightSection({ reviewInsight, chips, onChipClick }) {
   );
 }
 
-function PlanningSessionCard({ planningSession, onChipClick, chips }) {
+function PlanningSessionCard({ planningSession, savedTrip, onChipClick, chips }) {
   const constraints = planningSession?.parsed_constraints || {};
 
   return (
@@ -956,6 +1241,17 @@ function PlanningSessionCard({ planningSession, onChipClick, chips }) {
           {planningSession.planning_session_id}
         </div>
       </div>
+
+      {savedTrip?.trip_id ? (
+        <div className="rounded-xl bg-secondary/50 px-3 py-2">
+          <div className="text-[11px] uppercase text-muted-foreground mb-1">Saved trip</div>
+          <div className="text-sm">{savedTrip.trip_id}</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            Current version: {savedTrip.current_version_number}
+            {savedTrip.history_branch_label ? ` · ${savedTrip.history_branch_label}` : ''}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid sm:grid-cols-2 gap-3 text-sm">
         <div className="rounded-xl bg-secondary/50 px-3 py-2">
@@ -1008,7 +1304,7 @@ function PlanningSessionCard({ planningSession, onChipClick, chips }) {
   );
 }
 
-function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, planningSessionId }) {
+function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, context }) {
   if (!alternatives?.length) return null;
 
   return (
@@ -1025,7 +1321,9 @@ function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, pla
               <div className="text-xs text-muted-foreground">
                 {alternative.city}, {alternative.country} · {alternative.category}
               </div>
-              <div className="mt-1 text-xs text-muted-foreground">{alternative.reason || alternative.why_alternative}</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {alternative.reason || alternative.why_alternative}
+              </div>
             </div>
             <div className="text-xs font-medium text-accent">
               {alternative.match_score || alternative.score}
@@ -1042,7 +1340,7 @@ function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, pla
                     city: alternative.city,
                     category: alternative.category,
                   },
-                  planningSessionId
+                  context
                 )
               }
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
@@ -1052,7 +1350,7 @@ function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, pla
             </button>
 
             <button
-              onClick={() => onSkipAlternative?.(alternative, planningSessionId)}
+              onClick={() => onSkipAlternative?.(alternative, context)}
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
             >
               <SkipForward className="w-3 h-3" />
@@ -1065,7 +1363,7 @@ function AlternativesSection({ alternatives, onSavePlace, onSkipAlternative, pla
   );
 }
 
-function SlotCard({ slot, onChipClick, dayNumber, onSavePlace, onSkipAlternative, planningSessionId }) {
+function SlotCard({ slot, onChipClick, dayNumber, onSavePlace, onSkipAlternative, context }) {
   const replaceChip =
     slot.slot_type === 'evening'
       ? `Replace Day ${dayNumber} evening slot`
@@ -1119,15 +1417,19 @@ function SlotCard({ slot, onChipClick, dayNumber, onSavePlace, onSkipAlternative
         alternatives={slot.alternatives || []}
         onSavePlace={onSavePlace}
         onSkipAlternative={onSkipAlternative}
-        planningSessionId={planningSessionId}
+        context={context}
       />
     </div>
   );
 }
 
-function ItinerarySkeletonCard({ planningSession, onChipClick, onSavePlace, onSkipAlternative }) {
+function ItinerarySkeletonCard({ planningSession, savedTrip, onChipClick, onSavePlace, onSkipAlternative }) {
   const itinerary = planningSession?.itinerary_skeleton || [];
   const candidates = planningSession?.candidate_places || [];
+  const context = {
+    planningSessionId: planningSession?.planning_session_id || null,
+    tripId: savedTrip?.trip_id || null,
+  };
 
   if (!itinerary.length) return null;
 
@@ -1172,7 +1474,7 @@ function ItinerarySkeletonCard({ planningSession, onChipClick, onSavePlace, onSk
                     dayNumber={day.day_number}
                     onSavePlace={onSavePlace}
                     onSkipAlternative={onSkipAlternative}
-                    planningSessionId={planningSession?.planning_session_id}
+                    context={context}
                   />
                 ))}
               </div>
@@ -1225,7 +1527,7 @@ function ItinerarySkeletonCard({ planningSession, onChipClick, onSavePlace, onSk
                           city: candidate.city,
                           category: candidate.category,
                         },
-                        planningSession?.planning_session_id
+                        context
                       )
                     }
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-background border border-border text-[11px] font-medium text-foreground hover:bg-secondary transition-colors"
@@ -1327,9 +1629,10 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
       <div className="flex-1 min-w-0">
         <div className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</div>
 
-        {message.type === 'trip_plan' || message.type === 'trip_plan_enriched' ? (
+        {(message.type === 'trip_plan' || message.type === 'trip_plan_enriched') ? (
           <PlanningSessionCard
             planningSession={message.planningSession}
+            savedTrip={message.savedTrip}
             chips={message.chips}
             onChipClick={onChipClick}
           />
@@ -1338,6 +1641,7 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
         {message.type === 'trip_plan_enriched' ? (
           <ItinerarySkeletonCard
             planningSession={message.planningSession}
+            savedTrip={message.savedTrip}
             onChipClick={onChipClick}
             onSavePlace={onSavePlace}
             onSkipAlternative={onSkipAlternative}
@@ -1368,7 +1672,10 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
                       city: place.city || null,
                       category: place.category,
                     },
-                    null
+                    {
+                      planningSessionId: message?.planningSession?.planning_session_id || null,
+                      tripId: message?.savedTrip?.trip_id || null,
+                    }
                   )
                 }
                 onClick={undefined}
@@ -1388,7 +1695,10 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
               alternatives={message.alternatives}
               onSavePlace={onSavePlace}
               onSkipAlternative={onSkipAlternative}
-              planningSessionId={null}
+              context={{
+                planningSessionId: message?.planningSession?.planning_session_id || null,
+                tripId: message?.savedTrip?.trip_id || null,
+              }}
             />
           </>
         ) : null}

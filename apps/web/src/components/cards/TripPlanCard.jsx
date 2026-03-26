@@ -20,11 +20,11 @@ export default function TripPlanCard({ trip }) {
   const image =
     trip.destination_image || defaultImages[Math.floor(Math.random() * defaultImages.length)];
 
-  const versionCount = trip.itinerary_versions?.length || 0;
-  const selectedPlacesCount = trip.selected_places?.length || 0;
+  const versionCount = trip.current_version_number || 0;
+  const selectedPlacesCount = trip.selected_places_count || 0;
 
   return (
-    <Link to={`/itinerary?trip=${trip.id}`}>
+    <Link to={`/itinerary?trip=${trip.trip_id}`}>
       <motion.div
         whileHover={{ y: -3 }}
         className="group rounded-2xl overflow-hidden bg-card border border-border hover:shadow-lg transition-all duration-300"
@@ -32,7 +32,7 @@ export default function TripPlanCard({ trip }) {
         <div className="relative h-36 overflow-hidden">
           <img
             src={image}
-            alt={trip.destination}
+            alt={trip.destination || trip.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
@@ -52,13 +52,14 @@ export default function TripPlanCard({ trip }) {
 
           <div className="flex items-center gap-1 text-xs text-muted-foreground mb-2">
             <MapPin className="w-3 h-3" />
-            {trip.destination}
+            {trip.destination || 'Destination pending'}
           </div>
 
           {trip.start_date ? (
             <div className="flex items-center gap-1 text-xs text-muted-foreground mb-2">
               <Calendar className="w-3 h-3" />
-              {moment(trip.start_date).format('MMM D')} —{' '}
+              {moment(trip.start_date).format('MMM D')}
+              {' — '}
               {trip.end_date ? moment(trip.end_date).format('MMM D, YYYY') : 'TBD'}
             </div>
           ) : null}

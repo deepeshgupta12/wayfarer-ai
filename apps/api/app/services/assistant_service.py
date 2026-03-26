@@ -1,0 +1,273 @@
+import json
+import re
+from collections.abc import Generator
+
+from sqlalchemy.orm import Session
+
+from app.schemas.assistant import (
+    AssistantIntentClassification,
+    AssistantOrchestrateRequest,
+    AssistantOrchestrateResponse,
+)
+from app.schemas.destination import DestinationComparisonRequest, DestinationGuideRequest
+from app.schemas.trip_plan import TripBriefParseRequest
+from app.services.destination_service import (
+    compare_destinations,
+    stream_destination_guide,
+    build_destination_guide,
+)
+from app.services.trip_plan_service import (
+    DESTINATION_HINTS,
+    _extract_duration_days,
+    get_trip_plan_summary,
+    parse_and_save_trip_brief,
+)
+
+
+def _extract_known_destinations(message: str) -> list[str]:
+    lowered = message.lower()
+    found: list[str] = []
+
+    for destination in DESTINATION_HINTS:
+        if destination in lowered and destination.title() not in found:
+            found.append(destination.title())
+
+    if len(found) >= 2:
+        return found[:2]
+
+    capitalized_matches = re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b", message)
+    for item in capitalized_matches:
+        normalized = item.strip()
+        if normalized not in found:
+            found.append(normalized)
+        if len(found) >= 2:
+            break
+
+    return found[:2]
+
+
+def classify_assistant_intent(payload: AssistantOrchestrateRequest) -> AssistantIntentClassification:
+    message = payload.message.strip()
+    lowered = message.lower()
+
+    destinations = _extract_known_destinations(message)
+    duration_days = _extract_duration_days(message)
+
+    if payload.context.planning_session_id and any(
+        token in lowered for token in ["replace", "swap", "change", "edit", "slot", "itinerary", "day "]
+    ):
+        return AssistantIntentClassification(
+            intent="itinerary_follow_up",
+            confidence=0.95,
+            rationale="Detected itinerary-edit or itinerary-follow-up language with planning session context.",
+            extracted_duration_days=duration_days,
+        )
+
+    if any(token in lowered for token in ["compare", "versus", " vs ", "better than", "which is better"]):
+        return AssistantIntentClassification(
+            intent="destination_compare",
+            confidence=0.93 if len(destinations) >= 2 else 0.70,
+            rationale="Detected explicit destination comparison language.",
+            extracted_destination_a=destinations[0] if len(destinations) >= 1 else None,
+            extracted_destination_b=destinations[1] if len(destinations) >= 2 else None,
+            extracted_duration_days=duration_days,
+        )
+
+    if any(token in lowered for token in ["plan", "itinerary", "trip"]) and (
+        duration_days is not None or len(destinations) >= 1
+    ):
+        return AssistantIntentClassification(
+            intent="trip_plan_create",
+            confidence=0.90,
+            rationale="Detected trip-planning language with destination and/or duration signals.",
+            extracted_destination_a=destinations[0] if len(destinations) >= 1 else None,
+            extracted_duration_days=duration_days,
+        )
+
+    if any(token in lowered for token in ["guide", "what to do", "things to do", "where to stay", "neighborhood"]):
+        return AssistantIntentClassification(
+            intent="destination_guide",
+            confidence=0.88,
+            rationale="Detected destination-guide exploration language.",
+            extracted_destination_a=destinations[0] if len(destinations) >= 1 else None,
+            extracted_duration_days=duration_days,
+        )
+
+    if len(destinations) == 1 and duration_days is not None:
+        return AssistantIntentClassification(
+            intent="trip_plan_create",
+            confidence=0.75,
+            rationale="Defaulted to trip planning because the message includes one destination and a time horizon.",
+            extracted_destination_a=destinations[0],
+            extracted_duration_days=duration_days,
+        )
+
+    return AssistantIntentClassification(
+        intent="unknown",
+        confidence=0.40,
+        rationale="Could not deterministically map the message to a supported assistant workflow.",
+        extracted_destination_a=destinations[0] if len(destinations) >= 1 else None,
+        extracted_destination_b=destinations[1] if len(destinations) >= 2 else None,
+        extracted_duration_days=duration_days,
+    )
+
+
+def orchestrate_assistant_request(
+    db: Session,
+    payload: AssistantOrchestrateRequest,
+) -> AssistantOrchestrateResponse:
+    classification = classify_assistant_intent(payload)
+
+    if classification.intent == "destination_guide":
+        destination = classification.extracted_destination_a
+        if not destination:
+            return AssistantOrchestrateResponse(
+                classification=classification,
+                route="unknown",
+                payload={"error": "No destination could be extracted for destination guide generation."},
+            )
+
+        result = build_destination_guide(
+            DestinationGuideRequest(
+                destination=destination,
+                traveller_id=payload.context.traveller_id,
+                duration_days=classification.extracted_duration_days or 3,
+                traveller_type="solo",
+                interests=[],
+                pace_preference="balanced",
+                budget="midrange",
+            )
+        )
+        return AssistantOrchestrateResponse(
+            classification=classification,
+            route="destinations.guide",
+            continuity_context={
+                "traveller_id": payload.context.traveller_id,
+                "planning_session_id": payload.context.planning_session_id,
+            },
+            payload=result.model_dump(mode="json"),
+        )
+
+    if classification.intent == "destination_compare":
+        if not classification.extracted_destination_a or not classification.extracted_destination_b:
+            return AssistantOrchestrateResponse(
+                classification=classification,
+                route="unknown",
+                payload={"error": "Two destinations are required for comparison routing."},
+            )
+
+        result = compare_destinations(
+            DestinationComparisonRequest(
+                destination_a=classification.extracted_destination_a,
+                destination_b=classification.extracted_destination_b,
+                traveller_id=payload.context.traveller_id,
+                traveller_type="solo",
+                interests=[],
+                pace_preference="balanced",
+                budget="midrange",
+                duration_days=classification.extracted_duration_days or 3,
+            )
+        )
+        return AssistantOrchestrateResponse(
+            classification=classification,
+            route="destinations.compare",
+            continuity_context={
+                "traveller_id": payload.context.traveller_id,
+            },
+            payload=result.model_dump(mode="json"),
+        )
+
+    if classification.intent == "trip_plan_create":
+        if not payload.context.traveller_id:
+            return AssistantOrchestrateResponse(
+                classification=classification,
+                route="unknown",
+                payload={"error": "traveller_id is required for trip planning orchestration."},
+            )
+
+        result = parse_and_save_trip_brief(
+            db,
+            TripBriefParseRequest(
+                traveller_id=payload.context.traveller_id,
+                brief=payload.message,
+                source_surface=payload.source_surface,
+            ),
+        )
+        return AssistantOrchestrateResponse(
+            classification=classification,
+            route="trip_plans.parse_and_save",
+            continuity_context={
+                "traveller_id": payload.context.traveller_id,
+                "planning_session_id": result.planning_session_id,
+            },
+            payload=result.model_dump(mode="json"),
+        )
+
+    if classification.intent == "itinerary_follow_up":
+        if not payload.context.planning_session_id:
+            return AssistantOrchestrateResponse(
+                classification=classification,
+                route="unknown",
+                payload={"error": "planning_session_id is required for itinerary follow-up routing."},
+            )
+
+        result = get_trip_plan_summary(db, payload.context.planning_session_id)
+        return AssistantOrchestrateResponse(
+            classification=classification,
+            route="trip_plans.get_summary",
+            continuity_context={
+                "traveller_id": payload.context.traveller_id,
+                "planning_session_id": payload.context.planning_session_id,
+            },
+            payload=result.model_dump(mode="json"),
+        )
+
+    return AssistantOrchestrateResponse(
+        classification=classification,
+        route="unknown",
+        continuity_context={
+            "traveller_id": payload.context.traveller_id,
+            "planning_session_id": payload.context.planning_session_id,
+            "trip_id": payload.context.trip_id,
+        },
+        payload={
+            "message": "The assistant router could not deterministically classify this message into a supported flow."
+        },
+    )
+
+
+def stream_assistant_request(
+    db: Session,
+    payload: AssistantOrchestrateRequest,
+) -> Generator[str, None, None]:
+    classification = classify_assistant_intent(payload)
+
+    yield json.dumps(
+        {
+            "type": "meta",
+            "intent": classification.intent,
+            "confidence": classification.confidence,
+            "rationale": classification.rationale,
+        }
+    ) + "\n"
+
+    if classification.intent == "destination_guide" and classification.extracted_destination_a:
+        guide_payload = DestinationGuideRequest(
+            destination=classification.extracted_destination_a,
+            traveller_id=payload.context.traveller_id,
+            duration_days=classification.extracted_duration_days or 3,
+            traveller_type="solo",
+            interests=[],
+            pace_preference="balanced",
+            budget="midrange",
+        )
+        yield from stream_destination_guide(guide_payload)
+        return
+
+    result = orchestrate_assistant_request(db, payload)
+    yield json.dumps(
+        {
+            "type": "final",
+            "payload": result.model_dump(mode="json"),
+        }
+    ) + "\n"

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.assistant import router as assistant_router
 from app.api.routes.destinations import router as destinations_router
 from app.api.routes.embeddings import router as embeddings_router
 from app.api.routes.health import router as health_router
@@ -59,6 +60,7 @@ app.include_router(embeddings_router)
 app.include_router(persona_router)
 app.include_router(persona_embeddings_router)
 app.include_router(review_intelligence_router)
+app.include_router(assistant_router)
 app.include_router(destinations_router)
 app.include_router(traveller_memory_router)
 app.include_router(trip_plan_router)

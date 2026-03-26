@@ -1,220 +1,100 @@
-const TRIPS_STORAGE_KEY = 'wayfarer_saved_trips_v2';
+const SAVED_TRIPS_CACHE_KEY = 'wayfarer_backend_saved_trips_cache_v2_5';
+const SAVED_TRIP_DETAIL_CACHE_KEY = 'wayfarer_backend_saved_trip_detail_cache_v2_5';
+const TRIP_PLAN_CACHE_KEY = 'wayfarer_backend_trip_plan_cache_v2_5';
 
 function isBrowser() {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 }
 
-function safeReadTrips() {
-  if (!isBrowser()) return [];
+function readJson(key, fallbackValue) {
+  if (!isBrowser()) return fallbackValue;
 
   try {
-    const raw = window.localStorage.getItem(TRIPS_STORAGE_KEY);
-    if (!raw) return [];
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallbackValue;
 
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return parsed ?? fallbackValue;
   } catch {
-    return [];
+    return fallbackValue;
   }
 }
 
-function safeWriteTrips(trips) {
+function writeJson(key, value) {
   if (!isBrowser()) return;
-  window.localStorage.setItem(TRIPS_STORAGE_KEY, JSON.stringify(trips));
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore cache-only failures
+  }
 }
 
-function createTripId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
+function mergeUniqueById(items, idField) {
+  const map = new Map();
+
+  for (const item of items || []) {
+    const id = item?.[idField];
+    if (!id) continue;
+    map.set(id, item);
   }
 
-  return `trip_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return Array.from(map.values());
 }
 
-function createVersionId() {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-
-  return `version_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+export function getCachedSavedTrips(travellerId) {
+  const cache = readJson(SAVED_TRIPS_CACHE_KEY, {});
+  return Array.isArray(cache?.[travellerId]) ? cache[travellerId] : [];
 }
 
-function normalizeArray(value) {
-  return Array.isArray(value) ? value : [];
+export function cacheSavedTrips(travellerId, trips) {
+  const cache = readJson(SAVED_TRIPS_CACHE_KEY, {});
+  cache[travellerId] = Array.isArray(trips) ? trips : [];
+  writeJson(SAVED_TRIPS_CACHE_KEY, cache);
 }
 
-function buildVersionSnapshot(trip, reason = 'manual_snapshot') {
-  const now = new Date().toISOString();
-  const currentVersions = normalizeArray(trip.itinerary_versions);
-
-  return {
-    version_id: createVersionId(),
-    version_number: currentVersions.length + 1,
-    created_at: now,
-    reason,
-    itinerary: normalizeArray(trip.itinerary),
-    itinerary_skeleton: normalizeArray(trip.itinerary_skeleton),
-    planning_session_id: trip.planning_session_id || null,
-    selected_places: normalizeArray(trip.selected_places),
-    skipped_recommendations: normalizeArray(trip.skipped_recommendations),
-  };
+export function getCachedSavedTrip(tripId) {
+  const cache = readJson(SAVED_TRIP_DETAIL_CACHE_KEY, {});
+  return cache?.[tripId] || null;
 }
 
-export function listStoredTrips() {
-  return safeReadTrips()
-    .slice()
-    .sort((a, b) => {
-      const aTime = new Date(a.created_date || 0).getTime();
-      const bTime = new Date(b.created_date || 0).getTime();
+export function cacheSavedTrip(trip) {
+  if (!trip?.trip_id) return;
+
+  const detailCache = readJson(SAVED_TRIP_DETAIL_CACHE_KEY, {});
+  detailCache[trip.trip_id] = trip;
+  writeJson(SAVED_TRIP_DETAIL_CACHE_KEY, detailCache);
+
+  if (trip.traveller_id) {
+    const listCache = readJson(SAVED_TRIPS_CACHE_KEY, {});
+    const existing = Array.isArray(listCache?.[trip.traveller_id]) ? listCache[trip.traveller_id] : [];
+    const merged = mergeUniqueById([trip, ...existing], 'trip_id').sort((a, b) => {
+      const aTime = new Date(a?.updated_at || a?.created_at || 0).getTime();
+      const bTime = new Date(b?.updated_at || b?.created_at || 0).getTime();
       return bTime - aTime;
     });
-}
-
-export function getStoredTripById(tripId) {
-  if (!tripId) return null;
-  return listStoredTrips().find((trip) => trip.id === tripId) || null;
-}
-
-export function saveStoredTrip(payload) {
-  const trips = safeReadTrips();
-  const now = new Date().toISOString();
-
-  const baseTrip = {
-    id: createTripId(),
-    title: payload.title,
-    destination: payload.destination,
-    start_date: payload.start_date || null,
-    end_date: payload.end_date || null,
-    companions: payload.companions || null,
-    status: payload.status || 'planning',
-    itinerary: normalizeArray(payload.itinerary),
-    itinerary_skeleton: normalizeArray(payload.itinerary_skeleton),
-    planning_session_id: payload.planning_session_id || null,
-    traveller_id: payload.traveller_id || null,
-    source_surface: payload.source_surface || 'planner_modal',
-    selected_places: normalizeArray(payload.selected_places),
-    skipped_recommendations: normalizeArray(payload.skipped_recommendations),
-    itinerary_versions: [],
-    created_date: now,
-    updated_date: now,
-  };
-
-  const initialVersion = buildVersionSnapshot(baseTrip, 'initial_save');
-  const trip = {
-    ...baseTrip,
-    itinerary_versions: [initialVersion],
-  };
-
-  trips.push(trip);
-  safeWriteTrips(trips);
-
-  return trip;
-}
-
-export function updateStoredTrip(tripId, updates) {
-  const trips = safeReadTrips();
-  const index = trips.findIndex((trip) => trip.id === tripId);
-
-  if (index === -1) {
-    return null;
+    listCache[trip.traveller_id] = merged;
+    writeJson(SAVED_TRIPS_CACHE_KEY, listCache);
   }
-
-  const updatedTrip = {
-    ...trips[index],
-    ...updates,
-    updated_date: new Date().toISOString(),
-  };
-
-  trips[index] = updatedTrip;
-  safeWriteTrips(trips);
-
-  return updatedTrip;
 }
 
-export function appendTripVersion(tripId, reason = 'manual_snapshot') {
-  const trips = safeReadTrips();
-  const index = trips.findIndex((trip) => trip.id === tripId);
-
-  if (index === -1) {
-    return null;
-  }
-
-  const currentTrip = trips[index];
-  const nextVersion = buildVersionSnapshot(currentTrip, reason);
-
-  const updatedTrip = {
-    ...currentTrip,
-    itinerary_versions: [...normalizeArray(currentTrip.itinerary_versions), nextVersion],
-    updated_date: new Date().toISOString(),
-  };
-
-  trips[index] = updatedTrip;
-  safeWriteTrips(trips);
-
-  return updatedTrip;
+export function getCachedTripPlan(planningSessionId) {
+  const cache = readJson(TRIP_PLAN_CACHE_KEY, {});
+  return cache?.[planningSessionId] || null;
 }
 
-export function recordSelectedPlace(tripId, place) {
-  const trips = safeReadTrips();
-  const index = trips.findIndex((trip) => trip.id === tripId);
+export function cacheTripPlan(plan) {
+  if (!plan?.planning_session_id) return;
 
-  if (index === -1) {
-    return null;
-  }
-
-  const trip = trips[index];
-  const selectedPlaces = normalizeArray(trip.selected_places);
-  const alreadyExists = selectedPlaces.some(
-    (item) => item.location_id && item.location_id === place.location_id
-  );
-
-  if (alreadyExists) {
-    return trip;
-  }
-
-  const updatedTrip = {
-    ...trip,
-    selected_places: [
-      ...selectedPlaces,
-      {
-        ...place,
-        saved_at: new Date().toISOString(),
-      },
-    ],
-    updated_date: new Date().toISOString(),
-  };
-
-  trips[index] = updatedTrip;
-  safeWriteTrips(trips);
-
-  return updatedTrip;
+  const cache = readJson(TRIP_PLAN_CACHE_KEY, {});
+  cache[plan.planning_session_id] = plan;
+  writeJson(TRIP_PLAN_CACHE_KEY, cache);
 }
 
-export function recordSkippedRecommendation(tripId, recommendation) {
-  const trips = safeReadTrips();
-  const index = trips.findIndex((trip) => trip.id === tripId);
+export function clearCachedSavedTrip(tripId) {
+  const detailCache = readJson(SAVED_TRIP_DETAIL_CACHE_KEY, {});
+  if (!detailCache?.[tripId]) return;
 
-  if (index === -1) {
-    return null;
-  }
-
-  const trip = trips[index];
-  const skippedRecommendations = normalizeArray(trip.skipped_recommendations);
-
-  const updatedTrip = {
-    ...trip,
-    skipped_recommendations: [
-      ...skippedRecommendations,
-      {
-        ...recommendation,
-        skipped_at: new Date().toISOString(),
-      },
-    ],
-    updated_date: new Date().toISOString(),
-  };
-
-  trips[index] = updatedTrip;
-  safeWriteTrips(trips);
-
-  return updatedTrip;
+  delete detailCache[tripId];
+  writeJson(SAVED_TRIP_DETAIL_CACHE_KEY, detailCache);
 }

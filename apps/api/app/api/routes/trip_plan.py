@@ -1,9 +1,11 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.db.session import get_db_session
 from app.schemas.trip_plan import (
     TripBriefParseRequest,
     TripPlanEnrichResponse,
+    TripPlanFromComparisonRequest,
     TripPlanResponse,
     TripPlanSummaryResponse,
     TripPlanUpdateRequest,
@@ -13,7 +15,9 @@ from app.services.trip_plan_service import (
     enrich_trip_plan,
     get_trip_plan_summary,
     parse_and_save_trip_brief,
+    parse_and_save_trip_from_comparison,
     replace_trip_plan_slot,
+    stream_enrich_trip_plan,
     update_trip_plan,
 )
 
@@ -27,6 +31,19 @@ def parse_trip_brief_and_create_plan(
     db = get_db_session()
     try:
         return parse_and_save_trip_brief(db, payload)
+    finally:
+        db.close()
+
+@router.post("/from-comparison", response_model=TripPlanResponse)
+def create_plan_from_comparison(
+    payload: TripPlanFromComparisonRequest,
+) -> TripPlanResponse:
+    db = get_db_session()
+    try:
+        try:
+            return parse_and_save_trip_from_comparison(db, payload)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.close()
 
@@ -77,6 +94,17 @@ def enrich_saved_trip_plan(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.close()
+
+@router.post("/{planning_session_id}/enrich/stream")
+def enrich_saved_trip_plan_stream(
+    planning_session_id: str,
+) -> StreamingResponse:
+    db = get_db_session()
+    return StreamingResponse(
+        stream_enrich_trip_plan(db, planning_session_id),
+        media_type="application/x-ndjson",
+        background=None,
+    )
 
 
 @router.get("/{planning_session_id}", response_model=TripPlanSummaryResponse)

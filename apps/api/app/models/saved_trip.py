@@ -27,8 +27,12 @@ class SavedTripRecord(Base):
     current_candidate_places: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     current_itinerary: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     current_itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+    comparison_context: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
 
     current_version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_version_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    history_branch_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     selected_places_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     skipped_recommendations_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     replaced_slots_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -60,10 +64,16 @@ class ItineraryVersionRecord(Base):
     source_surface: Mapped[str] = mapped_column(String(100), nullable=False, default="assistant")
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="planning")
 
+    is_current: Mapped[bool] = mapped_column(nullable=False, default=False)
+    branch_label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    parent_version_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    restored_from_version_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     parsed_constraints: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
     candidate_places: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     itinerary: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+    comparison_context: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

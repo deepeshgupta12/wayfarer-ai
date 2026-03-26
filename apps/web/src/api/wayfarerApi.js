@@ -2,8 +2,10 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 
 async function parseJsonResponse(response) {
   const contentType = response.headers.get('content-type') || '';
+
   if (!contentType.includes('application/json')) {
-    throw new Error('Expected JSON response from Wayfarer API.');
+    const text = await response.text();
+    throw new Error(text || 'Expected JSON response from Wayfarer API.');
   }
 
   const payload = await response.json();
@@ -19,43 +21,124 @@ async function parseJsonResponse(response) {
   return payload;
 }
 
-export async function initializeAndSavePersona(payload) {
-  const response = await fetch(`${API_BASE_URL}/persona/initialize-and-save`, {
-    method: 'POST',
+async function parseTextError(response) {
+  const text = await response.text();
+  throw new Error(text || 'Wayfarer API request failed.');
+}
+
+async function parseNdjsonStream(response, onEvent) {
+  if (!response.ok) {
+    await parseTextError(response);
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming response body is unavailable.');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let finalPayload = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      if (typeof onEvent === 'function') {
+        onEvent(parsed);
+      }
+
+      if (parsed?.type === 'final' && parsed?.payload) {
+        finalPayload = parsed.payload;
+      } else if (parsed?.payload && !parsed?.type) {
+        finalPayload = parsed.payload;
+      } else if (parsed?.result) {
+        finalPayload = parsed.result;
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    try {
+      const parsed = JSON.parse(buffer.trim());
+
+      if (typeof onEvent === 'function') {
+        onEvent(parsed);
+      }
+
+      if (parsed?.type === 'final' && parsed?.payload) {
+        finalPayload = parsed.payload;
+      } else if (parsed?.payload && !parsed?.type) {
+        finalPayload = parsed.payload;
+      } else if (parsed?.result) {
+        finalPayload = parsed.result;
+      }
+    } catch {
+      // ignore trailing partial line
+    }
+  }
+
+  return finalPayload;
+}
+
+async function sendJson(path, payload, method = 'POST') {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method,
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify(payload),
+    body: payload !== undefined ? JSON.stringify(payload) : undefined,
   });
 
   return parseJsonResponse(response);
 }
 
+async function sendGet(path) {
+  const response = await fetch(`${API_BASE_URL}${path}`);
+  return parseJsonResponse(response);
+}
+
+export async function initializeAndSavePersona(payload) {
+  return sendJson('/persona/initialize-and-save', payload);
+}
+
 export async function refreshTravellerPersonaFromMemory(travellerId) {
   const response = await fetch(
     `${API_BASE_URL}/persona/refresh-from-memory/${encodeURIComponent(travellerId)}`,
-    {
-      method: 'POST',
-    }
+    { method: 'POST' }
   );
 
   return parseJsonResponse(response);
 }
 
 export async function searchDestinations(payload) {
-  const response = await fetch(`${API_BASE_URL}/destinations/search`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return parseJsonResponse(response);
+  return sendJson('/destinations/search', payload);
 }
 
 export async function generateDestinationGuide(payload) {
-  const response = await fetch(`${API_BASE_URL}/destinations/guide`, {
+  return sendJson('/destinations/guide', payload);
+}
+
+export async function generateDestinationGuideStream(payload, options = {}) {
+  const response = await fetch(`${API_BASE_URL}/destinations/guide/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -63,35 +146,27 @@ export async function generateDestinationGuide(payload) {
     body: JSON.stringify(payload),
   });
 
-  return parseJsonResponse(response);
+  return parseNdjsonStream(response, options.onEvent);
 }
 
 export async function compareDestinations(payload) {
-  const response = await fetch(`${API_BASE_URL}/destinations/compare`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return parseJsonResponse(response);
+  return sendJson('/destinations/compare', payload);
 }
 
 export async function indexDestinationPlaces(payload) {
-  const response = await fetch(`${API_BASE_URL}/destinations/places/index`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return parseJsonResponse(response);
+  return sendJson('/destinations/places/index', payload);
 }
 
 export async function getSimilarPlaces(payload) {
-  const response = await fetch(`${API_BASE_URL}/destinations/places/similar`, {
+  return sendJson('/destinations/places/similar', payload);
+}
+
+export async function orchestrateAssistant(payload) {
+  return sendJson('/assistant/orchestrate', payload);
+}
+
+export async function streamAssistantOrchestration(payload, options = {}) {
+  const response = await fetch(`${API_BASE_URL}/assistant/orchestrate/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -99,19 +174,15 @@ export async function getSimilarPlaces(payload) {
     body: JSON.stringify(payload),
   });
 
-  return parseJsonResponse(response);
+  return parseNdjsonStream(response, options.onEvent);
 }
 
 export async function parseAndSaveTripBrief(payload) {
-  const response = await fetch(`${API_BASE_URL}/trip-plans/parse-and-save`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
+  return sendJson('/trip-plans/parse-and-save', payload);
+}
 
-  return parseJsonResponse(response);
+export async function createTripPlanFromComparison(payload) {
+  return sendJson('/trip-plans/from-comparison', payload);
 }
 
 export async function updateTripPlan(planningSessionId, payload) {
@@ -130,18 +201,7 @@ export async function updateTripPlan(planningSessionId, payload) {
 }
 
 export async function replaceTripPlanSlot(planningSessionId, payload) {
-  const response = await fetch(
-    `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}/replace-slot`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    }
-  );
-
-  return parseJsonResponse(response);
+  return sendJson(`/trip-plans/${encodeURIComponent(planningSessionId)}/replace-slot`, payload);
 }
 
 export async function enrichTripPlan(planningSessionId) {
@@ -155,24 +215,75 @@ export async function enrichTripPlan(planningSessionId) {
   return parseJsonResponse(response);
 }
 
-export async function getTripPlan(planningSessionId) {
+export async function streamTripPlanEnrichment(planningSessionId, options = {}) {
   const response = await fetch(
-    `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}`
+    `${API_BASE_URL}/trip-plans/${encodeURIComponent(planningSessionId)}/enrich/stream`,
+    {
+      method: 'POST',
+    }
   );
 
-  return parseJsonResponse(response);
+  return parseNdjsonStream(response, options.onEvent);
+}
+
+export async function getTripPlan(planningSessionId) {
+  return sendGet(`/trip-plans/${encodeURIComponent(planningSessionId)}`);
+}
+
+export async function promoteTripPlanToSavedTrip(planningSessionId, payload) {
+  return sendJson(`/trips/from-plan/${encodeURIComponent(planningSessionId)}`, payload);
+}
+
+export async function listSavedTrips(travellerId, limit = 50) {
+  const params = new URLSearchParams({
+    traveller_id: travellerId,
+    limit: String(limit),
+  });
+
+  return sendGet(`/trips?${params.toString()}`);
+}
+
+export async function getSavedTrip(tripId) {
+  return sendGet(`/trips/${encodeURIComponent(tripId)}`);
+}
+
+export async function listTripVersions(tripId, limit = 50) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+  });
+
+  return sendGet(`/trips/${encodeURIComponent(tripId)}/versions?${params.toString()}`);
+}
+
+export async function createTripVersionSnapshot(tripId, payload) {
+  return sendJson(`/trips/${encodeURIComponent(tripId)}/versions`, payload);
+}
+
+export async function getCurrentTripVersion(tripId) {
+  return sendGet(`/trips/${encodeURIComponent(tripId)}/versions/current`);
+}
+
+export async function restoreTripVersion(tripId, versionId, payload) {
+  return sendJson(
+    `/trips/${encodeURIComponent(tripId)}/versions/${encodeURIComponent(versionId)}/restore`,
+    payload
+  );
+}
+
+export async function listTripSignals(tripId, limit = 100) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+  });
+
+  return sendGet(`/trips/${encodeURIComponent(tripId)}/signals?${params.toString()}`);
+}
+
+export async function createTripSignal(tripId, payload) {
+  return sendJson(`/trips/${encodeURIComponent(tripId)}/signals`, payload);
 }
 
 export async function createTravellerMemory(payload) {
-  const response = await fetch(`${API_BASE_URL}/traveller-memory`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
-
-  return parseJsonResponse(response);
+  return sendJson('/traveller-memory', payload);
 }
 
 export async function getTravellerMemory(travellerId, limit = 20, filters = {}) {
@@ -186,14 +297,11 @@ export async function getTravellerMemory(travellerId, limit = 20, filters = {}) 
     params.set('planning_session_id', filters.planning_session_id);
   }
 
-  const response = await fetch(
-    `${API_BASE_URL}/traveller-memory/${encodeURIComponent(travellerId)}?${params.toString()}`
+  return sendGet(
+    `/traveller-memory/${encodeURIComponent(travellerId)}?${params.toString()}`
   );
-
-  return parseJsonResponse(response);
 }
 
 export async function getBackendHealth() {
-  const response = await fetch(`${API_BASE_URL}/health`);
-  return parseJsonResponse(response);
+  return sendGet('/health');
 }

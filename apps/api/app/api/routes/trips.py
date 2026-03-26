@@ -10,16 +10,19 @@ from app.schemas.trip_plan import (
     TripSignalResponse,
     TripVersionListResponse,
     TripVersionResponse,
+    TripVersionRestoreRequest,
     TripVersionSnapshotRequest,
 )
 from app.services.trip_plan_service import (
     create_trip_signal,
     create_trip_version_snapshot,
+    get_current_trip_version,
     get_saved_trip_summary,
     list_saved_trips,
     list_trip_signals,
     list_trip_versions,
     promote_trip_plan_to_saved_trip,
+    restore_trip_version,
 )
 
 router = APIRouter(prefix="/trips", tags=["trips"])
@@ -90,6 +93,35 @@ def create_version_snapshot(
     try:
         try:
             return create_trip_version_snapshot(db, trip_id=trip_id, payload=payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+@router.get("/{trip_id}/versions/current", response_model=TripVersionResponse)
+def get_current_version(
+    trip_id: str,
+) -> TripVersionResponse:
+    db = get_db_session()
+    try:
+        try:
+            return get_current_trip_version(db, trip_id=trip_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+
+@router.post("/{trip_id}/versions/{version_id}/restore", response_model=SavedTripSummaryResponse)
+def restore_version_snapshot(
+    trip_id: str,
+    version_id: str,
+    payload: TripVersionRestoreRequest,
+) -> SavedTripSummaryResponse:
+    db = get_db_session()
+    try:
+        try:
+            return restore_trip_version(db, trip_id=trip_id, version_id=version_id, payload=payload)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:
