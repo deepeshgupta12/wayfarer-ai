@@ -296,7 +296,7 @@ def _score_candidate_place(
 
     positive_theme_bonus = sum(1.5 for value in review_themes.values() if value == "positive")
     caution_penalty = sum(1.0 for value in review_themes.values() if value == "caution")
-    persona_bonus = (persona_relevance_score or 0.0) * 12.0
+    persona_bonus = (persona_relevance_score or 0.0) * 30.0
 
     return round(
         min(

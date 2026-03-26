@@ -691,9 +691,22 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
         finally:
             db.close()
 
+    normalized_results = [
+        {
+            "location_id": result.location_id,
+            "name": result.name,
+            "city": result.city,
+            "country": result.country,
+            "category": result.category,
+            "rating": result.rating,
+            "review_count": result.review_count,
+        }
+        for result in results
+    ]
+
     return DestinationSearchResponse(
         query=payload.query,
-        results=results,
+        results=normalized_results,
     )
 
 
