@@ -780,3 +780,122 @@ def test_replace_slot_rejects_invalid_day() -> None:
     )
     assert replace_response.status_code == 400
     assert "day 9 not found" in replace_response.json()["detail"].lower()
+
+def test_enrich_trip_plan_applies_persona_embedding_in_candidate_ranking(monkeypatch) -> None:
+    client = get_test_client()
+
+    candidate_results = [
+        SimpleNamespace(
+            location_id="persona_trip_001",
+            name="Kyoto Central Sprint",
+            city="Kyoto",
+            country="Japan",
+            category="city",
+            rating=4.9,
+            review_count=12000,
+        ),
+        SimpleNamespace(
+            location_id="persona_trip_002",
+            name="Kyoto Quiet Heritage",
+            city="Kyoto",
+            country="Japan",
+            category="district",
+            rating=4.5,
+            review_count=7200,
+        ),
+        SimpleNamespace(
+            location_id="persona_trip_003",
+            name="Nishiki Market",
+            city="Kyoto",
+            country="Japan",
+            category="market",
+            rating=4.6,
+            review_count=6400,
+        ),
+        SimpleNamespace(
+            location_id="persona_trip_004",
+            name="Arashiyama",
+            city="Kyoto",
+            country="Japan",
+            category="district",
+            rating=4.7,
+            review_count=7600,
+        ),
+    ]
+
+    review_map = {
+        "Kyoto Central Sprint": {
+            "location_id": "persona_trip_001",
+            "location_name": "Kyoto Central Sprint",
+            "reviews": [
+                {"rating": 5, "text": "Energetic, fast-moving, central experience."},
+                {"rating": 4, "text": "Good but busy."},
+            ],
+        },
+        "Kyoto Quiet Heritage": {
+            "location_id": "persona_trip_002",
+            "location_name": "Kyoto Quiet Heritage",
+            "reviews": [
+                {"rating": 5, "text": "Quiet lanes, cultural depth, calm atmosphere."},
+                {"rating": 4, "text": "Relaxed, scenic, and very walkable."},
+            ],
+        },
+        "Nishiki Market": {
+            "location_id": "persona_trip_003",
+            "location_name": "Nishiki Market",
+            "reviews": [
+                {"rating": 5, "text": "Delicious food and lively market atmosphere."},
+                {"rating": 4, "text": "Great value and variety."},
+            ],
+        },
+        "Arashiyama": {
+            "location_id": "persona_trip_004",
+            "location_name": "Arashiyama",
+            "reviews": [
+                {"rating": 5, "text": "Scenic and calm."},
+                {"rating": 4, "text": "Relaxed pace and beautiful walks."},
+            ],
+        },
+    }
+
+    monkeypatch.setattr(
+        trip_plan_service.tripadvisor_client,
+        "search_locations",
+        lambda query, traveller_type, interests: candidate_results,
+    )
+    monkeypatch.setattr(
+        trip_plan_service.tripadvisor_client,
+        "get_destination_reviews",
+        lambda destination_name: review_map[destination_name],
+    )
+
+    def fake_persona_relevance(db, traveller_id, text: str) -> float | None:
+        if "Kyoto Quiet Heritage" in text:
+            return 0.99
+        if "Kyoto Central Sprint" in text:
+            return 0.05
+        return 0.40
+
+    monkeypatch.setattr(
+        trip_plan_service,
+        "calculate_persona_relevance_score",
+        fake_persona_relevance,
+    )
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_persona_001",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love culture and wellness",
+            "source_surface": "assistant",
+        },
+    )
+    assert create_response.status_code == 200
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    payload = enrich_response.json()
+    assert payload["candidate_places"][0]["name"] == "Kyoto Quiet Heritage"
+    assert "strong persona-embedding fit" in payload["candidate_places"][0]["why_selected"].lower()

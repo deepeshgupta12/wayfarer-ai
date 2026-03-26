@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.clients.google_places_client import GooglePlacesClient
 from app.clients.tripadvisor_client import TripadvisorClient
+from app.db.session import get_db_session
 from app.models.place_embedding import PlaceEmbeddingRecord
 from app.schemas.destination import (
     DestinationAlternative,
@@ -28,6 +29,7 @@ from app.schemas.destination import (
     SimilarPlaceResponse,
 )
 from app.services.embedding_service import get_embedding
+from app.services.persona_embedding_service import calculate_persona_relevance_score
 from app.services.review_intelligence_service import analyze_review_bundle
 
 tripadvisor_client = TripadvisorClient()
@@ -213,6 +215,75 @@ def _cosine_similarity(vector_a: list[float], vector_b: list[float]) -> float:
 
     return round(dot_product / (magnitude_a * magnitude_b), 4)
 
+def _base_destination_result_rank_score(result: Any) -> float:
+    review_volume_bonus = min(float(result.review_count) / 5000.0, 1.0) * 5.0
+    return round((float(result.rating) * 20.0) + review_volume_bonus, 4)
+
+
+def _compute_persona_relevance_for_place(
+    db: Session | None,
+    traveller_id: str | None,
+    destination: str,
+    place: Any,
+    traveller_type: str | None,
+    interests: list[str],
+) -> float | None:
+    if db is None or not traveller_id:
+        return None
+
+    embedding_text = _build_place_embedding_text(
+        destination=destination,
+        place=place,
+        traveller_type=traveller_type,
+        interests=interests,
+    )
+
+    return calculate_persona_relevance_score(
+        db=db,
+        traveller_id=traveller_id,
+        text=embedding_text,
+    )
+
+
+def _rerank_destination_results_with_persona(
+    db: Session | None,
+    traveller_id: str | None,
+    destination: str,
+    traveller_type: str | None,
+    interests: list[str],
+    results: list[Any],
+) -> list[Any]:
+    if db is None or not traveller_id or not results:
+        return results
+
+    scored_results: list[tuple[float, Any]] = []
+
+    for result in results:
+        persona_relevance = _compute_persona_relevance_for_place(
+            db=db,
+            traveller_id=traveller_id,
+            destination=destination,
+            place=result,
+            traveller_type=traveller_type,
+            interests=interests,
+        )
+
+        rank_score = _base_destination_result_rank_score(result)
+        if persona_relevance is not None:
+            rank_score += persona_relevance * 15.0
+
+        scored_results.append((rank_score, result))
+
+    scored_results.sort(key=lambda item: item[0], reverse=True)
+    return [result for _, result in scored_results]
+
+
+def _persona_bonus_for_destination_score(persona_relevance_score: float | None) -> float:
+    if persona_relevance_score is None:
+        return 0.0
+
+    return round(persona_relevance_score * 0.75, 2)
+
 
 def _build_area_card(area: str, destination: str) -> DestinationAreaCard:
     area_map = {
@@ -340,6 +411,7 @@ def _weighted_destination_score(
     destination: str,
     traveller_type: str,
     interests: list[str],
+    persona_relevance_score: float | None = None,
 ) -> float:
     profile = _get_destination_profile(destination)
     weights = _build_dimension_weights(traveller_type, interests)
@@ -350,7 +422,10 @@ def _weighted_destination_score(
     if denominator == 0:
         return 0.0
 
-    return round(numerator / denominator, 2)
+    base_score = round(numerator / denominator, 2)
+    persona_bonus = _persona_bonus_for_destination_score(persona_relevance_score)
+
+    return round(min(10.0, base_score + persona_bonus), 2)
 
 
 def _dimension_note(destination: str, dimension: str, score: float) -> str:
@@ -381,6 +456,7 @@ def _build_comparison_side(
     destination: str,
     traveller_type: str,
     interests: list[str],
+    traveller_id: str | None = None,
 ) -> DestinationComparisonSide:
     search_results = tripadvisor_client.search_locations(
         query=destination,
@@ -396,6 +472,21 @@ def _build_comparison_side(
     )
     context = google_places_client.get_destination_context(primary.name)
 
+    persona_relevance: float | None = None
+    if traveller_id:
+        db = get_db_session()
+        try:
+            persona_relevance = _compute_persona_relevance_for_place(
+                db=db,
+                traveller_id=traveller_id,
+                destination=destination,
+                place=primary,
+                traveller_type=traveller_type,
+                interests=interests,
+            )
+        finally:
+            db.close()
+
     return DestinationComparisonSide(
         name=primary.name,
         city=primary.city,
@@ -406,7 +497,12 @@ def _build_comparison_side(
         review_summary=review_analysis.quick_verdict,
         review_authenticity=review_analysis.authenticity_label,
         suggested_areas=list(context["suggested_areas"]),
-        weighted_score=_weighted_destination_score(primary.name, traveller_type, interests),
+        weighted_score=_weighted_destination_score(
+            primary.name,
+            traveller_type,
+            interests,
+            persona_relevance_score=persona_relevance,
+        ),
     )
 
 
@@ -515,40 +611,60 @@ def _build_you_would_also_love(
 ) -> list[DestinationAlternative]:
     alternatives: list[DestinationAlternative] = []
 
-    for candidate_destination in DESTINATION_PROFILES:
-        if candidate_destination == payload.destination.strip().lower():
-            continue
+    db: Session | None = None
+    if payload.traveller_id:
+        db = get_db_session()
 
-        search_results = tripadvisor_client.search_locations(
-            query=candidate_destination.title(),
-            traveller_type=payload.traveller_type,
-            interests=payload.interests,
-        )
-        if not search_results:
-            continue
+    try:
+        for candidate_destination in DESTINATION_PROFILES:
+            if candidate_destination == payload.destination.strip().lower():
+                continue
 
-        result = search_results[0]
-        match_score = _profile_similarity_score(
-            source_destination=payload.destination,
-            candidate_destination=result.name,
-            traveller_type=payload.traveller_type,
-            interests=payload.interests,
-        )
-
-        alternatives.append(
-            DestinationAlternative(
-                location_id=result.location_id,
-                name=result.name,
-                city=result.city,
-                country=result.country,
-                category=result.category,
-                match_score=match_score,
-                reason=(
-                    f"A strong alternate if you want a trip with a comparable fit for "
-                    f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
-                ),
+            search_results = tripadvisor_client.search_locations(
+                query=candidate_destination.title(),
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
             )
-        )
+            if not search_results:
+                continue
+
+            result = search_results[0]
+            match_score = _profile_similarity_score(
+                source_destination=payload.destination,
+                candidate_destination=result.name,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+            )
+
+            persona_relevance = _compute_persona_relevance_for_place(
+                db=db,
+                traveller_id=payload.traveller_id,
+                destination=payload.destination,
+                place=result,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+            )
+
+            if persona_relevance is not None:
+                match_score = min(100.0, round(match_score + (persona_relevance * 12.0), 1))
+
+            alternatives.append(
+                DestinationAlternative(
+                    location_id=result.location_id,
+                    name=result.name,
+                    city=result.city,
+                    country=result.country,
+                    category=result.category,
+                    match_score=match_score,
+                    reason=(
+                        f"A strong alternate if you want a trip with a comparable fit for "
+                        f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
+                    ),
+                )
+            )
+    finally:
+        if db is not None:
+            db.close()
 
     alternatives.sort(key=lambda item: item.match_score, reverse=True)
     return alternatives[:3]
@@ -560,6 +676,20 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
         traveller_type=payload.traveller_type,
         interests=payload.interests,
     )
+
+    if payload.traveller_id:
+        db = get_db_session()
+        try:
+            results = _rerank_destination_results_with_persona(
+                db=db,
+                traveller_id=payload.traveller_id,
+                destination=payload.query,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+                results=list(results),
+            )
+        finally:
+            db.close()
 
     return DestinationSearchResponse(
         query=payload.query,
@@ -719,6 +849,12 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         str(context["freshness_note"]),
     ]
 
+    if payload.traveller_id:
+        reasoning.insert(
+            1,
+            "Traveller-specific persona embedding signals were used to improve downstream destination fit.",
+        )
+
     return DestinationGuideResponse(
         destination=payload.destination,
         traveller_type=payload.traveller_type,
@@ -741,11 +877,13 @@ def compare_destinations(payload: DestinationComparisonRequest) -> DestinationCo
         destination=payload.destination_a,
         traveller_type=payload.traveller_type,
         interests=payload.interests,
+        traveller_id=payload.traveller_id,
     )
     side_b = _build_comparison_side(
         destination=payload.destination_b,
         traveller_type=payload.traveller_type,
         interests=payload.interests,
+        traveller_id=payload.traveller_id,
     )
 
     dimensions = _build_comparison_dimensions(
