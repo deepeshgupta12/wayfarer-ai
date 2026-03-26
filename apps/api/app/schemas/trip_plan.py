@@ -58,6 +58,7 @@ class TripCandidatePlace(BaseModel):
     score: float
     why_selected: str
     geo_cluster: str | None = None
+    related_locations: list["TripAlternativeSuggestion"] = Field(default_factory=list)
 
 
 class TripAlternativeSuggestion(BaseModel):
@@ -69,6 +70,9 @@ class TripAlternativeSuggestion(BaseModel):
     score: float
     why_alternative: str
     geo_cluster: str | None = None
+    source_location_id: str | None = None
+    relation_type: str | None = None
+    city_match: bool = False
 
 
 class TripSlotAssignment(BaseModel):
@@ -109,6 +113,7 @@ class TripPlanResponse(BaseModel):
     status: str
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
     saved: bool
     created_at: datetime
 
@@ -123,6 +128,7 @@ class TripPlanSummaryResponse(BaseModel):
     status: str
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -137,6 +143,7 @@ class TripPlanEnrichResponse(BaseModel):
     status: str
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
+    workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
     saved: bool
     updated_at: datetime
 
