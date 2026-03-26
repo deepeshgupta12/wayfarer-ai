@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 ThemeLabel = Literal["positive", "neutral", "caution"]
 AuthenticityLabel = Literal["high", "medium", "low"]
+ReviewCacheStatus = Literal["persisted", "reused", "refreshed"]
 
 
 class ReviewItem(BaseModel):
@@ -30,3 +31,4 @@ class ReviewIntelligenceOutput(BaseModel):
 
 class ReviewIntelligencePersistedOutput(ReviewIntelligenceOutput):
     saved: bool
+    cache_status: ReviewCacheStatus

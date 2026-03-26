@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.session import get_db_session
 from app.models.review_intelligence import ReviewIntelligenceRecord
 from app.providers.ollama_provider import OllamaChatProvider
 from app.providers.openai_provider import OpenAIChatProvider
@@ -173,7 +177,56 @@ def _label_authenticity(trust_score: float) -> str:
     return "low"
 
 
-def analyze_review_bundle(
+def _normalize_reviews_for_signature(
+    reviews: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    normalized = [
+        {
+            "rating": int(review["rating"]),
+            "text": str(review["text"]).strip(),
+        }
+        for review in reviews
+    ]
+    normalized.sort(key=lambda item: (item["rating"], item["text"]))
+    return normalized
+
+
+def _build_review_signature(reviews: list[dict[str, object]]) -> str:
+    normalized_reviews = _normalize_reviews_for_signature(reviews)
+    serialized = json.dumps(normalized_reviews, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _record_to_output(record: ReviewIntelligenceRecord) -> ReviewIntelligenceOutput:
+    return ReviewIntelligenceOutput(
+        location_id=record.location_id,
+        location_name=record.location_name,
+        quick_verdict=record.quick_verdict,
+        themes=dict(record.themes or {}),
+        trust_score=record.trust_score,
+        authenticity_label=record.authenticity_label,
+        review_count=record.review_count,
+    )
+
+
+def _record_to_persisted_output(
+    record: ReviewIntelligenceRecord,
+    cache_status: str,
+) -> ReviewIntelligencePersistedOutput:
+    return ReviewIntelligencePersistedOutput(
+        location_id=record.location_id,
+        location_name=record.location_name,
+        quick_verdict=record.quick_verdict,
+        themes=dict(record.themes or {}),
+        trust_score=record.trust_score,
+        authenticity_label=record.authenticity_label,
+        review_count=record.review_count,
+        saved=True,
+        cache_status=cache_status,
+    )
+
+
+def _analyze_review_bundle_live(
     location_id: str,
     location_name: str,
     reviews: list[dict[str, object]],
@@ -214,9 +267,129 @@ def analyze_review_bundle(
     )
 
 
+def get_persisted_review_intelligence(
+    db: Session,
+    location_id: str,
+) -> ReviewIntelligencePersistedOutput | None:
+    record = db.get(ReviewIntelligenceRecord, location_id)
+    if record is None:
+        return None
+    return _record_to_persisted_output(record, cache_status="persisted")
+
+
+def _upsert_review_intelligence_record(
+    db: Session,
+    analysis: ReviewIntelligenceOutput,
+    review_signature: str,
+    cache_status: str,
+) -> ReviewIntelligencePersistedOutput:
+    now = datetime.now(timezone.utc)
+
+    record = db.get(ReviewIntelligenceRecord, analysis.location_id)
+    if record is None:
+        record = ReviewIntelligenceRecord(
+            location_id=analysis.location_id,
+            location_name=analysis.location_name,
+            quick_verdict=analysis.quick_verdict,
+            themes=analysis.themes,
+            trust_score=analysis.trust_score,
+            authenticity_label=analysis.authenticity_label,
+            review_count=analysis.review_count,
+            review_signature=review_signature,
+            refreshed_at=now,
+        )
+        db.add(record)
+    else:
+        record.location_name = analysis.location_name
+        record.quick_verdict = analysis.quick_verdict
+        record.themes = analysis.themes
+        record.trust_score = analysis.trust_score
+        record.authenticity_label = analysis.authenticity_label
+        record.review_count = analysis.review_count
+        record.review_signature = review_signature
+        record.refreshed_at = now
+
+    db.commit()
+    db.refresh(record)
+
+    return _record_to_persisted_output(record, cache_status=cache_status)
+
+
+def get_or_refresh_review_intelligence(
+    db: Session,
+    location_id: str,
+    location_name: str,
+    reviews: list[dict[str, object]],
+    force_refresh: bool = False,
+) -> ReviewIntelligencePersistedOutput:
+    review_signature = _build_review_signature(reviews)
+    existing = db.get(ReviewIntelligenceRecord, location_id)
+
+    if (
+        existing is not None
+        and not force_refresh
+        and existing.review_signature == review_signature
+        and existing.review_count == len(reviews)
+    ):
+        if existing.location_name != location_name:
+            existing.location_name = location_name
+            db.add(existing)
+            db.commit()
+            db.refresh(existing)
+        return _record_to_persisted_output(existing, cache_status="reused")
+
+    live_analysis = _analyze_review_bundle_live(
+        location_id=location_id,
+        location_name=location_name,
+        reviews=reviews,
+    )
+
+    cache_status = "refreshed" if existing is not None else "persisted"
+    return _upsert_review_intelligence_record(
+        db=db,
+        analysis=live_analysis,
+        review_signature=review_signature,
+        cache_status=cache_status,
+    )
+
+
+def analyze_review_bundle(
+    location_id: str,
+    location_name: str,
+    reviews: list[dict[str, object]],
+) -> ReviewIntelligenceOutput:
+    local_db: Session | None = None
+    try:
+        local_db = get_db_session()
+        persisted = get_or_refresh_review_intelligence(
+            db=local_db,
+            location_id=location_id,
+            location_name=location_name,
+            reviews=reviews,
+        )
+        return ReviewIntelligenceOutput(
+            location_id=persisted.location_id,
+            location_name=persisted.location_name,
+            quick_verdict=persisted.quick_verdict,
+            themes=persisted.themes,
+            trust_score=persisted.trust_score,
+            authenticity_label=persisted.authenticity_label,
+            review_count=persisted.review_count,
+        )
+    except Exception:
+        return _analyze_review_bundle_live(
+            location_id=location_id,
+            location_name=location_name,
+            reviews=reviews,
+        )
+    finally:
+        if local_db is not None:
+            local_db.close()
+
+
 def analyze_reviews(payload: ReviewIntelligenceRequest) -> ReviewIntelligenceOutput:
     reviews = [{"rating": review.rating, "text": review.text} for review in payload.reviews]
-    return analyze_review_bundle(
+    return _analyze_review_bundle_live(
         location_id=payload.location_id,
         location_name=payload.location_name,
         reviews=reviews,
@@ -227,28 +400,10 @@ def analyze_and_persist_reviews(
     db: Session,
     payload: ReviewIntelligenceRequest,
 ) -> ReviewIntelligencePersistedOutput:
-    result = analyze_reviews(payload)
-
-    record = ReviewIntelligenceRecord(
-        location_id=result.location_id,
-        location_name=result.location_name,
-        quick_verdict=result.quick_verdict,
-        themes=result.themes,
-        trust_score=result.trust_score,
-        authenticity_label=result.authenticity_label,
-        review_count=result.review_count,
-    )
-
-    db.merge(record)
-    db.commit()
-
-    return ReviewIntelligencePersistedOutput(
-        location_id=result.location_id,
-        location_name=result.location_name,
-        quick_verdict=result.quick_verdict,
-        themes=result.themes,
-        trust_score=result.trust_score,
-        authenticity_label=result.authenticity_label,
-        review_count=result.review_count,
-        saved=True,
+    reviews = [{"rating": review.rating, "text": review.text} for review in payload.reviews]
+    return get_or_refresh_review_intelligence(
+        db=db,
+        location_id=payload.location_id,
+        location_name=payload.location_name,
+        reviews=reviews,
     )

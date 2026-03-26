@@ -1,3 +1,5 @@
+from app.db.session import get_db_session
+from app.schemas.review_intelligence import ReviewIntelligenceRequest
 from app.services import review_intelligence_service
 from tests.conftest import get_test_client
 
@@ -55,6 +57,33 @@ def test_review_intelligence_analyze_and_save_returns_saved_payload() -> None:
     assert payload["location_id"] == "loc_lisbon_002"
     assert payload["saved"] is True
     assert payload["review_count"] == 2
+    assert payload["cache_status"] in ["persisted", "reused", "refreshed"]
+
+
+def test_review_intelligence_get_saved_record_returns_persisted_payload() -> None:
+    client = get_test_client()
+    location_id = "loc_lisbon_get_001"
+
+    save_response = client.post(
+        "/review-intelligence/analyze-and-save",
+        json={
+            "location_id": location_id,
+            "location_name": "Lisbon Saved Cafe",
+            "reviews": [
+                {"rating": 4, "text": "Helpful staff and tasty brunch."},
+                {"rating": 5, "text": "Beautiful atmosphere and great value."},
+            ],
+        },
+    )
+    assert save_response.status_code == 200
+
+    get_response = client.get(f"/review-intelligence/{location_id}")
+    assert get_response.status_code == 200
+
+    payload = get_response.json()
+    assert payload["location_id"] == location_id
+    assert payload["saved"] is True
+    assert payload["cache_status"] == "persisted"
 
 
 def test_review_intelligence_marks_negative_food_signal_as_caution() -> None:
@@ -169,3 +198,42 @@ def test_review_intelligence_falls_back_when_llm_output_is_invalid(monkeypatch) 
     assert payload["themes"]["food_quality"] in ["positive", "neutral", "caution"]
     assert payload["themes"]["value"] in ["positive", "neutral", "caution"]
     assert payload["themes"]["ambience"] in ["positive", "neutral", "caution"]
+
+
+def test_review_intelligence_reuses_cached_analysis_when_reviews_are_unchanged(monkeypatch) -> None:
+    db = get_db_session()
+    try:
+        payload = ReviewIntelligenceRequest(
+            location_id="loc_cache_test_001",
+            location_name="Cache Test Cafe",
+            reviews=[
+                {"rating": 5, "text": "Friendly staff and tasty food."},
+                {"rating": 4, "text": "Great value and lovely ambience."},
+            ],
+        )
+
+        first_result = review_intelligence_service.analyze_and_persist_reviews(db, payload)
+        assert first_result.saved is True
+        assert first_result.cache_status == "persisted"
+
+        def _should_not_reanalyze(*args, **kwargs):
+            raise AssertionError("Live re-analysis should not run when cached review intelligence is reusable.")
+
+        monkeypatch.setattr(
+            review_intelligence_service,
+            "_analyze_review_bundle_live",
+            _should_not_reanalyze,
+        )
+
+        second_result = review_intelligence_service.get_or_refresh_review_intelligence(
+            db=db,
+            location_id=payload.location_id,
+            location_name=payload.location_name,
+            reviews=[{"rating": review.rating, "text": review.text} for review in payload.reviews],
+        )
+
+        assert second_result.saved is True
+        assert second_result.cache_status == "reused"
+        assert second_result.location_id == payload.location_id
+    finally:
+        db.close()

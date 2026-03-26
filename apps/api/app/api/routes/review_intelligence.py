@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.db.session import get_db_session
 from app.schemas.review_intelligence import (
@@ -6,7 +6,11 @@ from app.schemas.review_intelligence import (
     ReviewIntelligencePersistedOutput,
     ReviewIntelligenceRequest,
 )
-from app.services.review_intelligence_service import analyze_and_persist_reviews, analyze_reviews
+from app.services.review_intelligence_service import (
+    analyze_and_persist_reviews,
+    analyze_reviews,
+    get_persisted_review_intelligence,
+)
 
 router = APIRouter(prefix="/review-intelligence", tags=["review-intelligence"])
 
@@ -25,5 +29,19 @@ def analyze_and_save_review_intelligence(
     db = get_db_session()
     try:
         return analyze_and_persist_reviews(db, payload)
+    finally:
+        db.close()
+
+
+@router.get("/{location_id}", response_model=ReviewIntelligencePersistedOutput)
+def get_saved_review_intelligence(
+    location_id: str,
+) -> ReviewIntelligencePersistedOutput:
+    db = get_db_session()
+    try:
+        result = get_persisted_review_intelligence(db, location_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Review intelligence not found")
+        return result
     finally:
         db.close()
