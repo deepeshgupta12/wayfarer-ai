@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from threading import Lock
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -28,6 +32,9 @@ SessionLocal = sessionmaker(
     autocommit=False,
     class_=Session,
 )
+
+_SCHEMA_INIT_LOCK = Lock()
+_SCHEMA_INITIALIZED = False
 
 
 def check_database_connection() -> bool:
@@ -108,43 +115,47 @@ def _ensure_review_intelligence_step2_columns() -> None:
     if "created_at" not in existing_columns:
         statements.append(
             "ALTER TABLE review_intelligence "
-            "ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            "ADD COLUMN created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP"
         )
 
     if "updated_at" not in existing_columns:
         statements.append(
             "ALTER TABLE review_intelligence "
-            "ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            "ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP"
         )
 
     if "refreshed_at" not in existing_columns:
         statements.append(
             "ALTER TABLE review_intelligence "
-            "ADD COLUMN refreshed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP"
+            "ADD COLUMN refreshed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP"
         )
 
     if "review_signature" not in existing_columns:
         post_statements.append(
             "UPDATE review_intelligence "
-            "SET review_signature = COALESCE(review_signature, '')"
-        )
-
-    if "refreshed_at" not in existing_columns:
-        post_statements.append(
-            "UPDATE review_intelligence "
-            "SET refreshed_at = COALESCE(refreshed_at, CURRENT_TIMESTAMP)"
-        )
-
-    if "updated_at" not in existing_columns:
-        post_statements.append(
-            "UPDATE review_intelligence "
-            "SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)"
+            "SET review_signature = '' "
+            "WHERE review_signature IS NULL"
         )
 
     if "created_at" not in existing_columns:
         post_statements.append(
             "UPDATE review_intelligence "
-            "SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)"
+            "SET created_at = CURRENT_TIMESTAMP "
+            "WHERE created_at IS NULL"
+        )
+
+    if "updated_at" not in existing_columns:
+        post_statements.append(
+            "UPDATE review_intelligence "
+            "SET updated_at = CURRENT_TIMESTAMP "
+            "WHERE updated_at IS NULL"
+        )
+
+    if "refreshed_at" not in existing_columns:
+        post_statements.append(
+            "UPDATE review_intelligence "
+            "SET refreshed_at = CURRENT_TIMESTAMP "
+            "WHERE refreshed_at IS NULL"
         )
 
     if not statements and not post_statements:
@@ -164,5 +175,19 @@ def create_db_tables() -> None:
     _ensure_review_intelligence_step2_columns()
 
 
+def ensure_runtime_schema_ready() -> None:
+    global _SCHEMA_INITIALIZED
+
+    if _SCHEMA_INITIALIZED:
+        return
+
+    with _SCHEMA_INIT_LOCK:
+        if _SCHEMA_INITIALIZED:
+            return
+        create_db_tables()
+        _SCHEMA_INITIALIZED = True
+
+
 def get_db_session() -> Session:
+    ensure_runtime_schema_ready()
     return SessionLocal()

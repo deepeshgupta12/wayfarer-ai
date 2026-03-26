@@ -8,6 +8,7 @@ TravellerType = Literal["solo", "couple", "family", "friends"]
 
 class DestinationSearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
+    traveller_id: str | None = Field(default=None, min_length=1)
     traveller_type: TravellerType | None = None
     interests: list[str] = Field(default_factory=list)
 
@@ -29,6 +30,7 @@ class DestinationSearchResponse(BaseModel):
 
 class DestinationGuideRequest(BaseModel):
     destination: str = Field(..., min_length=1)
+    traveller_id: str | None = Field(default=None, min_length=1)
     duration_days: int = Field(..., ge=1, le=30)
     traveller_type: TravellerType
     interests: list[str] = Field(default_factory=list)
@@ -123,6 +125,7 @@ class SimilarPlaceResponse(BaseModel):
 class DestinationComparisonRequest(BaseModel):
     destination_a: str = Field(..., min_length=1)
     destination_b: str = Field(..., min_length=1)
+    traveller_id: str | None = Field(default=None, min_length=1)
     traveller_type: TravellerType = Field(default="solo")
     interests: list[str] = Field(default_factory=list)
     pace_preference: str = Field(default="balanced")

@@ -31,6 +31,7 @@ from app.schemas.trip_plan import (
     TripVersionResponse,
     TripVersionSnapshotRequest,
 )
+from app.services.persona_embedding_service import calculate_persona_relevance_score
 from app.services.review_intelligence_service import analyze_review_bundle
 
 ALLOWED_INTERESTS = ["food", "culture", "adventure", "nature", "luxury", "nightlife", "wellness"]
@@ -282,6 +283,7 @@ def _score_candidate_place(
     review_count: int,
     authenticity_label: str | None,
     review_themes: dict[str, str],
+    persona_relevance_score: float | None = None,
 ) -> float:
     base_score = rating * 18.0
     volume_bonus = min(review_count / 5000.0, 1.0) * 8.0
@@ -294,9 +296,10 @@ def _score_candidate_place(
 
     positive_theme_bonus = sum(1.5 for value in review_themes.values() if value == "positive")
     caution_penalty = sum(1.0 for value in review_themes.values() if value == "caution")
+    persona_bonus = (persona_relevance_score or 0.0) * 30.0
 
     return round(
-        min(99.0, base_score + volume_bonus + authenticity_bonus + positive_theme_bonus - caution_penalty),
+        base_score + volume_bonus + authenticity_bonus + positive_theme_bonus - caution_penalty + persona_bonus,
         1,
     )
 
@@ -318,23 +321,97 @@ def _build_why_selected(
     interests: list[str],
     review_themes: dict[str, str],
     authenticity_label: str | None,
+    persona_relevance_score: float | None = None,
 ) -> str:
     positive_themes = [theme.replace("_", " ") for theme, value in review_themes.items() if value == "positive"]
     interest_text = ", ".join(interests[:2]) if interests else "general exploration"
+
+    persona_text = ""
+    if persona_relevance_score is not None and persona_relevance_score >= 0.75:
+        persona_text = " It also shows a strong persona-embedding fit for this traveller."
 
     if positive_themes:
         return (
             f"Selected for a {interest_text}-leaning trip, with positive review signals around "
             f"{', '.join(positive_themes[:2])} and {authenticity_label or 'unknown'} review confidence."
+            f"{persona_text}"
         )
 
     return (
         f"Selected as a relevant option for a {interest_text}-leaning trip, with "
         f"{authenticity_label or 'unknown'} review confidence."
+        f"{persona_text}"
+    )
+
+def _build_trip_candidate_embedding_text(
+    destination: str,
+    group_type: str | None,
+    interests: list[str],
+    place_name: str,
+    city: str,
+    country: str,
+    category: str,
+    rating: float,
+    review_count: int,
+    review_summary: str | None,
+) -> str:
+    interests_text = ", ".join(interests) if interests else "general exploration"
+    group_text = group_type or "general traveller"
+    summary_text = review_summary or "no review summary"
+
+    return (
+        f"destination={destination}; "
+        f"name={place_name}; "
+        f"city={city}; "
+        f"country={country}; "
+        f"category={category}; "
+        f"group_type={group_text}; "
+        f"interests={interests_text}; "
+        f"rating={rating}; "
+        f"review_count={review_count}; "
+        f"review_summary={summary_text}"
     )
 
 
-def _build_candidate_places(parsed_constraints: ParsedTripConstraints) -> list[TripCandidatePlace]:
+def _compute_trip_candidate_persona_relevance(
+    db: Session,
+    traveller_id: str,
+    destination: str,
+    group_type: str | None,
+    interests: list[str],
+    place_name: str,
+    city: str,
+    country: str,
+    category: str,
+    rating: float,
+    review_count: int,
+    review_summary: str | None,
+) -> float | None:
+    embedding_text = _build_trip_candidate_embedding_text(
+        destination=destination,
+        group_type=group_type,
+        interests=interests,
+        place_name=place_name,
+        city=city,
+        country=country,
+        category=category,
+        rating=rating,
+        review_count=review_count,
+        review_summary=review_summary,
+    )
+
+    return calculate_persona_relevance_score(
+        db=db,
+        traveller_id=traveller_id,
+        text=embedding_text,
+    )
+
+
+def _build_candidate_places(
+    db: Session,
+    traveller_id: str,
+    parsed_constraints: ParsedTripConstraints,
+) -> list[TripCandidatePlace]:
     destination = parsed_constraints.destination
     if not destination:
         return []
@@ -355,11 +432,27 @@ def _build_candidate_places(parsed_constraints: ParsedTripConstraints) -> list[T
             reviews=list(review_bundle["reviews"]),
         )
 
+        persona_relevance_score = _compute_trip_candidate_persona_relevance(
+            db=db,
+            traveller_id=traveller_id,
+            destination=destination,
+            group_type=parsed_constraints.group_type,
+            interests=list(parsed_constraints.interests or []),
+            place_name=result.name,
+            city=result.city,
+            country=result.country,
+            category=result.category,
+            rating=result.rating,
+            review_count=result.review_count,
+            review_summary=review_analysis.quick_verdict,
+        )
+
         score = _score_candidate_place(
             rating=result.rating,
             review_count=result.review_count,
             authenticity_label=review_analysis.authenticity_label,
             review_themes=review_analysis.themes,
+            persona_relevance_score=persona_relevance_score,
         )
 
         candidates.append(
@@ -378,6 +471,7 @@ def _build_candidate_places(parsed_constraints: ParsedTripConstraints) -> list[T
                     interests=list(parsed_constraints.interests or []),
                     review_themes=review_analysis.themes,
                     authenticity_label=review_analysis.authenticity_label,
+                    persona_relevance_score=persona_relevance_score,
                 ),
                 geo_cluster=_infer_geo_cluster(
                     place_name=result.name,
@@ -1944,7 +2038,11 @@ def enrich_trip_plan(
             + ", ".join(missing_fields)
         )
 
-    candidate_places = _build_candidate_places(parsed_constraints)
+    candidate_places = _build_candidate_places(
+        db=db,
+        traveller_id=record.traveller_id,
+        parsed_constraints=parsed_constraints,
+    )
     itinerary_skeleton = _build_itinerary_skeleton(parsed_constraints, candidate_places)
 
     record.candidate_places = [item.model_dump() for item in candidate_places]
