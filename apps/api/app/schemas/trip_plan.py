@@ -148,7 +148,6 @@ class TripPlanResponse(BaseModel):
     workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
     comparison_context: ComparisonContext | None = None
     saved: bool
-    comparison_context: ComparisonContext | None = None
     created_at: datetime
 
 
@@ -163,6 +162,7 @@ class TripPlanSummaryResponse(BaseModel):
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary_skeleton: list[TripDayPlan] = Field(default_factory=list)
     workspace_alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
+    comparison_context: ComparisonContext | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -204,6 +204,8 @@ class SavedTripSummaryResponse(BaseModel):
     status: str
     source_surface: str
     current_version_number: int
+    current_version_id: str | None = None
+    history_branch_label: str | None = None
     selected_places_count: int
     skipped_recommendations_count: int
     replaced_slots_count: int
@@ -224,12 +226,18 @@ class SavedTripListResponse(BaseModel):
 
 class TripVersionSnapshotRequest(BaseModel):
     snapshot_reason: str = Field(default="manual_snapshot", min_length=1)
+    branch_label: str | None = Field(default=None, min_length=1)
+    parent_version_number: int | None = Field(default=None, ge=1)
     parsed_constraints: ParsedTripConstraints | None = None
     candidate_places: list[TripCandidatePlace] | None = None
     itinerary: list[dict[str, object]] | None = None
     itinerary_skeleton: list[TripDayPlan] | None = None
     comparison_context: ComparisonContext | None = None
     status: str | None = None
+
+class TripVersionRestoreRequest(BaseModel):
+    snapshot_reason: str = Field(default="restore_selected_version", min_length=1)
+    branch_label: str | None = Field(default=None, min_length=1)
 
 
 class TripVersionResponse(BaseModel):
@@ -241,6 +249,10 @@ class TripVersionResponse(BaseModel):
     snapshot_reason: str
     source_surface: str
     status: str
+    is_current: bool
+    branch_label: str | None = None
+    parent_version_number: int | None = None
+    restored_from_version_number: int | None = None
     parsed_constraints: ParsedTripConstraints
     candidate_places: list[TripCandidatePlace] = Field(default_factory=list)
     itinerary: list[dict[str, object]] = Field(default_factory=list)

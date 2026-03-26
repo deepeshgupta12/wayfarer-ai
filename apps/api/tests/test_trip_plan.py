@@ -974,3 +974,25 @@ def test_create_trip_plan_from_comparison_preserves_comparison_context() -> None
 
     assert enrich_payload["comparison_context"] is not None
     assert enrich_payload["comparison_context"]["selected_destination"] == chosen_option["destination"]
+
+def test_enrich_trip_plan_stream_returns_ndjson_chunks() -> None:
+    client = get_test_client()
+
+    create_response = client.post(
+        "/trip-plans/parse-and-save",
+        json={
+            "traveller_id": "traveller_trip_plan_stream_001",
+            "brief": "I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+            "source_surface": "assistant",
+        },
+    )
+    assert create_response.status_code == 200
+    planning_session_id = create_response.json()["planning_session_id"]
+
+    stream_response = client.post(f"/trip-plans/{planning_session_id}/enrich/stream")
+    assert stream_response.status_code == 200
+
+    body = stream_response.text
+    assert '"type": "meta"' in body
+    assert '"type": "day_delta"' in body
+    assert '"type": "final"' in body

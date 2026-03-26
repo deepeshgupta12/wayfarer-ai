@@ -11,6 +11,7 @@ from app.db.base import Base
 from app.models import (
     ItineraryVersionRecord,
     LocationRelationRecord,
+    PlaceEmbeddingRecord,
     ReviewIntelligenceRecord,
     SavedTripRecord,
     TravellerMemoryRecord,
@@ -205,6 +206,59 @@ def _ensure_step5_comparison_context_columns() -> None:
         for statement in statements:
             connection.execute(text(statement))
 
+def _ensure_step6_versioning_and_history_columns() -> None:
+    inspector = inspect(engine)
+    statements: list[str] = []
+
+    if "saved_trips" in inspector.get_table_names():
+        existing_columns = {column["name"] for column in inspector.get_columns("saved_trips")}
+
+        if "current_version_id" not in existing_columns:
+            statements.append(
+                "ALTER TABLE saved_trips "
+                "ADD COLUMN current_version_id VARCHAR(255)"
+            )
+
+        if "history_branch_label" not in existing_columns:
+            statements.append(
+                "ALTER TABLE saved_trips "
+                "ADD COLUMN history_branch_label VARCHAR(100)"
+            )
+
+    if "itinerary_versions" in inspector.get_table_names():
+        existing_columns = {column["name"] for column in inspector.get_columns("itinerary_versions")}
+
+        if "is_current" not in existing_columns:
+            statements.append(
+                "ALTER TABLE itinerary_versions "
+                "ADD COLUMN is_current BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+
+        if "branch_label" not in existing_columns:
+            statements.append(
+                "ALTER TABLE itinerary_versions "
+                "ADD COLUMN branch_label VARCHAR(100)"
+            )
+
+        if "parent_version_number" not in existing_columns:
+            statements.append(
+                "ALTER TABLE itinerary_versions "
+                "ADD COLUMN parent_version_number INTEGER"
+            )
+
+        if "restored_from_version_number" not in existing_columns:
+            statements.append(
+                "ALTER TABLE itinerary_versions "
+                "ADD COLUMN restored_from_version_number INTEGER"
+            )
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
 
 def create_db_tables() -> None:
     enable_pgvector_extension()
@@ -212,6 +266,7 @@ def create_db_tables() -> None:
     _ensure_trip_plan_step2_columns()
     _ensure_review_intelligence_step2_columns()
     _ensure_step5_comparison_context_columns()
+    _ensure_step6_versioning_and_history_columns()
 
 
 def ensure_runtime_schema_ready() -> None:

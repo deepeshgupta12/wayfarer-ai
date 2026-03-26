@@ -293,3 +293,99 @@ def test_promoted_saved_trip_exposes_comparison_context() -> None:
 
     assert versions_payload["items"][0]["comparison_context"] is not None
     assert versions_payload["items"][0]["comparison_context"]["comparison_id"] == comparison_payload["comparison_id"]
+
+def test_current_trip_version_endpoint_returns_tagged_current_version() -> None:
+    client = get_test_client()
+
+    result = _create_and_enrich_plan(
+        client,
+        traveller_id="traveller_saved_trip_005",
+        brief="I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+    )
+
+    create_trip_response = client.post(
+        f"/trips/from-plan/{result['planning_session_id']}",
+        json={
+            "title": "Kyoto current version trip",
+            "companions": "solo",
+            "status": "planning",
+            "source_surface": "assistant",
+        },
+    )
+    assert create_trip_response.status_code == 200
+    trip_id = create_trip_response.json()["trip_id"]
+
+    snapshot_response = client.post(
+        f"/trips/{trip_id}/versions",
+        json={
+            "snapshot_reason": "workspace_edit_snapshot",
+            "branch_label": "main",
+        },
+    )
+    assert snapshot_response.status_code == 200
+
+    current_response = client.get(f"/trips/{trip_id}/versions/current")
+    assert current_response.status_code == 200
+    payload = current_response.json()
+
+    assert payload["trip_id"] == trip_id
+    assert payload["is_current"] is True
+    assert payload["version_number"] == 2
+
+
+def test_restore_trip_version_creates_new_current_version() -> None:
+    client = get_test_client()
+
+    result = _create_and_enrich_plan(
+        client,
+        traveller_id="traveller_saved_trip_006",
+        brief="I have 4 days in Tokyo for a solo trip, mid-budget, balanced pace, love food and culture",
+    )
+
+    create_trip_response = client.post(
+        f"/trips/from-plan/{result['planning_session_id']}",
+        json={
+            "title": "Tokyo restore version trip",
+            "companions": "solo",
+            "status": "planning",
+            "source_surface": "assistant",
+        },
+    )
+    assert create_trip_response.status_code == 200
+    trip_id = create_trip_response.json()["trip_id"]
+
+    versions_response = client.get(f"/trips/{trip_id}/versions?limit=10")
+    assert versions_response.status_code == 200
+    original_version = versions_response.json()["items"][0]
+
+    snapshot_response = client.post(
+        f"/trips/{trip_id}/versions",
+        json={
+            "snapshot_reason": "workspace_edit_snapshot",
+            "branch_label": "main",
+        },
+    )
+    assert snapshot_response.status_code == 200
+    assert snapshot_response.json()["version_number"] == 2
+
+    restore_response = client.post(
+        f"/trips/{trip_id}/versions/{original_version['version_id']}/restore",
+        json={
+            "snapshot_reason": "restore_selected_version",
+            "branch_label": "main",
+        },
+    )
+    assert restore_response.status_code == 200
+    restored_trip = restore_response.json()
+
+    assert restored_trip["trip_id"] == trip_id
+    assert restored_trip["current_version_number"] == 3
+    assert restored_trip["current_version_id"] is not None
+
+    current_response = client.get(f"/trips/{trip_id}/versions/current")
+    assert current_response.status_code == 200
+    current_payload = current_response.json()
+
+    assert current_payload["version_number"] == 3
+    assert current_payload["is_current"] is True
+    assert current_payload["restored_from_version_number"] == 1

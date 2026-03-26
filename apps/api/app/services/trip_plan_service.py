@@ -1,4 +1,6 @@
+import json
 import re
+from collections.abc import Generator
 from uuid import uuid4
 
 from sqlalchemy import desc
@@ -31,6 +33,7 @@ from app.schemas.trip_plan import (
     TripSlotReplacementRequest,
     TripVersionListResponse,
     TripVersionResponse,
+    TripVersionRestoreRequest,
     TripVersionSnapshotRequest,
 )
 from app.services.destination_service import (
@@ -39,7 +42,6 @@ from app.services.destination_service import (
 )
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 from app.services.review_intelligence_service import analyze_review_bundle
-
 ALLOWED_INTERESTS = ["food", "culture", "adventure", "nature", "luxury", "nightlife", "wellness"]
 DESTINATION_HINTS = [
     "tokyo",
@@ -1883,6 +1885,8 @@ def _build_saved_trip_response(record: SavedTripRecord) -> SavedTripSummaryRespo
         status=record.status,
         source_surface=record.source_surface,
         current_version_number=record.current_version_number or 0,
+        current_version_id=record.current_version_id,
+        history_branch_label=record.history_branch_label,
         selected_places_count=record.selected_places_count or 0,
         skipped_recommendations_count=record.skipped_recommendations_count or 0,
         replaced_slots_count=record.replaced_slots_count or 0,
@@ -1912,6 +1916,10 @@ def _build_trip_version_response(record: ItineraryVersionRecord) -> TripVersionR
         snapshot_reason=record.snapshot_reason,
         source_surface=record.source_surface,
         status=record.status,
+        is_current=bool(record.is_current),
+        branch_label=record.branch_label,
+        parent_version_number=record.parent_version_number,
+        restored_from_version_number=record.restored_from_version_number,
         parsed_constraints=ParsedTripConstraints(**parsed_constraints_payload) if parsed_constraints_payload else ParsedTripConstraints(),
         candidate_places=[TripCandidatePlace(**item) for item in candidate_places_payload],
         itinerary=itinerary_payload,
@@ -1942,17 +1950,34 @@ def _get_saved_trip_record_or_raise(db: Session, trip_id: str) -> SavedTripRecor
         raise ValueError(f"Saved trip not found for trip_id={trip_id}")
     return record
 
+def _clear_current_version_flags(db: Session, trip_id: str) -> None:
+    (
+        db.query(ItineraryVersionRecord)
+        .filter(ItineraryVersionRecord.trip_id == trip_id)
+        .filter(ItineraryVersionRecord.is_current.is_(True))
+        .update({ItineraryVersionRecord.is_current: False}, synchronize_session=False)
+    )
+
 
 def _build_version_record_from_saved_trip(
     saved_trip: SavedTripRecord,
     snapshot_reason: str,
+    *,
+    branch_label: str | None = None,
+    parent_version_number: int | None = None,
+    restored_from_version_number: int | None = None,
 ) -> ItineraryVersionRecord:
     current_version_number = saved_trip.current_version_number or 0
     next_version_number = current_version_number + 1
+    version_id = f"version_{uuid4().hex}"
+    resolved_branch_label = branch_label or saved_trip.history_branch_label or "main"
+
     saved_trip.current_version_number = next_version_number
+    saved_trip.current_version_id = version_id
+    saved_trip.history_branch_label = resolved_branch_label
 
     return ItineraryVersionRecord(
-        version_id=f"version_{uuid4().hex}",
+        version_id=version_id,
         trip_id=saved_trip.trip_id,
         traveller_id=saved_trip.traveller_id,
         planning_session_id=saved_trip.planning_session_id,
@@ -1960,6 +1985,10 @@ def _build_version_record_from_saved_trip(
         snapshot_reason=snapshot_reason,
         source_surface=saved_trip.source_surface,
         status=saved_trip.status,
+        is_current=True,
+        branch_label=resolved_branch_label,
+        parent_version_number=parent_version_number,
+        restored_from_version_number=restored_from_version_number,
         parsed_constraints=dict(saved_trip.current_parsed_constraints or {}),
         candidate_places=list(saved_trip.current_candidate_places or []),
         itinerary=list(saved_trip.current_itinerary or []),
@@ -2278,6 +2307,40 @@ def enrich_trip_plan(
         updated_at=record.updated_at,
     )
 
+def stream_enrich_trip_plan(
+    db: Session,
+    planning_session_id: str,
+) -> Generator[str, None, None]:
+    result = enrich_trip_plan(db, planning_session_id)
+
+    yield json.dumps(
+        {
+            "type": "meta",
+            "planning_session_id": result.planning_session_id,
+            "status": result.status,
+            "day_count": len(result.itinerary_skeleton),
+        }
+    ) + "\n"
+
+    for day in result.itinerary_skeleton:
+        yield json.dumps(
+            {
+                "type": "day_delta",
+                "day_number": day.day_number,
+                "title": day.title,
+                "summary": day.summary,
+                "place_names": list(day.place_names),
+                "slot_count": len(day.slots),
+            }
+        ) + "\n"
+
+    yield json.dumps(
+        {
+            "type": "final",
+            "payload": result.model_dump(mode="json"),
+        }
+    ) + "\n"
+
 
 def promote_trip_plan_to_saved_trip(
     db: Session,
@@ -2311,6 +2374,8 @@ def promote_trip_plan_to_saved_trip(
         current_itinerary_skeleton=_day_plans_to_json(itinerary_skeleton),
         comparison_context=dict(plan_record.comparison_context or {}),
         current_version_number=0,
+        current_version_id=None,
+        history_branch_label="main",
         selected_places_count=0,
         skipped_recommendations_count=0,
         replaced_slots_count=0,
@@ -2319,6 +2384,9 @@ def promote_trip_plan_to_saved_trip(
     version_record = _build_version_record_from_saved_trip(
         saved_trip=saved_trip,
         snapshot_reason="initial_promotion",
+        branch_label="main",
+        parent_version_number=None,
+        restored_from_version_number=None,
     )
 
     db.add(saved_trip)
@@ -2386,6 +2454,8 @@ def create_trip_version_snapshot(
 ) -> TripVersionResponse:
     saved_trip = _get_saved_trip_record_or_raise(db, trip_id)
 
+    previous_current_version_number = saved_trip.current_version_number or None
+
     if payload.parsed_constraints is not None:
         saved_trip.current_parsed_constraints = _parsed_constraints_to_json(payload.parsed_constraints)
     if payload.candidate_places is not None:
@@ -2399,9 +2469,14 @@ def create_trip_version_snapshot(
     if payload.status is not None:
         saved_trip.status = payload.status
 
+    _clear_current_version_flags(db, trip_id)
+
     version_record = _build_version_record_from_saved_trip(
         saved_trip=saved_trip,
         snapshot_reason=payload.snapshot_reason,
+        branch_label=payload.branch_label,
+        parent_version_number=payload.parent_version_number or previous_current_version_number,
+        restored_from_version_number=None,
     )
 
     db.add(saved_trip)
@@ -2410,6 +2485,67 @@ def create_trip_version_snapshot(
     db.refresh(version_record)
 
     return _build_trip_version_response(version_record)
+
+def get_current_trip_version(
+    db: Session,
+    trip_id: str,
+) -> TripVersionResponse:
+    _get_saved_trip_record_or_raise(db, trip_id)
+
+    record = (
+        db.query(ItineraryVersionRecord)
+        .filter(ItineraryVersionRecord.trip_id == trip_id)
+        .filter(ItineraryVersionRecord.is_current.is_(True))
+        .order_by(desc(ItineraryVersionRecord.version_number), desc(ItineraryVersionRecord.id))
+        .first()
+    )
+
+    if record is None:
+        raise ValueError(f"No current itinerary version found for trip_id={trip_id}")
+
+    return _build_trip_version_response(record)
+
+
+def restore_trip_version(
+    db: Session,
+    trip_id: str,
+    version_id: str,
+    payload: TripVersionRestoreRequest,
+) -> SavedTripSummaryResponse:
+    saved_trip = _get_saved_trip_record_or_raise(db, trip_id)
+
+    source_version = (
+        db.query(ItineraryVersionRecord)
+        .filter(ItineraryVersionRecord.trip_id == trip_id)
+        .filter(ItineraryVersionRecord.version_id == version_id)
+        .first()
+    )
+    if source_version is None:
+        raise ValueError(f"Trip version not found for version_id={version_id}")
+
+    saved_trip.current_parsed_constraints = dict(source_version.parsed_constraints or {})
+    saved_trip.current_candidate_places = list(source_version.candidate_places or [])
+    saved_trip.current_itinerary = list(source_version.itinerary or [])
+    saved_trip.current_itinerary_skeleton = list(source_version.itinerary_skeleton or [])
+    saved_trip.comparison_context = dict(source_version.comparison_context or {})
+    saved_trip.status = source_version.status
+
+    _clear_current_version_flags(db, trip_id)
+
+    restored_version = _build_version_record_from_saved_trip(
+        saved_trip=saved_trip,
+        snapshot_reason=payload.snapshot_reason,
+        branch_label=payload.branch_label or source_version.branch_label or saved_trip.history_branch_label or "main",
+        parent_version_number=source_version.version_number,
+        restored_from_version_number=source_version.version_number,
+    )
+
+    db.add(saved_trip)
+    db.add(restored_version)
+    db.commit()
+    db.refresh(saved_trip)
+
+    return _build_saved_trip_response(saved_trip)
 
 
 def create_trip_signal(
