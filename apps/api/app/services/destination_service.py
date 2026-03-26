@@ -10,8 +10,8 @@ from app.clients.tripadvisor_client import TripadvisorClient
 from app.db.session import get_db_session
 from app.models.location_relation import LocationRelationRecord
 from app.models.place_embedding import PlaceEmbeddingRecord
-from app.models.place_embedding import PlaceEmbeddingRecord
 from app.schemas.destination import (
+    ComparisonPlanStartOption,
     DestinationAlternative,
     DestinationAreaCard,
     DestinationComparisonDimension,
@@ -823,6 +823,29 @@ def _build_planning_recommendation(
         f"Keep {other.name} as the backup comparison branch, especially if you later want an alternate {duration_days}-day version."
     )
 
+def _build_comparison_plan_start_options(
+    side_a: DestinationComparisonSide,
+    side_b: DestinationComparisonSide,
+) -> list[ComparisonPlanStartOption]:
+    recommended_branch = "destination_a" if side_a.weighted_score >= side_b.weighted_score else "destination_b"
+
+    return [
+        ComparisonPlanStartOption(
+            branch="destination_a",
+            location_id=side_a.location_id,
+            destination=side_a.name,
+            weighted_score=side_a.weighted_score,
+            recommended=(recommended_branch == "destination_a"),
+        ),
+        ComparisonPlanStartOption(
+            branch="destination_b",
+            location_id=side_b.location_id,
+            destination=side_b.name,
+            weighted_score=side_b.weighted_score,
+            recommended=(recommended_branch == "destination_b"),
+        ),
+    ]
+
 
 def _profile_similarity_score(
     source_destination: str,
@@ -1180,6 +1203,7 @@ def compare_destinations(payload: DestinationComparisonRequest) -> DestinationCo
     )
 
     return DestinationComparisonResponse(
+        comparison_id=f"cmp_{better_side.name.lower().replace(' ', '_')}_{side_a.name.lower().replace(' ', '_')}_{side_b.name.lower().replace(' ', '_')}",
         destination_a=side_a,
         destination_b=side_b,
         dimensions=dimensions,
@@ -1200,6 +1224,7 @@ def compare_destinations(payload: DestinationComparisonRequest) -> DestinationCo
             f"Use {side_b.name if side_a.weighted_score >= side_b.weighted_score else side_a.name} as a backup itinerary branch",
         ],
         youd_also_love=comparison_alternatives,
+        plan_start_options=_build_comparison_plan_start_options(side_a, side_b),
     )
 
 

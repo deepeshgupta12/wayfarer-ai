@@ -904,3 +904,73 @@ def test_enrich_trip_plan_applies_persona_embedding_in_candidate_ranking(monkeyp
     assert "strong persona-embedding fit" in payload["candidate_places"][0]["why_selected"].lower()
     assert "related_locations" in payload["candidate_places"][0]
     assert isinstance(payload["candidate_places"][0]["related_locations"], list)
+
+def test_create_trip_plan_from_comparison_preserves_comparison_context() -> None:
+    client = get_test_client()
+
+    compare_response = client.post(
+        "/destinations/compare",
+        json={
+            "destination_a": "Kyoto",
+            "destination_b": "Tokyo",
+            "traveller_type": "solo",
+            "interests": ["food", "culture"],
+            "pace_preference": "balanced",
+            "budget": "midrange",
+            "duration_days": 4,
+        },
+    )
+    assert compare_response.status_code == 200
+    comparison_payload = compare_response.json()
+
+    chosen_option = next(
+        option for option in comparison_payload["plan_start_options"] if option["recommended"] is True
+    )
+
+    create_response = client.post(
+        "/trip-plans/from-comparison",
+        json={
+            "traveller_id": "traveller_trip_plan_cmp_001",
+            "source_surface": "compare",
+            "duration_days": 4,
+            "group_type": "solo",
+            "interests": ["food", "culture"],
+            "pace_preference": "balanced",
+            "budget": "midrange",
+            "comparison_context": {
+                "comparison_id": comparison_payload["comparison_id"],
+                "source_surface": "compare",
+                "destination_a": comparison_payload["destination_a"]["name"],
+                "destination_b": comparison_payload["destination_b"]["name"],
+                "selected_branch": chosen_option["branch"],
+                "selected_destination": chosen_option["destination"],
+                "selected_location_id": chosen_option["location_id"],
+                "verdict": comparison_payload["verdict"],
+                "planning_recommendation": comparison_payload["planning_recommendation"],
+                "options": [
+                    {
+                        "branch": option["branch"],
+                        "location_id": option["location_id"],
+                        "destination": option["destination"],
+                        "weighted_score": option["weighted_score"],
+                        "why_pick_this": "Recommended from comparison result." if option["recommended"] else "Alternate branch from comparison result.",
+                    }
+                    for option in comparison_payload["plan_start_options"]
+                ],
+            },
+        },
+    )
+
+    assert create_response.status_code == 200
+    payload = create_response.json()
+
+    assert payload["comparison_context"] is not None
+    assert payload["comparison_context"]["comparison_id"] == comparison_payload["comparison_id"]
+    assert payload["parsed_constraints"]["destination"] == chosen_option["destination"]
+
+    enrich_response = client.post(f"/trip-plans/{payload['planning_session_id']}/enrich")
+    assert enrich_response.status_code == 200
+    enrich_payload = enrich_response.json()
+
+    assert enrich_payload["comparison_context"] is not None
+    assert enrich_payload["comparison_context"]["selected_destination"] == chosen_option["destination"]

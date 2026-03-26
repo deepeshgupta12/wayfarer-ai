@@ -211,3 +211,85 @@ def test_trip_signal_persistence_updates_backend_counts() -> None:
     assert signals_payload["trip_id"] == trip_id
     assert signals_payload["total"] == 3
     assert len(signals_payload["items"]) == 3
+
+def test_promoted_saved_trip_exposes_comparison_context() -> None:
+    client = get_test_client()
+
+    compare_response = client.post(
+        "/destinations/compare",
+        json={
+            "destination_a": "Kyoto",
+            "destination_b": "Tokyo",
+            "traveller_type": "solo",
+            "interests": ["food", "culture"],
+            "pace_preference": "balanced",
+            "budget": "midrange",
+            "duration_days": 4,
+        },
+    )
+    assert compare_response.status_code == 200
+    comparison_payload = compare_response.json()
+    chosen_option = next(
+        option for option in comparison_payload["plan_start_options"] if option["recommended"] is True
+    )
+
+    create_plan_response = client.post(
+        "/trip-plans/from-comparison",
+        json={
+            "traveller_id": "traveller_saved_trip_cmp_001",
+            "source_surface": "compare",
+            "duration_days": 4,
+            "group_type": "solo",
+            "interests": ["food", "culture"],
+            "pace_preference": "balanced",
+            "budget": "midrange",
+            "comparison_context": {
+                "comparison_id": comparison_payload["comparison_id"],
+                "source_surface": "compare",
+                "destination_a": comparison_payload["destination_a"]["name"],
+                "destination_b": comparison_payload["destination_b"]["name"],
+                "selected_branch": chosen_option["branch"],
+                "selected_destination": chosen_option["destination"],
+                "selected_location_id": chosen_option["location_id"],
+                "verdict": comparison_payload["verdict"],
+                "planning_recommendation": comparison_payload["planning_recommendation"],
+                "options": [
+                    {
+                        "branch": option["branch"],
+                        "location_id": option["location_id"],
+                        "destination": option["destination"],
+                        "weighted_score": option["weighted_score"],
+                        "why_pick_this": "Recommended from comparison result." if option["recommended"] else "Alternate branch from comparison result.",
+                    }
+                    for option in comparison_payload["plan_start_options"]
+                ],
+            },
+        },
+    )
+    assert create_plan_response.status_code == 200
+    planning_session_id = create_plan_response.json()["planning_session_id"]
+
+    enrich_response = client.post(f"/trip-plans/{planning_session_id}/enrich")
+    assert enrich_response.status_code == 200
+
+    promote_response = client.post(
+        f"/trips/from-plan/{planning_session_id}",
+        json={
+            "title": "Comparison-started trip",
+            "companions": "solo",
+            "status": "planning",
+            "source_surface": "compare",
+        },
+    )
+    assert promote_response.status_code == 200
+    payload = promote_response.json()
+
+    assert payload["comparison_context"] is not None
+    assert payload["comparison_context"]["comparison_id"] == comparison_payload["comparison_id"]
+
+    versions_response = client.get(f"/trips/{payload['trip_id']}/versions?limit=10")
+    assert versions_response.status_code == 200
+    versions_payload = versions_response.json()
+
+    assert versions_payload["items"][0]["comparison_context"] is not None
+    assert versions_payload["items"][0]["comparison_context"]["comparison_id"] == comparison_payload["comparison_id"]

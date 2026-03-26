@@ -27,6 +27,8 @@ class SavedTripRecord(Base):
     current_candidate_places: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     current_itinerary: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     current_itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+    comparison_context: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
+    current_itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
 
     current_version_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     selected_places_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -64,6 +66,7 @@ class ItineraryVersionRecord(Base):
     candidate_places: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     itinerary: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
     itinerary_skeleton: Mapped[list[dict[str, object]]] = mapped_column(JSON, nullable=False, default=list)
+    comparison_context: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

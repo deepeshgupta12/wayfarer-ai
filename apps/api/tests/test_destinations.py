@@ -270,3 +270,29 @@ def test_destination_compare_applies_persona_weighting(monkeypatch) -> None:
     assert payload["destination_b"]["name"] == "Tokyo"
     assert payload["destination_b"]["weighted_score"] > payload["destination_a"]["weighted_score"]
     assert "Tokyo comes out ahead" in payload["verdict"]
+
+
+def test_destination_compare_returns_plan_start_options() -> None:
+    client = get_test_client()
+
+    response = client.post(
+        "/destinations/compare",
+        json={
+            "destination_a": "Prague",
+            "destination_b": "Budapest",
+            "traveller_type": "couple",
+            "interests": ["culture", "food"],
+            "pace_preference": "balanced",
+            "budget": "midrange",
+            "duration_days": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert "comparison_id" in payload
+    assert "plan_start_options" in payload
+    assert isinstance(payload["plan_start_options"], list)
+    assert len(payload["plan_start_options"]) == 2
+    assert payload["plan_start_options"][0]["branch"] in ["destination_a", "destination_b"]
