@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { motion } from 'framer-motion';
 import { Sparkles, Loader2, MapPin, Check, ChevronDown } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { enrichTripPlan, parseAndSaveTripBrief, searchDestinations } from '@/api/wayfarerApi';
+import {
+  enrichTripPlan,
+  parseAndSaveTripBrief,
+  promoteTripPlanToSavedTrip,
+  searchDestinations,
+} from '@/api/wayfarerApi';
 import { getOrCreateTravellerId } from '@/lib/travellerProfile';
-import { saveStoredTrip } from '@/lib/tripStorage';
+import { cacheSavedTrip, cacheTripPlan } from '@/lib/tripStorage';
 
 const INTEREST_OPTIONS = [
   { value: 'food', label: 'Food' },
@@ -94,7 +98,9 @@ function buildFallbackDestinationResults(query) {
 export default function NewTripModal({ onClose, onCreated }) {
   const [destinationInput, setDestinationInput] = useState('');
   const [selectedDestination, setSelectedDestination] = useState(null);
-  const [destinationResults, setDestinationResults] = useState(buildFallbackDestinationResults(''));
+  const [destinationResults, setDestinationResults] = useState(
+    buildFallbackDestinationResults('')
+  );
   const [searchingDestinations, setSearchingDestinations] = useState(false);
   const [showDestinationDropdown, setShowDestinationDropdown] = useState(false);
 
@@ -224,6 +230,8 @@ export default function NewTripModal({ onClose, onCreated }) {
         source_surface: 'planner_modal',
       });
 
+      cacheTripPlan(parsedPlan);
+
       if ((parsedPlan.missing_fields || []).length > 0) {
         throw new Error(
           `Planner could not generate a complete trip plan. Missing: ${parsedPlan.missing_fields.join(', ')}`
@@ -231,26 +239,24 @@ export default function NewTripModal({ onClose, onCreated }) {
       }
 
       const enrichedPlan = await enrichTripPlan(parsedPlan.planning_session_id);
+      cacheTripPlan(enrichedPlan);
 
       const destinationName =
         enrichedPlan?.parsed_constraints?.destination || selectedDestination.name;
       const title = `${destinationName} ${enrichedPlan.itinerary_skeleton.length}-day plan`;
 
-      saveStoredTrip({
+      const savedTrip = await promoteTripPlanToSavedTrip(enrichedPlan.planning_session_id, {
         title,
-        destination: destinationName,
         start_date: startDate || null,
         end_date: endDate || null,
         companions: groupType,
-        itinerary: enrichedPlan.itinerary_skeleton || [],
-        itinerary_skeleton: enrichedPlan.itinerary_skeleton || [],
         status: 'planning',
-        planning_session_id: enrichedPlan.planning_session_id,
-        traveller_id: enrichedPlan.traveller_id,
         source_surface: 'planner_modal',
       });
 
-      onCreated?.();
+      cacheSavedTrip(savedTrip);
+
+      onCreated?.(savedTrip);
       onClose?.();
     } catch (error) {
       setErrorMessage(error?.message || 'Unable to generate your trip right now.');
@@ -444,7 +450,7 @@ export default function NewTripModal({ onClose, onCreated }) {
           </div>
 
           <div className="rounded-xl bg-secondary/40 border border-border px-3 py-2.5 text-xs text-muted-foreground">
-            This trip will be saved using the enriched slot-based planner as the canonical itinerary source.
+            This trip will be created as a backend-saved trip with version history and structured signals. Local storage is used only for cache convenience.
           </div>
 
           {errorMessage ? (

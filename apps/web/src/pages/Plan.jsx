@@ -7,18 +7,27 @@ import EmptyState from '../components/ui/EmptyState';
 import LoadingState from '../components/ui/LoadingState';
 import TripPlanCard from '../components/cards/TripPlanCard';
 import NewTripModal from '../components/plan/NewTripModal';
-import { listStoredTrips } from '@/lib/tripStorage';
+import { listSavedTrips } from '@/api/wayfarerApi';
+import { getOrCreateTravellerId } from '@/lib/travellerProfile';
+import { cacheSavedTrip, cacheSavedTrips, getCachedSavedTrips } from '@/lib/tripStorage';
 
 export default function Plan() {
   const [showNewTrip, setShowNewTrip] = useState(false);
+  const travellerId = getOrCreateTravellerId();
 
   const {
     data: trips = [],
     isLoading,
     refetch,
   } = useQuery({
-    queryKey: ['stored-trips'],
-    queryFn: async () => listStoredTrips(),
+    queryKey: ['backend-saved-trips', travellerId],
+    queryFn: async () => {
+      const response = await listSavedTrips(travellerId, 100);
+      cacheSavedTrips(travellerId, response.items || []);
+      (response.items || []).forEach((trip) => cacheSavedTrip(trip));
+      return response.items || [];
+    },
+    initialData: () => getCachedSavedTrips(travellerId),
   });
 
   return (
@@ -30,7 +39,7 @@ export default function Plan() {
       >
         <div>
           <h1 className="font-serif text-3xl sm:text-4xl font-bold mb-2">Plan</h1>
-          <p className="text-muted-foreground">Build and manage your trip itineraries</p>
+          <p className="text-muted-foreground">Build and manage your backend-saved trip itineraries</p>
         </div>
 
         <button
@@ -108,7 +117,7 @@ export default function Plan() {
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {trips.map((trip, i) => (
             <motion.div
-              key={trip.id}
+              key={trip.trip_id}
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
@@ -123,10 +132,10 @@ export default function Plan() {
         <div className="mt-8 rounded-2xl border border-border bg-card p-4">
           <div className="flex items-center gap-2 mb-3">
             <Layers className="w-4 h-4 text-accent" />
-            <h3 className="font-medium text-sm">Planning state now retained</h3>
+            <h3 className="font-medium text-sm">Backend-first planning state active</h3>
           </div>
           <p className="text-xs text-muted-foreground">
-            Each saved trip now retains itinerary versions, selected places, and skipped recommendation signals for stronger planning continuity.
+            Trips, versions, and structured signals now persist in backend entities. Local storage is used only as a lightweight cache for UI convenience.
           </p>
         </div>
       ) : null}

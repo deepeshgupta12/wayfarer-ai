@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   ArrowLeft,
@@ -11,16 +11,29 @@ import {
   ChevronUp,
   Heart,
   SkipForward,
+  RotateCcw,
+  GitBranch,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import LoadingState from '../components/ui/LoadingState';
 import ActivityCard from '../components/cards/ActivityCard';
 import {
-  appendTripVersion,
-  getStoredTripById,
-  listStoredTrips,
-  recordSelectedPlace,
-  recordSkippedRecommendation,
+  createTripSignal,
+  createTripVersionSnapshot,
+  getCurrentTripVersion,
+  getSavedTrip,
+  listSavedTrips,
+  listTripSignals,
+  listTripVersions,
+  restoreTripVersion,
+} from '@/api/wayfarerApi';
+import { getOrCreateTravellerId } from '@/lib/travellerProfile';
+import {
+  cacheSavedTrip,
+  cacheSavedTrips,
+  getCachedSavedTrip,
+  getCachedSavedTrips,
 } from '@/lib/tripStorage';
 
 function normalizeDayActivities(day) {
@@ -58,6 +71,7 @@ function normalizeDayActivities(day) {
         replacementStatus,
         continuityNote: slot.continuity_note || null,
         movementNote: slot.movement_note || null,
+        dayNumber: day.day_number,
       };
     });
   }
@@ -71,82 +85,209 @@ function normalizeDayActivities(day) {
 
 function deriveCanonicalItinerary(trip) {
   if (
-    Array.isArray(trip.itinerary) &&
-    trip.itinerary.some((day) => Array.isArray(day?.slots) && day.slots.length > 0)
-  ) {
-    return trip.itinerary;
-  }
-
-  if (
     Array.isArray(trip.itinerary_skeleton) &&
     trip.itinerary_skeleton.some((day) => Array.isArray(day?.slots) && day.slots.length > 0)
   ) {
     return trip.itinerary_skeleton;
   }
 
-  return trip.itinerary || [];
+  if (
+    Array.isArray(trip.itinerary) &&
+    trip.itinerary.some((day) => Array.isArray(day?.slots) && day.slots.length > 0)
+  ) {
+    return trip.itinerary;
+  }
+
+  return trip.itinerary_skeleton || trip.itinerary || [];
+}
+
+function buildSavedPlacesFromSignals(signals) {
+  const selectedSignals = (signals || []).filter((signal) => signal.signal_type === 'selected_place');
+  const map = new Map();
+
+  selectedSignals.forEach((signal) => {
+    const signalKey = signal.location_id || signal.payload?.name;
+    if (!signalKey || map.has(signalKey)) return;
+
+    map.set(signalKey, {
+      signal_id: signal.signal_id,
+      location_id: signal.location_id || null,
+      name: signal.payload?.name || 'Saved place',
+      city: signal.payload?.city || null,
+      category: signal.payload?.category || null,
+      created_at: signal.created_at,
+    });
+  });
+
+  return Array.from(map.values());
+}
+
+function buildSkippedPlacesFromSignals(signals) {
+  const skippedSignals = (signals || []).filter(
+    (signal) => signal.signal_type === 'skipped_recommendation'
+  );
+  const map = new Map();
+
+  skippedSignals.forEach((signal) => {
+    const signalKey = signal.location_id || signal.payload?.name;
+    if (!signalKey || map.has(signalKey)) return;
+
+    map.set(signalKey, {
+      signal_id: signal.signal_id,
+      location_id: signal.location_id || null,
+      name: signal.payload?.name || 'Skipped recommendation',
+      city: signal.payload?.city || null,
+      category: signal.payload?.category || null,
+      created_at: signal.created_at,
+    });
+  });
+
+  return Array.from(map.values());
 }
 
 export default function Itinerary() {
-  const [trip, setTrip] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [expandedDay, setExpandedDay] = useState(0);
+  const [searchParams] = useSearchParams();
+  const travellerId = getOrCreateTravellerId();
+  const tripId = searchParams.get('trip');
 
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const tripId = urlParams.get('trip');
+  const {
+    data: activeTripId,
+    isLoading: resolvingTripId,
+  } = useQuery({
+    queryKey: ['active-trip-id', travellerId, tripId],
+    queryFn: async () => {
+      if (tripId) return tripId;
 
-    if (tripId) {
-      const storedTrip = getStoredTripById(tripId);
-      setTrip(storedTrip);
-      setLoading(false);
-      return;
-    }
+      const response = await listSavedTrips(travellerId, 100);
+      cacheSavedTrips(travellerId, response.items || []);
+      (response.items || []).forEach((trip) => cacheSavedTrip(trip));
 
-    const latestTrip = listStoredTrips()[0] || null;
-    setTrip(latestTrip);
-    setLoading(false);
-  }, []);
+      return response.items?.[0]?.trip_id || null;
+    },
+    initialData: tripId || getCachedSavedTrips(travellerId)?.[0]?.trip_id || null,
+  });
 
-  const refreshTrip = () => {
-    if (!trip?.id) return;
-    const latest = getStoredTripById(trip.id);
-    setTrip(latest);
+  const {
+    data: trip,
+    isLoading: tripLoading,
+    refetch: refetchTrip,
+  } = useQuery({
+    queryKey: ['saved-trip-detail', activeTripId],
+    enabled: Boolean(activeTripId),
+    queryFn: async () => {
+      const response = await getSavedTrip(activeTripId);
+      cacheSavedTrip(response);
+      return response;
+    },
+    initialData: activeTripId ? getCachedSavedTrip(activeTripId) : null,
+  });
+
+  const {
+    data: versions = [],
+    isLoading: versionsLoading,
+    refetch: refetchVersions,
+  } = useQuery({
+    queryKey: ['trip-versions', activeTripId],
+    enabled: Boolean(activeTripId),
+    queryFn: async () => {
+      const response = await listTripVersions(activeTripId, 100);
+      return response.items || [];
+    },
+    initialData: [],
+  });
+
+  const {
+    data: currentVersion = null,
+    refetch: refetchCurrentVersion,
+  } = useQuery({
+    queryKey: ['trip-current-version', activeTripId],
+    enabled: Boolean(activeTripId),
+    queryFn: async () => getCurrentTripVersion(activeTripId),
+    initialData: null,
+  });
+
+  const {
+    data: signals = [],
+    isLoading: signalsLoading,
+    refetch: refetchSignals,
+  } = useQuery({
+    queryKey: ['trip-signals', activeTripId],
+    enabled: Boolean(activeTripId),
+    queryFn: async () => {
+      const response = await listTripSignals(activeTripId, 200);
+      return response.items || [];
+    },
+    initialData: [],
+  });
+
+  const savedPlaces = useMemo(() => buildSavedPlacesFromSignals(signals), [signals]);
+  const skippedRecommendations = useMemo(() => buildSkippedPlacesFromSignals(signals), [signals]);
+
+  const refreshAll = async () => {
+    await Promise.all([
+      refetchTrip(),
+      refetchVersions(),
+      refetchCurrentVersion(),
+      refetchSignals(),
+    ]);
   };
 
-  const handleSavePlace = (activity) => {
-    if (!trip?.id) return;
+  const handleSavePlace = async (activity) => {
+    if (!trip?.trip_id) return;
 
-    recordSelectedPlace(trip.id, {
+    await createTripSignal(trip.trip_id, {
+      signal_type: 'selected_place',
       location_id: activity.assignedLocationId || activity.name,
-      name: activity.name,
-      city: trip.destination,
-      category: activity.type,
+      payload: {
+        name: activity.name,
+        city: trip.destination,
+        category: activity.type,
+      },
     });
 
-    refreshTrip();
+    await refreshAll();
   };
 
-  const handleSkipAlternative = (alternative) => {
-    if (!trip?.id) return;
+  const handleSkipAlternative = async (alternative) => {
+    if (!trip?.trip_id) return;
 
-    recordSkippedRecommendation(trip.id, {
-      location_id: alternative.location_id,
-      name: alternative.name,
-      city: alternative.city,
-      category: alternative.category,
+    await createTripSignal(trip.trip_id, {
+      signal_type: 'skipped_recommendation',
+      location_id: alternative.location_id || null,
+      payload: {
+        name: alternative.name,
+        city: alternative.city || null,
+        category: alternative.category || null,
+      },
     });
 
-    refreshTrip();
+    await refreshAll();
   };
 
-  const handleSnapshot = () => {
-    if (!trip?.id) return;
-    appendTripVersion(trip.id, 'manual_workspace_snapshot');
-    refreshTrip();
+  const handleSnapshot = async () => {
+    if (!trip?.trip_id) return;
+
+    await createTripVersionSnapshot(trip.trip_id, {
+      snapshot_reason: 'manual_workspace_snapshot',
+      branch_label: trip.history_branch_label || 'main',
+    });
+
+    await refreshAll();
   };
 
-  if (loading) {
+  const handleRestoreVersion = async (versionId) => {
+    if (!trip?.trip_id || !versionId) return;
+
+    await restoreTripVersion(trip.trip_id, versionId, {
+      snapshot_reason: 'restore_selected_version',
+      branch_label: trip.history_branch_label || 'main',
+    });
+
+    await refreshAll();
+  };
+
+  if (resolvingTripId || tripLoading || versionsLoading || signalsLoading) {
     return <LoadingState message="Loading your itinerary..." />;
   }
 
@@ -168,9 +309,6 @@ export default function Itinerary() {
   }
 
   const itinerary = deriveCanonicalItinerary(trip);
-  const versions = trip.itinerary_versions || [];
-  const selectedPlaces = trip.selected_places || [];
-  const skippedRecommendations = trip.skipped_recommendations || [];
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
@@ -185,7 +323,7 @@ export default function Itinerary() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
           <div>
             <h1 className="font-serif text-2xl sm:text-3xl font-bold mb-1">{trip.title}</h1>
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
               <span className="flex items-center gap-1">
                 <MapPin className="w-3.5 h-3.5" /> {trip.destination}
               </span>
@@ -194,6 +332,15 @@ export default function Itinerary() {
                 <span className="flex items-center gap-1">
                   <Calendar className="w-3.5 h-3.5" /> {trip.start_date}
                 </span>
+              ) : null}
+
+              <span className="flex items-center gap-1">
+                <GitBranch className="w-3.5 h-3.5" />
+                Version {trip.current_version_number}
+              </span>
+
+              {trip.history_branch_label ? (
+                <span>{trip.history_branch_label}</span>
               ) : null}
             </div>
           </div>
@@ -213,7 +360,7 @@ export default function Itinerary() {
         </div>
       </motion.div>
 
-      <div className="grid lg:grid-cols-[1fr_320px] gap-8">
+      <div className="grid lg:grid-cols-[1fr_340px] gap-8">
         <div className="space-y-4">
           {itinerary.length > 0 ? (
             itinerary.map((day, i) => {
@@ -341,34 +488,35 @@ export default function Itinerary() {
         <div className="hidden lg:block space-y-4">
           <div className="p-4 rounded-2xl bg-card border border-border sticky top-6">
             <h3 className="font-semibold text-sm mb-3 flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-accent" /> AI Insights
+              <Sparkles className="w-4 h-4 text-accent" /> Versioning + Memory
             </h3>
 
             <div className="space-y-3">
               <div className="p-3 rounded-xl bg-accent/5 border border-accent/10">
                 <p className="text-xs text-muted-foreground">
-                  This saved itinerary now treats the enriched slot-based trip plan as the primary
-                  source of truth whenever it exists.
+                  This saved itinerary now uses the backend trip entity as source of truth.
                 </p>
               </div>
 
               <div className="p-3 rounded-xl bg-sage-light border border-sage/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Route realism:</strong> slot flow now reflects continuity strategy and
-                  movement notes across the day instead of generic activity ordering.
+                  <strong>Current version:</strong>{' '}
+                  {currentVersion ? `v${currentVersion.version_number}` : `v${trip.current_version_number}`}
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  <strong>Branch:</strong> {trip.history_branch_label || 'main'}
                 </p>
               </div>
 
               <div className="p-3 rounded-xl bg-ocean-light border border-ocean/10">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Versioning:</strong> this trip currently has{' '}
-                  <span className="font-medium">{versions.length}</span> saved itinerary snapshots.
+                  <strong>Signals:</strong> {signals.length} structured actions stored
                 </p>
               </div>
 
               <div className="p-3 rounded-xl bg-secondary border border-border">
                 <p className="text-xs text-muted-foreground">
-                  <strong>Saved places:</strong> {selectedPlaces.length}
+                  <strong>Saved places:</strong> {savedPlaces.length}
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
                   <strong>Skipped recommendations:</strong> {skippedRecommendations.length}
@@ -376,14 +524,58 @@ export default function Itinerary() {
               </div>
             </div>
 
-            {selectedPlaces.length > 0 ? (
+            {versions.length > 0 ? (
+              <div className="mt-5">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Version History
+                </div>
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {versions.map((version) => (
+                    <div
+                      key={version.version_id}
+                      className="rounded-xl border border-border bg-background px-3 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="text-sm font-medium text-foreground">
+                            v{version.version_number}
+                            {version.is_current ? ' · current' : ''}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground mt-1">
+                            {version.snapshot_reason}
+                          </div>
+                          <div className="text-[11px] text-muted-foreground mt-1">
+                            {version.branch_label || 'main'}
+                            {version.parent_version_number
+                              ? ` · parent v${version.parent_version_number}`
+                              : ''}
+                          </div>
+                        </div>
+
+                        {!version.is_current ? (
+                          <button
+                            onClick={() => handleRestoreVersion(version.version_id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-border text-[11px] font-medium hover:bg-secondary transition-colors"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Restore
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {savedPlaces.length > 0 ? (
               <div className="mt-4">
                 <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
                   Selected Places
                 </div>
                 <div className="space-y-2">
-                  {selectedPlaces.slice(0, 5).map((place, index) => (
-                    <div key={`${place.location_id || place.name}-${index}`} className="text-xs text-muted-foreground">
+                  {savedPlaces.slice(0, 5).map((place) => (
+                    <div key={place.signal_id} className="text-xs text-muted-foreground">
                       {place.name}
                     </div>
                   ))}
@@ -397,8 +589,8 @@ export default function Itinerary() {
                   Skipped Signals
                 </div>
                 <div className="space-y-2">
-                  {skippedRecommendations.slice(0, 5).map((place, index) => (
-                    <div key={`${place.location_id || place.name}-${index}`} className="text-xs text-muted-foreground">
+                  {skippedRecommendations.slice(0, 5).map((place) => (
+                    <div key={place.signal_id} className="text-xs text-muted-foreground">
                       {place.name}
                     </div>
                   ))}
