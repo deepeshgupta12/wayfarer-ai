@@ -1,14 +1,18 @@
 import re
 from uuid import uuid4
 
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.clients.tripadvisor_client import TripadvisorClient
 from app.models.persona import TravellerPersonaRecord
+from app.models.saved_trip import ItineraryVersionRecord, SavedTripRecord, TripSignalRecord
 from app.models.traveller_memory import TravellerMemoryRecord
 from app.models.trip_plan import TripPlanRecord
 from app.schemas.trip_plan import (
     ParsedTripConstraints,
+    SavedTripListResponse,
+    SavedTripSummaryResponse,
     TripAlternativeSuggestion,
     TripBriefParseRequest,
     TripCandidatePlace,
@@ -17,8 +21,15 @@ from app.schemas.trip_plan import (
     TripPlanResponse,
     TripPlanSummaryResponse,
     TripPlanUpdateRequest,
+    TripPromoteRequest,
+    TripSignalCreateRequest,
+    TripSignalListResponse,
+    TripSignalResponse,
     TripSlotAssignment,
     TripSlotReplacementRequest,
+    TripVersionListResponse,
+    TripVersionResponse,
+    TripVersionSnapshotRequest,
 )
 from app.services.review_intelligence_service import analyze_review_bundle
 
@@ -990,15 +1001,15 @@ def _enforce_cross_day_overlap_cap_on_slots(
                     f"more distinct from the previous day while preserving day coherence."
                 )
 
-        slot.summary = _slot_summary(
-            slot_type=slot.slot_type,
-            destination=destination,
-            interests=interests,
-            pace=pace,
-            place_name=current_candidate.name if current_candidate else None,
-        )
-        slot.continuity_note = _continuity_note(current_candidate, dominant_cluster)
-        slot.movement_note = _movement_note(current_candidate, previous_candidate)
+            slot.summary = _slot_summary(
+                slot_type=slot.slot_type,
+                destination=destination,
+                interests=interests,
+                pace=pace,
+                place_name=current_candidate.name if current_candidate else None,
+            )
+            slot.continuity_note = _continuity_note(current_candidate, dominant_cluster)
+            slot.movement_note = _movement_note(current_candidate, previous_candidate)
 
         if current_candidate is not None:
             if current_candidate.location_id in previous_day_ids and repeat_count < max_overlap:
@@ -1555,9 +1566,9 @@ def _build_itinerary_skeleton(
                 ordered_day_candidates,
                 candidate_places,
             )
-            for slot in slots:
-                slot.fallback_candidate_ids = list(fallback_candidate_ids)
-                slot.fallback_candidate_names = list(fallback_candidate_names)
+        for slot in slots:
+            slot.fallback_candidate_ids = list(fallback_candidate_ids)
+            slot.fallback_candidate_names = list(fallback_candidate_names)
 
         place_names = [candidate.name for candidate in ordered_day_candidates]
         candidate_ids = [candidate.location_id for candidate in ordered_day_candidates]
@@ -1600,6 +1611,123 @@ def _build_itinerary_skeleton(
         previous_day_ids = set(candidate_ids)
 
     return skeleton
+
+
+def _parsed_constraints_to_json(parsed_constraints: ParsedTripConstraints | None) -> dict[str, object]:
+    if parsed_constraints is None:
+        return {}
+    return parsed_constraints.model_dump()
+
+
+def _candidate_places_to_json(candidate_places: list[TripCandidatePlace] | None) -> list[dict[str, object]]:
+    if not candidate_places:
+        return []
+    return [item.model_dump() for item in candidate_places]
+
+
+def _day_plans_to_json(day_plans: list[TripDayPlan] | None) -> list[dict[str, object]]:
+    if not day_plans:
+        return []
+    return [item.model_dump() for item in day_plans]
+
+
+def _build_saved_trip_response(record: SavedTripRecord) -> SavedTripSummaryResponse:
+    parsed_constraints_payload = dict(record.current_parsed_constraints or {})
+    candidate_places_payload = list(record.current_candidate_places or [])
+    itinerary_skeleton_payload = list(record.current_itinerary_skeleton or [])
+    itinerary_payload = list(record.current_itinerary or [])
+
+    return SavedTripSummaryResponse(
+        trip_id=record.trip_id,
+        traveller_id=record.traveller_id,
+        planning_session_id=record.planning_session_id,
+        title=record.title,
+        destination=record.destination,
+        start_date=record.start_date,
+        end_date=record.end_date,
+        companions=record.companions,
+        status=record.status,
+        source_surface=record.source_surface,
+        current_version_number=record.current_version_number or 0,
+        selected_places_count=record.selected_places_count or 0,
+        skipped_recommendations_count=record.skipped_recommendations_count or 0,
+        replaced_slots_count=record.replaced_slots_count or 0,
+        parsed_constraints=ParsedTripConstraints(**parsed_constraints_payload) if parsed_constraints_payload else ParsedTripConstraints(),
+        candidate_places=[TripCandidatePlace(**item) for item in candidate_places_payload],
+        itinerary=itinerary_payload,
+        itinerary_skeleton=[TripDayPlan(**item) for item in itinerary_skeleton_payload],
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _build_trip_version_response(record: ItineraryVersionRecord) -> TripVersionResponse:
+    parsed_constraints_payload = dict(record.parsed_constraints or {})
+    candidate_places_payload = list(record.candidate_places or [])
+    itinerary_skeleton_payload = list(record.itinerary_skeleton or [])
+    itinerary_payload = list(record.itinerary or [])
+
+    return TripVersionResponse(
+        version_id=record.version_id,
+        trip_id=record.trip_id,
+        traveller_id=record.traveller_id,
+        planning_session_id=record.planning_session_id,
+        version_number=record.version_number,
+        snapshot_reason=record.snapshot_reason,
+        source_surface=record.source_surface,
+        status=record.status,
+        parsed_constraints=ParsedTripConstraints(**parsed_constraints_payload) if parsed_constraints_payload else ParsedTripConstraints(),
+        candidate_places=[TripCandidatePlace(**item) for item in candidate_places_payload],
+        itinerary=itinerary_payload,
+        itinerary_skeleton=[TripDayPlan(**item) for item in itinerary_skeleton_payload],
+        created_at=record.created_at,
+    )
+
+
+def _build_trip_signal_response(record: TripSignalRecord) -> TripSignalResponse:
+    return TripSignalResponse(
+        signal_id=record.signal_id,
+        trip_id=record.trip_id,
+        traveller_id=record.traveller_id,
+        planning_session_id=record.planning_session_id,
+        signal_type=record.signal_type,
+        location_id=record.location_id,
+        day_number=record.day_number,
+        slot_type=record.slot_type,
+        payload=dict(record.payload or {}),
+        created_at=record.created_at,
+    )
+
+
+def _get_saved_trip_record_or_raise(db: Session, trip_id: str) -> SavedTripRecord:
+    record = db.query(SavedTripRecord).filter(SavedTripRecord.trip_id == trip_id).first()
+    if record is None:
+        raise ValueError(f"Saved trip not found for trip_id={trip_id}")
+    return record
+
+
+def _build_version_record_from_saved_trip(
+    saved_trip: SavedTripRecord,
+    snapshot_reason: str,
+) -> ItineraryVersionRecord:
+    current_version_number = saved_trip.current_version_number or 0
+    next_version_number = current_version_number + 1
+    saved_trip.current_version_number = next_version_number
+
+    return ItineraryVersionRecord(
+        version_id=f"version_{uuid4().hex}",
+        trip_id=saved_trip.trip_id,
+        traveller_id=saved_trip.traveller_id,
+        planning_session_id=saved_trip.planning_session_id,
+        version_number=next_version_number,
+        snapshot_reason=snapshot_reason,
+        source_surface=saved_trip.source_surface,
+        status=saved_trip.status,
+        parsed_constraints=dict(saved_trip.current_parsed_constraints or {}),
+        candidate_places=list(saved_trip.current_candidate_places or []),
+        itinerary=list(saved_trip.current_itinerary or []),
+        itinerary_skeleton=list(saved_trip.current_itinerary_skeleton or []),
+    )
 
 
 def parse_and_save_trip_brief(
@@ -1841,4 +1969,194 @@ def enrich_trip_plan(
         itinerary_skeleton=itinerary_skeleton,
         saved=True,
         updated_at=record.updated_at,
+    )
+
+
+def promote_trip_plan_to_saved_trip(
+    db: Session,
+    planning_session_id: str,
+    payload: TripPromoteRequest,
+) -> SavedTripSummaryResponse:
+    plan_record = _get_record_or_raise(db, planning_session_id)
+
+    parsed_constraints = _build_parsed_constraints_from_record(plan_record)
+    candidate_places = [TripCandidatePlace(**item) for item in list(plan_record.candidate_places or [])]
+    itinerary_skeleton = [TripDayPlan(**item) for item in list(plan_record.itinerary_skeleton or [])]
+
+    destination = plan_record.destination or parsed_constraints.destination
+    duration_days = parsed_constraints.duration_days or 0
+    title = payload.title or f"{destination or 'Trip'} {duration_days}-day plan"
+
+    saved_trip = SavedTripRecord(
+        trip_id=f"trip_{uuid4().hex}",
+        traveller_id=plan_record.traveller_id,
+        planning_session_id=plan_record.planning_session_id,
+        title=title,
+        destination=destination,
+        source_surface=payload.source_surface,
+        status=payload.status,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        companions=payload.companions or plan_record.group_type,
+        current_parsed_constraints=_parsed_constraints_to_json(parsed_constraints),
+        current_candidate_places=_candidate_places_to_json(candidate_places),
+        current_itinerary=_day_plans_to_json(itinerary_skeleton),
+        current_itinerary_skeleton=_day_plans_to_json(itinerary_skeleton),
+        current_version_number=0,
+        selected_places_count=0,
+        skipped_recommendations_count=0,
+        replaced_slots_count=0,
+    )
+
+    version_record = _build_version_record_from_saved_trip(
+        saved_trip=saved_trip,
+        snapshot_reason="initial_promotion",
+    )
+
+    db.add(saved_trip)
+    db.add(version_record)
+    db.commit()
+    db.refresh(saved_trip)
+
+    return _build_saved_trip_response(saved_trip)
+
+
+def list_saved_trips(
+    db: Session,
+    traveller_id: str,
+    limit: int = 50,
+) -> SavedTripListResponse:
+    records = (
+        db.query(SavedTripRecord)
+        .filter(SavedTripRecord.traveller_id == traveller_id)
+        .order_by(desc(SavedTripRecord.updated_at), desc(SavedTripRecord.id))
+        .limit(limit)
+        .all()
+    )
+
+    return SavedTripListResponse(
+        traveller_id=traveller_id,
+        total=len(records),
+        items=[_build_saved_trip_response(record) for record in records],
+    )
+
+
+def get_saved_trip_summary(
+    db: Session,
+    trip_id: str,
+) -> SavedTripSummaryResponse:
+    record = _get_saved_trip_record_or_raise(db, trip_id)
+    return _build_saved_trip_response(record)
+
+
+def list_trip_versions(
+    db: Session,
+    trip_id: str,
+    limit: int = 50,
+) -> TripVersionListResponse:
+    _get_saved_trip_record_or_raise(db, trip_id)
+
+    records = (
+        db.query(ItineraryVersionRecord)
+        .filter(ItineraryVersionRecord.trip_id == trip_id)
+        .order_by(desc(ItineraryVersionRecord.version_number), desc(ItineraryVersionRecord.id))
+        .limit(limit)
+        .all()
+    )
+
+    return TripVersionListResponse(
+        trip_id=trip_id,
+        total=len(records),
+        items=[_build_trip_version_response(record) for record in records],
+    )
+
+
+def create_trip_version_snapshot(
+    db: Session,
+    trip_id: str,
+    payload: TripVersionSnapshotRequest,
+) -> TripVersionResponse:
+    saved_trip = _get_saved_trip_record_or_raise(db, trip_id)
+
+    if payload.parsed_constraints is not None:
+        saved_trip.current_parsed_constraints = _parsed_constraints_to_json(payload.parsed_constraints)
+    if payload.candidate_places is not None:
+        saved_trip.current_candidate_places = _candidate_places_to_json(payload.candidate_places)
+    if payload.itinerary is not None:
+        saved_trip.current_itinerary = list(payload.itinerary)
+    if payload.itinerary_skeleton is not None:
+        saved_trip.current_itinerary_skeleton = _day_plans_to_json(payload.itinerary_skeleton)
+    if payload.status is not None:
+        saved_trip.status = payload.status
+
+    version_record = _build_version_record_from_saved_trip(
+        saved_trip=saved_trip,
+        snapshot_reason=payload.snapshot_reason,
+    )
+
+    db.add(saved_trip)
+    db.add(version_record)
+    db.commit()
+    db.refresh(version_record)
+
+    return _build_trip_version_response(version_record)
+
+
+def create_trip_signal(
+    db: Session,
+    trip_id: str,
+    payload: TripSignalCreateRequest,
+) -> TripSignalResponse:
+    saved_trip = _get_saved_trip_record_or_raise(db, trip_id)
+
+    signal_record = TripSignalRecord(
+        signal_id=f"signal_{uuid4().hex}",
+        trip_id=saved_trip.trip_id,
+        traveller_id=saved_trip.traveller_id,
+        planning_session_id=saved_trip.planning_session_id,
+        signal_type=payload.signal_type,
+        location_id=payload.location_id,
+        day_number=payload.day_number,
+        slot_type=payload.slot_type,
+        payload=dict(payload.payload or {}),
+    )
+
+    current_selected_places_count = saved_trip.selected_places_count or 0
+    current_skipped_recommendations_count = saved_trip.skipped_recommendations_count or 0
+    current_replaced_slots_count = saved_trip.replaced_slots_count or 0
+
+    if payload.signal_type == "selected_place":
+        saved_trip.selected_places_count = current_selected_places_count + 1
+    elif payload.signal_type == "skipped_recommendation":
+        saved_trip.skipped_recommendations_count = current_skipped_recommendations_count + 1
+    elif payload.signal_type == "replaced_slot":
+        saved_trip.replaced_slots_count = current_replaced_slots_count + 1
+
+    db.add(saved_trip)
+    db.add(signal_record)
+    db.commit()
+    db.refresh(signal_record)
+
+    return _build_trip_signal_response(signal_record)
+
+
+def list_trip_signals(
+    db: Session,
+    trip_id: str,
+    limit: int = 100,
+) -> TripSignalListResponse:
+    _get_saved_trip_record_or_raise(db, trip_id)
+
+    records = (
+        db.query(TripSignalRecord)
+        .filter(TripSignalRecord.trip_id == trip_id)
+        .order_by(desc(TripSignalRecord.created_at), desc(TripSignalRecord.id))
+        .limit(limit)
+        .all()
+    )
+
+    return TripSignalListResponse(
+        trip_id=trip_id,
+        total=len(records),
+        items=[_build_trip_signal_response(record) for record in records],
     )
