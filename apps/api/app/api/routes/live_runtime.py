@@ -11,6 +11,11 @@ from app.schemas.live_runtime import (
     LiveRuntimeOrchestrateResponse,
     LiveTripContextResponse,
     LiveTripContextUpsertRequest,
+    ProactiveAlertListResponse,
+    ProactiveAlertResolutionRequest,
+    ProactiveAlertResponse,
+    ProactiveMonitorInspectRequest,
+    ProactiveMonitorInspectResponse,
 )
 from app.services.live_runtime_service import (
     get_graph_run,
@@ -20,6 +25,12 @@ from app.services.live_runtime_service import (
     stream_live_runtime,
     upsert_live_trip_context,
     write_live_action_to_memory,
+)
+
+from app.services.proactive_notification_service import (
+    inspect_active_trip_alerts,
+    list_proactive_alerts,
+    resolve_proactive_alert,
 )
 
 router = APIRouter(prefix="/live-runtime", tags=["live-runtime"])
@@ -61,6 +72,50 @@ def write_live_action(
     try:
         try:
             return write_live_action_to_memory(db, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+@router.post("/monitor/inspect", response_model=ProactiveMonitorInspectResponse)
+def inspect_trip_proactively(
+    payload: ProactiveMonitorInspectRequest,
+) -> ProactiveMonitorInspectResponse:
+    db = get_db_session()
+    try:
+        try:
+            return inspect_active_trip_alerts(db, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+
+@router.get("/alerts/{trip_id}", response_model=ProactiveAlertListResponse)
+def get_proactive_alerts(
+    trip_id: str,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=300),
+) -> ProactiveAlertListResponse:
+    db = get_db_session()
+    try:
+        try:
+            return list_proactive_alerts(db, trip_id=trip_id, status=status, limit=limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        db.close()
+
+
+@router.post("/alerts/{alert_id}/resolve", response_model=ProactiveAlertResponse)
+def resolve_alert(
+    alert_id: str,
+    payload: ProactiveAlertResolutionRequest,
+) -> ProactiveAlertResponse:
+    db = get_db_session()
+    try:
+        try:
+            return resolve_proactive_alert(db, alert_id=alert_id, payload=payload)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
     finally:

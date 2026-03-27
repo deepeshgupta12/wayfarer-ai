@@ -17,6 +17,15 @@ LiveActionType = Literal[
     "gem_skipped",
     "gem_accepted",
 ]
+ProactiveAlertSeverity = Literal["low", "medium", "high"]
+ProactiveAlertType = Literal[
+    "signal_blocker",
+    "closure_risk",
+    "quality_risk",
+    "timing_conflict",
+    "fallback_gap",
+]
+ProactiveAlertStatus = Literal["generated", "resolved", "ignored"]
 
 
 class LiveGPSContext(BaseModel):
@@ -159,3 +168,59 @@ class LiveRuntimeOrchestrateRequest(BaseModel):
 class LiveRuntimeOrchestrateResponse(BaseModel):
     run: AgentGraphRunResponse
     live_context: LiveTripContextResponse | None = None
+
+
+class ProactiveAlertResponse(BaseModel):
+    alert_id: str
+    trip_id: str
+    traveller_id: str
+    planning_session_id: str | None = None
+    source_surface: str
+    alert_type: str
+    status: str
+    severity: str
+    day_number: int | None = None
+    slot_type: str | None = None
+    location_id: str | None = None
+    location_name: str | None = None
+    title: str
+    message: str
+    alternatives: list[dict[str, Any]] = Field(default_factory=list)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    freshness_payload: dict[str, Any] = Field(default_factory=dict)
+    resolution_payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+
+
+class ProactiveMonitorInspectRequest(BaseModel):
+    traveller_id: str = Field(..., min_length=1)
+    trip_id: str = Field(..., min_length=1)
+    planning_session_id: str | None = Field(default=None, min_length=1)
+    source_surface: str = Field(default="proactive_monitor")
+    current_day_only: bool = False
+    max_days_to_check: int = Field(default=2, ge=1, le=7)
+
+
+class ProactiveMonitorInspectResponse(BaseModel):
+    trip_id: str
+    traveller_id: str
+    total: int
+    generated_count: int
+    open_alert_count: int
+    alerts: list[ProactiveAlertResponse] = Field(default_factory=list)
+    checked_at: datetime
+
+
+class ProactiveAlertListResponse(BaseModel):
+    trip_id: str
+    total: int
+    items: list[ProactiveAlertResponse] = Field(default_factory=list)
+
+
+class ProactiveAlertResolutionRequest(BaseModel):
+    status: Literal["resolved", "ignored"]
+    source_surface: str = Field(default="proactive_monitor")
+    resolution_reason: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)

@@ -15,6 +15,7 @@ from app.models import (
     ItineraryVersionRecord,
     LocationRelationRecord,
     PlaceEmbeddingRecord,
+    ProactiveAlertRecord,
     ReviewIntelligenceRecord,
     SavedTripRecord,
     TravellerMemoryRecord,
@@ -172,6 +173,7 @@ def _ensure_review_intelligence_step2_columns() -> None:
         for statement in post_statements:
             connection.execute(text(statement))
 
+
 def _ensure_step5_comparison_context_columns() -> None:
     inspector = inspect(engine)
     statements: list[str] = []
@@ -208,6 +210,7 @@ def _ensure_step5_comparison_context_columns() -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
 
 def _ensure_step6_versioning_and_history_columns() -> None:
     inspector = inspect(engine)

@@ -799,6 +799,73 @@ class GooglePlacesClient:
         if open_now_only:
             parsed = [item for item in parsed if item.get("open_now") is not False]
         return parsed[:limit]
+    
+    def get_place_freshness(
+        self,
+        *,
+        location_id: str | None,
+        name: str | None,
+        city: str | None,
+        country: str | None,
+    ) -> dict[str, object]:
+        catalog = self._build_stub_nearby_catalog()
+
+        if location_id and "closed" in location_id.lower():
+            return {
+                "location_id": location_id,
+                "name": name,
+                "city": city,
+                "country": country,
+                "operational_status": "temporarily_closed",
+                "open_now": False,
+                "quality_risk_score": 0.2,
+                "quality_flags": [],
+                "estimated_visit_minutes": 60,
+                "freshness_source": "stub",
+                "summary": "Recent place freshness indicates the place appears temporarily closed.",
+            }
+
+        for city_items in catalog.values():
+            for item in city_items:
+                if location_id and str(item.get("location_id")) == location_id:
+                    quality_flags: list[str] = []
+                    quality_risk_score = 0.15
+
+                    vibe_tags = [str(tag).lower() for tag in list(item.get("vibe_tags") or [])]
+                    if "nightlife" in vibe_tags:
+                        quality_flags.append("peak_time_variability")
+                        quality_risk_score = max(quality_risk_score, 0.35)
+                    if "market" in str(item.get("category") or "").lower():
+                        quality_flags.append("crowd_spike_risk")
+                        quality_risk_score = max(quality_risk_score, 0.4)
+
+                    return {
+                        "location_id": location_id,
+                        "name": item.get("name"),
+                        "city": item.get("city"),
+                        "country": item.get("country"),
+                        "operational_status": "open",
+                        "open_now": item.get("open_now"),
+                        "quality_risk_score": round(quality_risk_score, 2),
+                        "quality_flags": quality_flags,
+                        "estimated_visit_minutes": 60 if item.get("category") in {"market", "park"} else 90,
+                        "freshness_source": "stub",
+                        "summary": "Place freshness was re-evaluated using the current place metadata layer.",
+                    }
+
+        return {
+            "location_id": location_id,
+            "name": name,
+            "city": city,
+            "country": country,
+            "operational_status": "unknown",
+            "open_now": None,
+            "quality_risk_score": 0.25,
+            "quality_flags": ["limited_live_metadata"],
+            "estimated_visit_minutes": 90,
+            "freshness_source": "fallback",
+            "summary": "Only partial freshness metadata is available for this place right now.",
+        }
 
     def search_nearby_places(
         self,

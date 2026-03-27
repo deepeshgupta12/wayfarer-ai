@@ -31,8 +31,10 @@ from app.schemas.live_runtime import (
     LiveRuntimeOrchestrateResponse,
     LiveTripContextResponse,
     LiveTripContextUpsertRequest,
+    ProactiveMonitorInspectRequest,
 )
 from app.services.nearby_discovery_service import discover_context_aware_nearby_places
+from app.services.proactive_notification_service import inspect_active_trip_alerts
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 
 _CHECKPOINTER = MemorySaver()
@@ -54,6 +56,7 @@ class LiveGraphState(TypedDict, total=False):
     supervisor: dict[str, Any]
     routed_agent: str
     result: dict[str, Any]
+    proactive_alerts: list[dict[str, Any]]
 
 
 def _now() -> datetime:
@@ -955,13 +958,16 @@ def _build_nearby_request_from_state(
 def _infer_supervisor_route(message: str, state: LiveGraphState) -> tuple[str, str]:
     lowered = message.lower()
 
+    if re.search(r"\b(monitor|monitoring|check my plan|check the plan|active itinerary|watch for issues|proactive)\b", lowered):
+        return "proactive_monitor_agent", "Detected proactive itinerary monitoring intent."
+
     if re.search(r"\b(hidden gem|underrated|offbeat|local spot|gem)\b", lowered):
         return "gem_agent", "Detected hidden-gem or underrated-place intent."
 
     if re.search(r"\b(closed|unavailable|not available|reject|rejected|another option|alternative)\b", lowered):
         return "live_replan_agent", "Detected live disruption or replacement intent."
 
-    if re.search(r"\b(alert|anything changed|check my plan|conflict|timing issue|issue)\b", lowered):
+    if re.search(r"\b(alert|anything changed|conflict|timing issue|issue)\b", lowered):
         return "alert_agent", "Detected active-trip alert or itinerary-health-check intent."
 
     live_context = dict(state.get("live_context") or {})
@@ -1199,6 +1205,48 @@ def _live_replan_agent_node(db: Session, state: LiveGraphState) -> LiveGraphStat
 
     return {"result": result}
 
+def _proactive_monitor_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
+    inspect_response = inspect_active_trip_alerts(
+        db,
+        ProactiveMonitorInspectRequest(
+            traveller_id=state["traveller_id"],
+            trip_id=state["trip_id"],
+            planning_session_id=state.get("planning_session_id"),
+            source_surface="live_runtime_graph",
+            current_day_only=False,
+            max_days_to_check=2,
+        ),
+    )
+
+    alerts = [item.model_dump(mode="json") for item in inspect_response.alerts]
+
+    result = {
+        "agent": "proactive_monitor_agent",
+        "title": "Active itinerary monitoring",
+        "message": "I inspected the active itinerary for closure, quality, timing, and fallback risks before the traveller manually encounters them.",
+        "alerts": alerts,
+        "generated_count": inspect_response.generated_count,
+        "open_alert_count": inspect_response.open_alert_count,
+        "checked_at": inspect_response.checked_at.isoformat(),
+    }
+
+    _record_graph_event(
+        db,
+        run_id=state["run_id"],
+        traveller_id=state["traveller_id"],
+        trip_id=state["trip_id"],
+        event_type="agent_completed",
+        node_name="proactive_monitor_agent",
+        payload={
+            "generated_count": inspect_response.generated_count,
+            "open_alert_count": inspect_response.open_alert_count,
+        },
+    )
+
+    return {
+        "proactive_alerts": alerts,
+        "result": result,
+    }
 
 def _finalize_node(db: Session, state: LiveGraphState) -> LiveGraphState:
     run_record = _get_graph_run_or_raise(db, state["run_id"])
@@ -1239,6 +1287,7 @@ def _build_graph(db: Session):
     graph.add_node("nearby_agent", lambda state: _nearby_agent_node(db, state))
     graph.add_node("gem_agent", lambda state: _gem_agent_node(db, state))
     graph.add_node("alert_agent", lambda state: _alert_agent_node(db, state))
+    graph.add_node("proactive_monitor_agent", lambda state: _proactive_monitor_agent_node(db, state))
     graph.add_node("live_replan_agent", lambda state: _live_replan_agent_node(db, state))
     graph.add_node("finalize", lambda state: _finalize_node(db, state))
 
@@ -1251,12 +1300,14 @@ def _build_graph(db: Session):
             "nearby_agent": "nearby_agent",
             "gem_agent": "gem_agent",
             "alert_agent": "alert_agent",
+            "proactive_monitor_agent": "proactive_monitor_agent",
             "live_replan_agent": "live_replan_agent",
         },
     )
     graph.add_edge("nearby_agent", "finalize")
     graph.add_edge("gem_agent", "finalize")
     graph.add_edge("alert_agent", "finalize")
+    graph.add_edge("proactive_monitor_agent", "finalize")
     graph.add_edge("live_replan_agent", "finalize")
     graph.add_edge("finalize", END)
 
