@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -213,3 +213,76 @@ class HiddenGemDiscoveryResponse(BaseModel):
     destination: str
     total: int
     gems: list[HiddenGemRecommendation] = Field(default_factory=list)
+
+
+NearbyTransportMode = Literal["walk", "transit", "drive"]
+
+class NearbyDiscoveryContext(BaseModel):
+    traveller_id: str | None = Field(default=None, min_length=1)
+    trip_id: str | None = Field(default=None, min_length=1)
+    planning_session_id: str | None = Field(default=None, min_length=1)
+    intent_hint: str | None = None
+    transport_mode: NearbyTransportMode = Field(default="walk")
+    budget: str | None = None
+    current_day_number: int | None = Field(default=None, ge=1, le=30)
+    current_slot_type: str | None = None
+    available_minutes: int | None = Field(default=None, ge=1, le=1440)
+    current_place_name: str | None = None
+    current_city: str | None = None
+    current_country: str | None = None
+    open_now_only: bool = False
+    exclude_location_ids: list[str] = Field(default_factory=list)
+    rejected_location_ids: list[str] = Field(default_factory=list)
+    closed_location_ids: list[str] = Field(default_factory=list)
+    unavailable_location_ids: list[str] = Field(default_factory=list)
+    context_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class NearbyDiscoveryRequest(BaseModel):
+    latitude: float
+    longitude: float
+    city: str | None = None
+    country: str | None = None
+    query: str | None = None
+    traveller_id: str | None = Field(default=None, min_length=1)
+    traveller_type: TravellerType | None = None
+    interests: list[str] = Field(default_factory=list)
+    budget: str = Field(default="midrange")
+    limit: int = Field(default=5, ge=1, le=10)
+    starting_radius_meters: int = Field(default=800, ge=100, le=5000)
+    max_radius_meters: int = Field(default=3000, ge=500, le=10000)
+    adaptive_radius: bool = True
+    source_surface: str = Field(default="nearby")
+    context: NearbyDiscoveryContext | None = None
+
+
+class NearbyPlaceRecommendation(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    rating: float
+    review_count: int
+    distance_meters: int
+    walking_minutes: int | None = None
+    price_level: str | None = None
+    open_now: bool | None = None
+    source: str = "nearby"
+    live_score: float
+    fit_reasons: list[str] = Field(default_factory=list)
+    why_recommended: str
+    walking_friendly: bool = False
+
+
+class NearbyDiscoveryResponse(BaseModel):
+    city: str | None = None
+    country: str | None = None
+    query: str | None = None
+    total: int
+    radius_used_meters: int
+    search_expansions: list[int] = Field(default_factory=list)
+    blocked_location_ids: list[str] = Field(default_factory=list)
+    recommendations: list[NearbyPlaceRecommendation] = Field(default_factory=list)
+    walking_alternatives: list[NearbyPlaceRecommendation] = Field(default_factory=list)
+    fallbacks: list[NearbyPlaceRecommendation] = Field(default_factory=list)

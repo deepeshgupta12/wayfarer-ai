@@ -20,6 +20,7 @@ from app.models.live_runtime import (
 )
 from app.models.saved_trip import SavedTripRecord, TripSignalRecord
 from app.models.traveller_memory import TravellerMemoryRecord
+from app.schemas.destination import NearbyDiscoveryContext, NearbyDiscoveryRequest
 from app.schemas.live_runtime import (
     AgentGraphEventListResponse,
     AgentGraphEventResponse,
@@ -31,6 +32,7 @@ from app.schemas.live_runtime import (
     LiveTripContextResponse,
     LiveTripContextUpsertRequest,
 )
+from app.services.nearby_discovery_service import discover_context_aware_nearby_places
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 
 _CHECKPOINTER = MemorySaver()
@@ -866,6 +868,89 @@ def _build_replan_alternatives(state: LiveGraphState) -> list[dict[str, Any]]:
 
     return filtered[:_MAX_NEARBY_RESULTS]
 
+def _signal_location_ids_by_type(
+    recent_signals: list[dict[str, Any]],
+    signal_types: set[str],
+) -> list[str]:
+    ids: list[str] = []
+    for signal in recent_signals:
+        if signal.get("signal_type") in signal_types and signal.get("location_id"):
+            ids.append(str(signal["location_id"]))
+    return ids
+
+
+def _build_nearby_request_from_state(
+    state: LiveGraphState,
+    *,
+    query: str,
+    open_now_only: bool = False,
+    extra_blocked_ids: set[str] | None = None,
+) -> NearbyDiscoveryRequest:
+    saved_trip = dict(state.get("saved_trip") or {})
+    live_context = dict(state.get("live_context") or {})
+    recent_signals = list(state.get("recent_signals") or [])
+
+    parsed_constraints = dict(saved_trip.get("parsed_constraints") or {})
+    blocked_ids = set(_excluded_location_ids(recent_signals))
+    blocked_ids.update(extra_blocked_ids or set())
+
+    return NearbyDiscoveryRequest(
+        latitude=float(live_context.get("latitude") or 0.0),
+        longitude=float(live_context.get("longitude") or 0.0),
+        city=live_context.get("current_city") or saved_trip.get("destination"),
+        country=live_context.get("current_country"),
+        query=query,
+        traveller_id=str(state.get("traveller_id") or "") or None,
+        traveller_type=parsed_constraints.get("group_type"),
+        interests=list(parsed_constraints.get("interests") or []),
+        budget=str(
+            live_context.get("budget_level_override")
+            or parsed_constraints.get("budget")
+            or "midrange"
+        ),
+        limit=_MAX_NEARBY_RESULTS,
+        starting_radius_meters=800 if live_context.get("transport_mode") in {None, "walk"} else 1500,
+        max_radius_meters=3000 if live_context.get("transport_mode") in {None, "walk"} else 5000,
+        adaptive_radius=True,
+        source_surface="live_runtime",
+        context=NearbyDiscoveryContext(
+            traveller_id=str(state.get("traveller_id") or "") or None,
+            trip_id=str(state.get("trip_id") or "") or None,
+            planning_session_id=state.get("planning_session_id"),
+            intent_hint=live_context.get("intent_hint"),
+            transport_mode=str(live_context.get("transport_mode") or "walk"),
+            budget=str(
+                live_context.get("budget_level_override")
+                or parsed_constraints.get("budget")
+                or "midrange"
+            ),
+            current_day_number=live_context.get("current_day_number"),
+            current_slot_type=live_context.get("current_slot_type"),
+            available_minutes=live_context.get("available_minutes"),
+            current_place_name=live_context.get("current_place_name"),
+            current_city=live_context.get("current_city"),
+            current_country=live_context.get("current_country"),
+            open_now_only=open_now_only,
+            exclude_location_ids=sorted(blocked_ids),
+            rejected_location_ids=_signal_location_ids_by_type(
+                recent_signals,
+                {"nearby_rejected", "gem_skipped"},
+            ),
+            closed_location_ids=_signal_location_ids_by_type(
+                recent_signals,
+                {"place_closed"},
+            ),
+            unavailable_location_ids=_signal_location_ids_by_type(
+                recent_signals,
+                {"place_unavailable"},
+            ),
+            context_payload={
+                "saved_trip": saved_trip,
+                "recent_signals": recent_signals,
+            },
+        ),
+    )
+
 
 def _infer_supervisor_route(message: str, state: LiveGraphState) -> tuple[str, str]:
     lowered = message.lower()
@@ -971,14 +1056,36 @@ def _supervisor_node(db: Session, state: LiveGraphState) -> LiveGraphState:
 
 
 def _nearby_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
-    recommendations = _nearby_candidates_from_state(state)
+    live_context = dict(state.get("live_context") or {})
 
-    result = {
-        "agent": "nearby_agent",
-        "title": "Best live nearby-fit options",
-        "message": "These options are the strongest live fit from your active trip context and existing itinerary pool.",
-        "recommendations": recommendations,
-    }
+    if live_context.get("latitude") is None or live_context.get("longitude") is None:
+        recommendations = _nearby_candidates_from_state(state)
+        result = {
+            "agent": "nearby_agent",
+            "title": "Best live nearby-fit options",
+            "message": "GPS was missing, so these options were ranked from your active trip context and itinerary pool only.",
+            "recommendations": recommendations,
+            "walking_alternatives": [],
+            "fallbacks": [],
+            "radius_used_meters": 0,
+            "search_expansions": [],
+            "blocked_location_ids": sorted(_excluded_location_ids(list(state.get("recent_signals") or []))),
+        }
+    else:
+        nearby_request = _build_nearby_request_from_state(
+            state,
+            query=state["message"],
+            open_now_only=False,
+        )
+        nearby_response = discover_context_aware_nearby_places(db, nearby_request)
+        payload = nearby_response.model_dump(mode="json")
+
+        result = {
+            "agent": "nearby_agent",
+            "title": "Best live nearby-fit options",
+            "message": "These options were ranked using your live location, travel context, budget, persona fit, and active trip state.",
+            **payload,
+        }
 
     _record_graph_event(
         db,
@@ -987,7 +1094,7 @@ def _nearby_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
         trip_id=state["trip_id"],
         event_type="agent_completed",
         node_name="nearby_agent",
-        payload={"recommendation_count": len(recommendations)},
+        payload={"recommendation_count": len(result.get("recommendations") or [])},
     )
 
     return {"result": result}
@@ -1040,16 +1147,45 @@ def _alert_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
 
 
 def _live_replan_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
-    alternatives = _build_replan_alternatives(state)
+    live_context = dict(state.get("live_context") or {})
     blocker = _latest_live_blocker_signal(state)
+    blocked_location_id = str(blocker.get("location_id") or "") if blocker else ""
 
-    result = {
-        "agent": "live_replan_agent",
-        "title": "Best live alternatives",
-        "message": "I filtered your current live context and recent trip signals to surface the strongest next options.",
-        "blocked_signal": blocker,
-        "alternatives": alternatives,
-    }
+    if live_context.get("latitude") is None or live_context.get("longitude") is None:
+        alternatives = _build_replan_alternatives(state)
+        result = {
+            "agent": "live_replan_agent",
+            "title": "Best live alternatives",
+            "message": "I filtered your current trip context and recent live blockers to surface the best next options, using itinerary context because exact GPS was missing.",
+            "blocked_signal": blocker,
+            "alternatives": alternatives,
+            "walking_alternatives": [],
+            "fallbacks": [],
+            "radius_used_meters": 0,
+            "search_expansions": [],
+        }
+    else:
+        nearby_request = _build_nearby_request_from_state(
+            state,
+            query=state["message"],
+            open_now_only=True,
+            extra_blocked_ids={blocked_location_id} if blocked_location_id else set(),
+        )
+        nearby_response = discover_context_aware_nearby_places(db, nearby_request)
+
+        alternatives = nearby_response.recommendations or nearby_response.fallbacks
+        result = {
+            "agent": "live_replan_agent",
+            "title": "Best live alternatives",
+            "message": "I re-ranked nearby options with stronger weight on walkability, live availability, and your current trip context.",
+            "blocked_signal": blocker,
+            "alternatives": [item.model_dump(mode="json") for item in alternatives],
+            "walking_alternatives": [item.model_dump(mode="json") for item in nearby_response.walking_alternatives],
+            "fallbacks": [item.model_dump(mode="json") for item in nearby_response.fallbacks],
+            "radius_used_meters": nearby_response.radius_used_meters,
+            "search_expansions": nearby_response.search_expansions,
+            "blocked_location_ids": nearby_response.blocked_location_ids,
+        }
 
     _record_graph_event(
         db,
@@ -1058,7 +1194,7 @@ def _live_replan_agent_node(db: Session, state: LiveGraphState) -> LiveGraphStat
         trip_id=state["trip_id"],
         event_type="agent_completed",
         node_name="live_replan_agent",
-        payload={"alternative_count": len(alternatives)},
+        payload={"alternative_count": len(result.get("alternatives") or [])},
     )
 
     return {"result": result}

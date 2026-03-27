@@ -11,20 +11,23 @@ from app.schemas.destination import (
     DestinationPlaceIndexResponse,
     DestinationSearchRequest,
     DestinationSearchResponse,
-    SimilarPlaceRequest,
-    SimilarPlaceResponse,
     HiddenGemDiscoveryRequest,
     HiddenGemDiscoveryResponse,
+    NearbyDiscoveryRequest,
+    NearbyDiscoveryResponse,
+    SimilarPlaceRequest,
+    SimilarPlaceResponse,
 )
 from app.services.destination_service import (
     build_destination_guide,
     compare_destinations,
+    discover_hidden_gems,
     get_similar_places,
     index_destination_places,
     search_destinations,
     stream_destination_guide,
-    discover_hidden_gems,
 )
+from app.services.nearby_discovery_service import discover_context_aware_nearby_places
 
 router = APIRouter(prefix="/destinations", tags=["destinations"])
 
@@ -49,6 +52,16 @@ def discover_destination_hidden_gems(
     db = get_db_session()
     try:
         return discover_hidden_gems(db, payload)
+    finally:
+        db.close()
+
+@router.post("/nearby", response_model=NearbyDiscoveryResponse)
+def discover_nearby_places(
+    payload: NearbyDiscoveryRequest,
+) -> NearbyDiscoveryResponse:
+    db = get_db_session()
+    try:
+        return discover_context_aware_nearby_places(db, payload)
     finally:
         db.close()
 

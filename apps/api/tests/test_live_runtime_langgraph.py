@@ -143,6 +143,9 @@ def test_live_runtime_orchestrate_routes_nearby_agent_and_persists_run_events() 
     assert payload["run"]["routed_agent"] == "nearby_agent"
     assert payload["run"]["final_output"]["agent"] == "nearby_agent"
     assert len(payload["run"]["final_output"]["recommendations"]) >= 1
+    assert payload["run"]["final_output"]["radius_used_meters"] >= 800
+    assert len(payload["run"]["final_output"]["search_expansions"]) >= 1
+    assert "walking_alternatives" in payload["run"]["final_output"]
 
     run_id = payload["run"]["run_id"]
 
@@ -362,6 +365,9 @@ def test_live_runtime_replan_agent_uses_recent_live_blocker_signal() -> None:
     assert payload["run"]["routed_agent"] == "live_replan_agent"
     assert payload["run"]["final_output"]["agent"] == "live_replan_agent"
     assert len(payload["run"]["final_output"]["alternatives"]) >= 1
+    assert payload["run"]["final_output"]["radius_used_meters"] >= 800
+    assert len(payload["run"]["final_output"]["search_expansions"]) >= 1
+    assert "walking_alternatives" in payload["run"]["final_output"]
 
 
 def test_live_runtime_stream_returns_graph_updates_and_final() -> None:

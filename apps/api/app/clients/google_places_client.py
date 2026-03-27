@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import httpx
@@ -326,3 +327,524 @@ class GooglePlacesClient:
             return self._live_destination_context(destination)
         except Exception:
             return self._stub_destination_context(destination)
+        
+    def _build_stub_nearby_catalog(self) -> dict[str, list[dict[str, object]]]:
+        return {
+            "kyoto": [
+                {
+                    "location_id": "ta_kyoto_nishiki_001",
+                    "name": "Nishiki Market",
+                    "city": "Kyoto",
+                    "country": "Japan",
+                    "category": "market",
+                    "rating": 4.6,
+                    "review_count": 6250,
+                    "latitude": 35.0050,
+                    "longitude": 135.7640,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["food", "local", "lunch"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_kyoto_pontocho_001",
+                    "name": "Pontocho",
+                    "city": "Kyoto",
+                    "country": "Japan",
+                    "category": "neighborhood",
+                    "rating": 4.6,
+                    "review_count": 5140,
+                    "latitude": 35.0048,
+                    "longitude": 135.7706,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["evening", "food", "ambience"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_kyoto_gion_001",
+                    "name": "Gion",
+                    "city": "Kyoto",
+                    "country": "Japan",
+                    "category": "neighborhood",
+                    "rating": 4.8,
+                    "review_count": 8750,
+                    "latitude": 35.0037,
+                    "longitude": 135.7788,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["culture", "heritage", "evening"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_kyoto_higashiyama_001",
+                    "name": "Higashiyama",
+                    "city": "Kyoto",
+                    "country": "Japan",
+                    "category": "district",
+                    "rating": 4.8,
+                    "review_count": 8120,
+                    "latitude": 34.9965,
+                    "longitude": 135.7786,
+                    "price_level": "budget",
+                    "open_now": True,
+                    "vibe_tags": ["culture", "morning", "heritage"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_kyoto_arashiyama_001",
+                    "name": "Arashiyama",
+                    "city": "Kyoto",
+                    "country": "Japan",
+                    "category": "district",
+                    "rating": 4.7,
+                    "review_count": 7680,
+                    "latitude": 35.0170,
+                    "longitude": 135.6771,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["nature", "scenic", "relaxed"],
+                    "source": "google_stub_nearby",
+                },
+            ],
+            "tokyo": [
+                {
+                    "location_id": "ta_tokyo_tsukiji_001",
+                    "name": "Tsukiji Outer Market",
+                    "city": "Tokyo",
+                    "country": "Japan",
+                    "category": "market",
+                    "rating": 4.6,
+                    "review_count": 6890,
+                    "latitude": 35.6655,
+                    "longitude": 139.7708,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["food", "lunch", "local"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_tokyo_kagurazaka_001",
+                    "name": "Kagurazaka",
+                    "city": "Tokyo",
+                    "country": "Japan",
+                    "category": "neighborhood",
+                    "rating": 4.6,
+                    "review_count": 4320,
+                    "latitude": 35.7017,
+                    "longitude": 139.7393,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["food", "ambience", "evening"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_tokyo_asakusa_001",
+                    "name": "Asakusa",
+                    "city": "Tokyo",
+                    "country": "Japan",
+                    "category": "district",
+                    "rating": 4.7,
+                    "review_count": 10240,
+                    "latitude": 35.7148,
+                    "longitude": 139.7967,
+                    "price_level": "budget",
+                    "open_now": True,
+                    "vibe_tags": ["culture", "heritage", "morning"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_tokyo_ueno_park_001",
+                    "name": "Ueno Park",
+                    "city": "Tokyo",
+                    "country": "Japan",
+                    "category": "park",
+                    "rating": 4.6,
+                    "review_count": 7420,
+                    "latitude": 35.7156,
+                    "longitude": 139.7730,
+                    "price_level": "budget",
+                    "open_now": True,
+                    "vibe_tags": ["nature", "relaxed", "afternoon"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_tokyo_shibuya_001",
+                    "name": "Shibuya",
+                    "city": "Tokyo",
+                    "country": "Japan",
+                    "category": "district",
+                    "rating": 4.7,
+                    "review_count": 11120,
+                    "latitude": 35.6595,
+                    "longitude": 139.7005,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["nightlife", "evening", "energy"],
+                    "source": "google_stub_nearby",
+                },
+            ],
+            "lisbon": [
+                {
+                    "location_id": "ta_lisbon_alfama_001",
+                    "name": "Alfama",
+                    "city": "Lisbon",
+                    "country": "Portugal",
+                    "category": "neighborhood",
+                    "rating": 4.7,
+                    "review_count": 6140,
+                    "latitude": 38.7120,
+                    "longitude": -9.1308,
+                    "price_level": "budget",
+                    "open_now": True,
+                    "vibe_tags": ["culture", "heritage", "walkable"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_lisbon_chiado_001",
+                    "name": "Chiado",
+                    "city": "Lisbon",
+                    "country": "Portugal",
+                    "category": "neighborhood",
+                    "rating": 4.6,
+                    "review_count": 5780,
+                    "latitude": 38.7107,
+                    "longitude": -9.1435,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["coffee", "food", "shopping"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_lisbon_bairro_alto_001",
+                    "name": "Bairro Alto",
+                    "city": "Lisbon",
+                    "country": "Portugal",
+                    "category": "district",
+                    "rating": 4.6,
+                    "review_count": 5510,
+                    "latitude": 38.7130,
+                    "longitude": -9.1455,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["nightlife", "evening", "ambience"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_lisbon_lx_factory_001",
+                    "name": "LX Factory",
+                    "city": "Lisbon",
+                    "country": "Portugal",
+                    "category": "creative_district",
+                    "rating": 4.5,
+                    "review_count": 3280,
+                    "latitude": 38.7037,
+                    "longitude": -9.1782,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["food", "shopping", "creative"],
+                    "source": "google_stub_nearby",
+                },
+            ],
+            "prague": [
+                {
+                    "location_id": "ta_prague_old_town_001",
+                    "name": "Old Town",
+                    "city": "Prague",
+                    "country": "Czechia",
+                    "category": "district",
+                    "rating": 4.8,
+                    "review_count": 6680,
+                    "latitude": 50.0870,
+                    "longitude": 14.4208,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["culture", "heritage", "walkable"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_prague_mala_strana_001",
+                    "name": "Mala Strana",
+                    "city": "Prague",
+                    "country": "Czechia",
+                    "category": "district",
+                    "rating": 4.7,
+                    "review_count": 5320,
+                    "latitude": 50.0876,
+                    "longitude": 14.4042,
+                    "price_level": "midrange",
+                    "open_now": True,
+                    "vibe_tags": ["culture", "scenic", "evening"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_prague_vinohrady_001",
+                    "name": "Vinohrady",
+                    "city": "Prague",
+                    "country": "Czechia",
+                    "category": "neighborhood",
+                    "rating": 4.6,
+                    "review_count": 4010,
+                    "latitude": 50.0764,
+                    "longitude": 14.4472,
+                    "price_level": "budget",
+                    "open_now": True,
+                    "vibe_tags": ["coffee", "food", "local"],
+                    "source": "google_stub_nearby",
+                },
+                {
+                    "location_id": "ta_prague_letna_001",
+                    "name": "Letna Park",
+                    "city": "Prague",
+                    "country": "Czechia",
+                    "category": "park",
+                    "rating": 4.6,
+                    "review_count": 2890,
+                    "latitude": 50.0963,
+                    "longitude": 14.4237,
+                    "price_level": "budget",
+                    "open_now": True,
+                    "vibe_tags": ["nature", "relaxed", "afternoon"],
+                    "source": "google_stub_nearby",
+                },
+            ],
+        }
+
+    def _stub_nearby_places(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        city: str | None,
+        query: str | None,
+        radius_meters: int,
+        limit: int,
+        open_now_only: bool,
+    ) -> list[dict[str, object]]:
+        def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> int:
+            radius_earth_m = 6_371_000
+
+            phi1 = math.radians(lat1)
+            phi2 = math.radians(lat2)
+            delta_phi = math.radians(lat2 - lat1)
+            delta_lambda = math.radians(lon2 - lon1)
+
+            a = (
+                math.sin(delta_phi / 2) ** 2
+                + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+            )
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+            return int(round(radius_earth_m * c))
+
+        catalog = self._build_stub_nearby_catalog()
+        city_key = (city or "").strip().lower()
+
+        if city_key and city_key in catalog:
+            scoped = list(catalog[city_key])
+        else:
+            scoped = [item for items in catalog.values() for item in items]
+
+        lowered_query = (query or "").strip().lower()
+
+        if lowered_query:
+            filtered: list[dict[str, object]] = []
+            for item in scoped:
+                text_blob = " ".join(
+                    [
+                        str(item.get("name") or ""),
+                        str(item.get("category") or ""),
+                        " ".join(str(tag) for tag in list(item.get("vibe_tags") or [])),
+                    ]
+                ).lower()
+
+                if any(term in lowered_query for term in ["food", "eat", "lunch", "dinner", "coffee", "cafe"]):
+                    if any(term in text_blob for term in ["food", "market", "restaurant", "coffee", "cafe", "dining"]):
+                        filtered.append(item)
+                        continue
+
+                if any(term in lowered_query for term in ["culture", "heritage", "museum", "history", "temple"]):
+                    if any(term in text_blob for term in ["culture", "heritage", "historic", "district", "museum"]):
+                        filtered.append(item)
+                        continue
+
+                if any(term in lowered_query for term in ["nature", "park", "garden", "scenic"]):
+                    if any(term in text_blob for term in ["nature", "park", "garden", "scenic"]):
+                        filtered.append(item)
+                        continue
+
+                if any(term in lowered_query for term in ["nightlife", "bar", "evening", "late"]):
+                    if any(term in text_blob for term in ["nightlife", "bar", "evening", "ambience"]):
+                        filtered.append(item)
+                        continue
+
+                if lowered_query in text_blob:
+                    filtered.append(item)
+
+            if filtered:
+                scoped = filtered
+
+        ranked: list[tuple[int, dict[str, object]]] = []
+        for item in scoped:
+            distance_meters = haversine_meters(
+                latitude,
+                longitude,
+                float(item["latitude"]),
+                float(item["longitude"]),
+            )
+
+            if distance_meters > radius_meters:
+                continue
+
+            if open_now_only and item.get("open_now") is False:
+                continue
+
+            ranked.append((distance_meters, item))
+
+        ranked.sort(key=lambda row: row[0])
+
+        return [item for _, item in ranked[:limit]]
+
+    def _parse_live_nearby_places(
+        self,
+        payload: dict[str, Any],
+        *,
+        city: str | None,
+    ) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
+
+        for place in payload.get("places", []) or []:
+            location = place.get("location") or {}
+            display_name = str(place.get("displayName", {}).get("text", "")).strip()
+            place_id = str(place.get("id", "")).strip()
+
+            if not display_name or not place_id:
+                continue
+
+            results.append(
+                {
+                    "location_id": place_id,
+                    "name": display_name,
+                    "city": city or "Unknown",
+                    "country": "Unknown",
+                    "category": str(place.get("primaryType", "place")),
+                    "rating": float(place.get("rating", 4.4)),
+                    "review_count": int(place.get("userRatingCount", 0)),
+                    "latitude": float(location.get("latitude", 0.0)),
+                    "longitude": float(location.get("longitude", 0.0)),
+                    "price_level": str(place.get("priceLevel", "")).lower() or None,
+                    "open_now": (
+                        bool(place.get("currentOpeningHours", {}).get("openNow"))
+                        if place.get("currentOpeningHours") is not None
+                        else None
+                    ),
+                    "vibe_tags": [],
+                    "source": "google_live_nearby",
+                }
+            )
+
+        return results
+
+    def _live_nearby_places(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        city: str | None,
+        country: str | None,
+        query: str | None,
+        radius_meters: int,
+        limit: int,
+        open_now_only: bool,
+    ) -> list[dict[str, object]]:
+        url = f"{self.settings.google_places_base_url}/places:searchText"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": self.settings.google_places_api_key,
+            "X-Goog-FieldMask": (
+                "places.id,"
+                "places.displayName,"
+                "places.primaryType,"
+                "places.location,"
+                "places.rating,"
+                "places.userRatingCount,"
+                "places.currentOpeningHours,"
+                "places.priceLevel"
+            ),
+        }
+
+        city_text = city or ""
+        country_text = f", {country}" if country else ""
+        text_query = query or "good places"
+        body = {
+            "textQuery": f"{text_query} near {city_text}{country_text}".strip(),
+            "pageSize": min(limit, 20),
+            "locationBias": {
+                "circle": {
+                    "center": {
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    },
+                    "radius": float(radius_meters),
+                }
+            },
+        }
+
+        with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
+            response = client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
+
+        parsed = self._parse_live_nearby_places(payload, city=city)
+        if open_now_only:
+            parsed = [item for item in parsed if item.get("open_now") is not False]
+        return parsed[:limit]
+
+    def search_nearby_places(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        city: str | None,
+        country: str | None = None,
+        query: str | None = None,
+        radius_meters: int = 800,
+        limit: int = 10,
+        open_now_only: bool = False,
+    ) -> list[dict[str, object]]:
+        if not self.settings.google_places_api_key_configured:
+            return self._stub_nearby_places(
+                latitude=latitude,
+                longitude=longitude,
+                city=city,
+                query=query,
+                radius_meters=radius_meters,
+                limit=limit,
+                open_now_only=open_now_only,
+            )
+
+        try:
+            live_results = self._live_nearby_places(
+                latitude=latitude,
+                longitude=longitude,
+                city=city,
+                country=country,
+                query=query,
+                radius_meters=radius_meters,
+                limit=limit,
+                open_now_only=open_now_only,
+            )
+            if live_results:
+                return live_results
+        except Exception:
+            pass
+
+        return self._stub_nearby_places(
+            latitude=latitude,
+            longitude=longitude,
+            city=city,
+            query=query,
+            radius_meters=radius_meters,
+            limit=limit,
+            open_now_only=open_now_only,
+        )
