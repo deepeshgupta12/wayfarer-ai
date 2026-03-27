@@ -7,6 +7,7 @@ from app.api.routes.assistant import router as assistant_router
 from app.api.routes.destinations import router as destinations_router
 from app.api.routes.embeddings import router as embeddings_router
 from app.api.routes.health import router as health_router
+from app.api.routes.live_runtime import router as live_runtime_router
 from app.api.routes.persona import router as persona_router
 from app.api.routes.persona_embeddings import router as persona_embeddings_router
 from app.api.routes.providers import router as providers_router
@@ -61,6 +62,7 @@ app.include_router(persona_router)
 app.include_router(persona_embeddings_router)
 app.include_router(review_intelligence_router)
 app.include_router(assistant_router)
+app.include_router(live_runtime_router)
 app.include_router(destinations_router)
 app.include_router(traveller_memory_router)
 app.include_router(trip_plan_router)
