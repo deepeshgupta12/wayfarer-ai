@@ -188,6 +188,9 @@ def test_live_runtime_orchestrate_routes_gem_agent() -> None:
     assert payload["run"]["routed_agent"] == "gem_agent"
     assert payload["run"]["final_output"]["agent"] == "gem_agent"
     assert len(payload["run"]["final_output"]["gems"]) >= 1
+    assert "gem_reason" in payload["run"]["final_output"]["gems"][0]
+    assert "fit_reasons" in payload["run"]["final_output"]["gems"][0]
+    assert "underrated_signal" in payload["run"]["final_output"]["gems"][0]
 
 
 def test_live_action_writeback_persists_trip_signal_and_traveller_memory() -> None:
@@ -239,6 +242,52 @@ def test_live_action_writeback_persists_trip_signal_and_traveller_memory() -> No
 
     assert memory_payload["total"] >= 1
     assert memory_payload["items"][0]["event_type"] == "live_place_closed"
+
+def test_live_action_writeback_persists_gem_interactions() -> None:
+    client = get_test_client()
+
+    trip = _create_enriched_saved_trip(
+        client,
+        traveller_id="traveller_live_gem_action_001",
+        brief="I have 4 days in Lisbon for a solo trip, mid-budget, relaxed pace, love food and culture",
+    )
+
+    action_response = client.post(
+        "/live-runtime/actions",
+        json={
+            "traveller_id": "traveller_live_gem_action_001",
+            "trip_id": trip["trip_id"],
+            "planning_session_id": trip["planning_session_id"],
+            "action_type": "gem_saved",
+            "location_id": "ta_lisbon_alfama_001",
+            "day_number": 1,
+            "slot_type": "afternoon",
+            "source_surface": "live_runtime",
+            "payload": {
+                "name": "Alfama",
+                "gem_score": 87.4,
+            },
+        },
+    )
+    assert action_response.status_code == 200
+    action_payload = action_response.json()
+
+    assert action_payload["action_type"] == "gem_saved"
+    assert action_payload["memory_event_type"] == "live_gem_saved"
+
+    signals_response = client.get(f"/trips/{trip['trip_id']}/signals?limit=20")
+    assert signals_response.status_code == 200
+    signals_payload = signals_response.json()
+    assert any(item["signal_type"] == "gem_saved" for item in signals_payload["items"])
+
+    memory_response = client.get(
+        "/traveller-memory/traveller_live_gem_action_001",
+        params={"limit": 20, "event_type": "live_gem_saved"},
+    )
+    assert memory_response.status_code == 200
+    memory_payload = memory_response.json()
+    assert memory_payload["total"] >= 1
+    assert memory_payload["items"][0]["event_type"] == "live_gem_saved"
 
 
 def test_live_runtime_replan_agent_uses_recent_live_blocker_signal() -> None:

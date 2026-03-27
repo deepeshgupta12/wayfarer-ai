@@ -81,6 +81,7 @@ class DestinationGuideResponse(BaseModel):
     review_authenticity: str | None = None
     review_insight: DestinationReviewInsight | None = None
     youd_also_love: list[DestinationAlternative] = Field(default_factory=list)
+    hidden_gems: list["HiddenGemRecommendation"] = Field(default_factory=list)
 
 
 class DestinationPlaceIndexRequest(BaseModel):
@@ -181,3 +182,34 @@ class DestinationComparisonResponse(BaseModel):
     next_step_suggestions: list[str] = Field(default_factory=list)
     youd_also_love: list[DestinationAlternative] = Field(default_factory=list)
     plan_start_options: list[ComparisonPlanStartOption] = Field(default_factory=list)
+
+class HiddenGemRecommendation(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    rating: float
+    review_count: int
+    gem_score: float
+    persona_relevance_score: float | None = None
+    underrated_signal: bool = False
+    why_hidden_gem: str
+    fit_reasons: list[str] = Field(default_factory=list)
+    source_context: str = "destination_pool"
+
+
+class HiddenGemDiscoveryRequest(BaseModel):
+    destination: str = Field(..., min_length=1)
+    traveller_id: str | None = None
+    traveller_type: str = Field(default="solo")
+    interests: list[str] = Field(default_factory=list)
+    pace_preference: str = Field(default="balanced")
+    budget: str = Field(default="midrange")
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class HiddenGemDiscoveryResponse(BaseModel):
+    destination: str
+    total: int
+    gems: list[HiddenGemRecommendation] = Field(default_factory=list)

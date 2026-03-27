@@ -3,6 +3,8 @@ import math
 from collections.abc import Generator
 from typing import Any
 
+from statistics import median
+
 from sqlalchemy.orm import Session
 
 from app.clients.google_places_client import GooglePlacesClient
@@ -29,6 +31,9 @@ from app.schemas.destination import (
     SimilarPlaceMatch,
     SimilarPlaceRequest,
     SimilarPlaceResponse,
+    HiddenGemDiscoveryRequest,
+    HiddenGemDiscoveryResponse,
+    HiddenGemRecommendation,
 )
 from app.services.embedding_service import get_embedding
 from app.services.persona_embedding_service import calculate_persona_relevance_score
@@ -940,6 +945,114 @@ def _build_you_would_also_love(
     alternatives.sort(key=lambda item: item.match_score, reverse=True)
     return alternatives[:3]
 
+def _build_hidden_gem_explanation_for_destination(
+    place: Any,
+    interests: list[str],
+    median_review_count: float,
+    persona_relevance_score: float | None,
+) -> tuple[str, list[str], bool]:
+    reasons: list[str] = []
+    text_blob = f"{place.name} {place.category}".lower()
+
+    for interest in interests[:3]:
+        interest_lower = interest.lower()
+        if interest_lower == "food" and any(term in text_blob for term in ["market", "food", "restaurant", "cuisine"]):
+            reasons.append("matches your food-led preference")
+        elif interest_lower == "culture" and any(term in text_blob for term in ["temple", "museum", "heritage", "history", "shrine"]):
+            reasons.append("matches your culture-led preference")
+        elif interest_lower == "nature" and any(term in text_blob for term in ["park", "garden", "river", "scenic", "nature"]):
+            reasons.append("matches your nature preference")
+
+    underrated_signal = int(place.review_count) < median_review_count
+    if underrated_signal:
+        reasons.append("has lighter crowd saturation than the main destination pool")
+
+    if persona_relevance_score is not None and persona_relevance_score >= 0.72:
+        reasons.append("shows a strong persona fit for this traveller")
+
+    explanation = (
+        f"{place.name} looks like a strong hidden gem because it "
+        f"{'; '.join(reasons[:3])}."
+        if reasons
+        else f"{place.name} looks like a strong underrated pick based on fit and lower saturation."
+    )
+
+    return explanation, reasons[:4], underrated_signal
+
+
+def discover_hidden_gems(
+    db: Session,
+    payload: HiddenGemDiscoveryRequest,
+) -> HiddenGemDiscoveryResponse:
+    results = tripadvisor_client.search_locations(
+        query=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+
+    reranked_results = _rerank_destination_results_with_persona(
+        db=db if payload.traveller_id else None,
+        traveller_id=payload.traveller_id,
+        destination=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+        results=list(results),
+    )
+
+    scoped = list(reranked_results[:8])
+    review_counts = [int(item.review_count) for item in scoped if int(item.review_count) > 0]
+    median_review_count = median(review_counts) if review_counts else 1000
+
+    scored_rows: list[tuple[float, HiddenGemRecommendation]] = []
+
+    for place in scoped:
+        persona_relevance_score = _compute_persona_relevance_for_place(
+            db=db,
+            traveller_id=payload.traveller_id,
+            destination=payload.destination,
+            place=place,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+
+        explanation, fit_reasons, underrated_signal = _build_hidden_gem_explanation_for_destination(
+            place=place,
+            interests=payload.interests,
+            median_review_count=median_review_count,
+            persona_relevance_score=persona_relevance_score,
+        )
+
+        gem_score = (float(place.rating) * 10.0)
+        gem_score += 8.0 if underrated_signal else 1.5
+        gem_score -= min(float(place.review_count) / 2500.0, 8.0)
+        gem_score += (persona_relevance_score or 0.0) * 14.0
+
+        recommendation = HiddenGemRecommendation(
+            location_id=place.location_id,
+            name=place.name,
+            city=place.city,
+            country=place.country,
+            category=place.category,
+            rating=float(place.rating),
+            review_count=int(place.review_count),
+            gem_score=round(gem_score, 1),
+            persona_relevance_score=round(persona_relevance_score, 4) if persona_relevance_score is not None else None,
+            underrated_signal=underrated_signal,
+            why_hidden_gem=explanation,
+            fit_reasons=fit_reasons,
+            source_context="destination_pool",
+        )
+
+        scored_rows.append((recommendation.gem_score, recommendation))
+
+    scored_rows.sort(key=lambda item: item[0], reverse=True)
+    gems = [item for _, item in scored_rows[: payload.limit]]
+
+    return HiddenGemDiscoveryResponse(
+        destination=payload.destination,
+        total=len(gems),
+        gems=gems,
+    )
 
 def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchResponse:
     results = tripadvisor_client.search_locations(
@@ -1106,6 +1219,26 @@ def get_similar_places(
         matches=normalized_matches[: payload.top_k],
     )
 
+def _build_hidden_gems_for_guide(
+    payload: DestinationGuideRequest,
+) -> list[HiddenGemRecommendation]:
+    db = get_db_session()
+    try:
+        response = discover_hidden_gems(
+            db=db,
+            payload=HiddenGemDiscoveryRequest(
+                destination=payload.destination,
+                traveller_id=payload.traveller_id,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+                pace_preference=payload.pace_preference,
+                budget=payload.budget,
+                limit=3,
+            ),
+        )
+        return response.gems
+    finally:
+        db.close()
 
 def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuideResponse:
     context = google_places_client.get_destination_context(payload.destination)
@@ -1165,6 +1298,7 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         review_authenticity=review_analysis.authenticity_label,
         review_insight=review_insight,
         youd_also_love=_build_you_would_also_love(payload),
+        hidden_gems=_build_hidden_gems_for_guide(payload),
     )
 
 

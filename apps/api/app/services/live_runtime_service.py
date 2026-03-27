@@ -31,6 +31,7 @@ from app.schemas.live_runtime import (
     LiveTripContextResponse,
     LiveTripContextUpsertRequest,
 )
+from app.services.persona_embedding_service import calculate_persona_relevance_score
 
 _CHECKPOINTER = MemorySaver()
 _MAX_NEARBY_RESULTS = 5
@@ -286,9 +287,14 @@ def write_live_action_to_memory(
         payload=dict(payload.payload or {}),
     )
 
-    if payload.action_type == "nearby_selected":
+    if payload.action_type in {"nearby_selected", "gem_saved", "gem_accepted"}:
         saved_trip.selected_places_count = int(saved_trip.selected_places_count or 0) + 1
-    elif payload.action_type in {"nearby_rejected", "place_closed", "place_unavailable"}:
+    elif payload.action_type in {
+        "nearby_rejected",
+        "place_closed",
+        "place_unavailable",
+        "gem_skipped",
+    }:
         saved_trip.skipped_recommendations_count = int(saved_trip.skipped_recommendations_count or 0) + 1
 
     memory_event_type = f"live_{payload.action_type}"
@@ -447,6 +453,158 @@ def _dedupe_locations(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     return deduped
 
+def _text_contains_any(text: str, terms: list[str]) -> bool:
+    lowered = text.lower()
+    return any(term.lower() in lowered for term in terms)
+
+
+def _build_gem_embedding_text(
+    saved_trip: dict[str, Any],
+    item: dict[str, Any],
+    live_context: dict[str, Any],
+) -> str:
+    parsed_constraints = dict(saved_trip.get("parsed_constraints") or {})
+    interests = list(parsed_constraints.get("interests") or [])
+    interests_text = ", ".join(interests) if interests else "general exploration"
+
+    return (
+        f"destination={saved_trip.get('destination') or parsed_constraints.get('destination') or 'unknown'}; "
+        f"name={item.get('name') or 'unknown'}; "
+        f"city={item.get('city') or 'unknown'}; "
+        f"country={item.get('country') or 'unknown'}; "
+        f"category={item.get('category') or 'unknown'}; "
+        f"interests={interests_text}; "
+        f"rating={item.get('rating') or 0}; "
+        f"review_count={item.get('review_count') or 0}; "
+        f"review_summary={item.get('review_summary') or item.get('why_alternative') or item.get('why_selected') or 'none'}; "
+        f"intent_hint={live_context.get('intent_hint') or 'none'}; "
+        f"current_slot_type={live_context.get('current_slot_type') or 'none'}"
+    )
+
+
+def _hidden_gem_interest_fit_bonus(item: dict[str, Any], saved_trip: dict[str, Any], live_context: dict[str, Any]) -> tuple[float, list[str]]:
+    parsed_constraints = dict(saved_trip.get("parsed_constraints") or {})
+    interests = list(parsed_constraints.get("interests") or [])
+    text_blob = " ".join(
+        [
+            str(item.get("name") or ""),
+            str(item.get("category") or ""),
+            str(item.get("why_selected") or ""),
+            str(item.get("why_alternative") or ""),
+            str(item.get("review_summary") or ""),
+        ]
+    ).lower()
+
+    score = 0.0
+    reasons: list[str] = []
+
+    mapping: dict[str, list[str]] = {
+        "food": ["food", "dining", "restaurant", "market", "cuisine", "brunch"],
+        "culture": ["culture", "heritage", "temple", "museum", "history", "shrine"],
+        "nature": ["nature", "park", "garden", "river", "scenic", "bamboo"],
+        "nightlife": ["nightlife", "bar", "club", "music", "late night"],
+        "wellness": ["spa", "retreat", "onsen", "wellness", "calm"],
+        "luxury": ["luxury", "upscale", "boutique", "fine dining"],
+        "adventure": ["hike", "trail", "outdoor", "adventure", "kayak", "surf"],
+    }
+
+    for interest in interests[:3]:
+        terms = mapping.get(str(interest), [])
+        if _text_contains_any(text_blob, terms):
+            score += 5.0
+            reasons.append(f"matches your {interest} preference")
+
+    intent_hint = str(live_context.get("intent_hint") or "").strip().lower()
+    if intent_hint and intent_hint in text_blob:
+        score += 4.0
+        reasons.append(f"fits your live intent around {intent_hint}")
+
+    slot_type = str(live_context.get("current_slot_type") or "").strip().lower()
+    if slot_type == "lunch" and _text_contains_any(text_blob, ["food", "restaurant", "market", "cuisine"]):
+        score += 3.0
+        reasons.append("works well for your current lunch context")
+    elif slot_type == "evening" and _text_contains_any(text_blob, ["bar", "nightlife", "lanes", "ambience", "atmosphere"]):
+        score += 3.0
+        reasons.append("fits your current evening context")
+    elif slot_type == "morning" and _text_contains_any(text_blob, ["walkable", "culture", "temple", "garden", "calm"]):
+        score += 2.5
+        reasons.append("fits a lighter morning slot")
+
+    return score, reasons
+
+
+def _hidden_gem_route_fit_bonus(item: dict[str, Any], state: LiveGraphState) -> tuple[float, list[str]]:
+    saved_trip = dict(state.get("saved_trip") or {})
+    live_context = dict(state.get("live_context") or {})
+    day, slot = _get_current_day_slot(saved_trip, live_context)
+
+    score = 0.0
+    reasons: list[str] = []
+
+    if slot and str(item.get("location_id") or "") in set(slot.get("fallback_candidate_ids") or []):
+        score += 6.0
+        reasons.append("already fits this itinerary slot as a fallback")
+
+    if day and day.get("geo_cluster") and item.get("geo_cluster") == day.get("geo_cluster"):
+        score += 4.0
+        reasons.append("stays coherent with your current day cluster")
+
+    if slot and str(item.get("source_location_id") or "") == str(slot.get("assigned_location_id") or ""):
+        score += 3.0
+        reasons.append("is closely related to your active slot anchor")
+
+    return score, reasons
+
+
+def _hidden_gem_signal_bonus(item: dict[str, Any], recent_signals: list[dict[str, Any]]) -> tuple[float, list[str]]:
+    blocked_ids = _excluded_location_ids(recent_signals)
+    location_id = str(item.get("location_id") or "")
+
+    if location_id in blocked_ids:
+        return -1000.0, ["recently rejected or blocked"]
+
+    return 0.0, []
+
+
+def _hidden_gem_saturation_bonus(
+    review_count: int,
+    median_review_count: float,
+) -> tuple[float, list[str]]:
+    reasons: list[str] = []
+
+    if review_count <= 0:
+        return 2.0, ["has low visibility in the current pool"]
+
+    ratio = review_count / max(median_review_count, 1.0)
+
+    if ratio <= 0.35:
+        return 10.0, ["looks meaningfully less saturated than the main trip pool"]
+    if ratio <= 0.6:
+        return 7.0, ["looks less saturated than the main trip pool"]
+    if ratio <= 0.85:
+        return 4.0, ["still feels a bit more under-the-radar than the main pool"]
+    if ratio <= 1.15:
+        return 1.0, ["has balanced visibility inside the current pool"]
+
+    return -3.0, ["is becoming relatively well-known inside the current pool"]
+
+
+def _build_hidden_gem_explanation(
+    item: dict[str, Any],
+    reasons: list[str],
+) -> str:
+    trimmed = reasons[:3]
+    if trimmed:
+        return (
+            f"{item.get('name') or 'This place'} stands out as a hidden-gem candidate because it "
+            f"{'; '.join(trimmed)}."
+        )
+
+    return (
+        f"{item.get('name') or 'This place'} looks like a strong underrated option based on fit, "
+        f"quality, and lower saturation inside your current trip pool."
+    )
+
 
 def _nearby_candidates_from_state(state: LiveGraphState) -> list[dict[str, Any]]:
     saved_trip = dict(state.get("saved_trip") or {})
@@ -505,13 +663,20 @@ def _nearby_candidates_from_state(state: LiveGraphState) -> list[dict[str, Any]]
     return scored[:_MAX_NEARBY_RESULTS]
 
 
-def _gem_candidates_from_state(state: LiveGraphState) -> list[dict[str, Any]]:
+def _gem_candidates_from_state(db: Session, state: LiveGraphState) -> list[dict[str, Any]]:
     saved_trip = dict(state.get("saved_trip") or {})
+    live_context = dict(state.get("live_context") or {})
+    recent_signals = list(state.get("recent_signals") or [])
+
+    parsed_constraints = dict(saved_trip.get("parsed_constraints") or {})
     candidate_places = list(saved_trip.get("candidate_places") or [])
+    day, slot = _get_current_day_slot(saved_trip, live_context)
 
     expanded: list[dict[str, Any]] = []
+
     for candidate in candidate_places:
         expanded.append(candidate)
+
         for related in list(candidate.get("related_locations") or []):
             expanded.append(
                 {
@@ -519,35 +684,104 @@ def _gem_candidates_from_state(state: LiveGraphState) -> list[dict[str, Any]]:
                     "rating": candidate.get("rating", 4.5),
                     "review_count": max(int(candidate.get("review_count") or 0) // 2, 50),
                     "review_authenticity": candidate.get("review_authenticity"),
+                    "review_summary": candidate.get("review_summary"),
+                    "why_selected": candidate.get("why_selected"),
+                }
+            )
+
+    if slot:
+        for alternative in list(slot.get("alternatives") or []):
+            expanded.append(
+                {
+                    **alternative,
+                    "rating": 4.5,
+                    "review_count": 150,
+                    "review_authenticity": "medium",
+                    "review_summary": alternative.get("why_alternative"),
                 }
             )
 
     deduped = _dedupe_locations(expanded)
-    review_counts = [int(item.get("review_count") or 0) for item in deduped if int(item.get("review_count") or 0) > 0]
-    median_review_count = median(review_counts) if review_counts else 1000
+
+    review_counts = [
+        int(item.get("review_count") or 0)
+        for item in deduped
+        if int(item.get("review_count") or 0) > 0
+    ]
+    median_review_count = median(review_counts) if review_counts else 1000.0
 
     gems: list[dict[str, Any]] = []
+    traveller_id = str(state.get("traveller_id") or "")
+
     for item in deduped:
+        signal_penalty, signal_reasons = _hidden_gem_signal_bonus(item, recent_signals)
+        if signal_penalty <= -1000.0:
+            continue
+
         rating = float(item.get("rating") or 0.0)
         review_count = int(item.get("review_count") or 0)
         base_score = float(item.get("score") or item.get("live_score") or 0.0)
 
-        gem_score = (rating * 12.0) + min(base_score / 4.0, 20.0)
-        if review_count < median_review_count:
-            gem_score += 8.0
-        gem_score -= min(review_count / 1000.0, 12.0)
+        quality_score = rating * 10.0
+        baseline_fit = min(base_score / 4.0, 18.0)
 
+        interest_bonus, interest_reasons = _hidden_gem_interest_fit_bonus(item, saved_trip, live_context)
+        route_bonus, route_reasons = _hidden_gem_route_fit_bonus(item, state)
+        saturation_bonus, saturation_reasons = _hidden_gem_saturation_bonus(review_count, median_review_count)
+
+        authenticity_bonus = 0.0
         authenticity = item.get("review_authenticity")
         if authenticity == "high":
-            gem_score += 2.0
+            authenticity_bonus = 2.0
         elif authenticity == "medium":
-            gem_score += 1.0
+            authenticity_bonus = 1.0
+
+        persona_relevance_score: float | None = None
+        if traveller_id:
+            persona_relevance_score = calculate_persona_relevance_score(
+                db=db,
+                traveller_id=traveller_id,
+                text=_build_gem_embedding_text(saved_trip, item, live_context),
+            )
+
+        persona_bonus = (persona_relevance_score or 0.0) * 14.0
+
+        gem_score = (
+            quality_score
+            + baseline_fit
+            + interest_bonus
+            + route_bonus
+            + saturation_bonus
+            + authenticity_bonus
+            + persona_bonus
+            + signal_penalty
+        )
+
+        explanation_reasons = (
+            interest_reasons
+            + route_reasons
+            + saturation_reasons
+            + signal_reasons
+        )
+        if persona_relevance_score is not None and persona_relevance_score >= 0.72:
+            explanation_reasons.append("shows a strong persona fit for this traveller")
 
         gems.append(
             {
                 **item,
                 "gem_score": round(gem_score, 1),
-                "gem_reason": "high fit with comparatively lower crowd saturation inside your current trip pool",
+                "persona_relevance_score": round(persona_relevance_score or 0.0, 4),
+                "gem_reason": _build_hidden_gem_explanation(item, explanation_reasons),
+                "fit_reasons": explanation_reasons[:4],
+                "source_context": (
+                    "itinerary_slot"
+                    if slot and str(item.get("location_id") or "") in set(slot.get("fallback_candidate_ids") or [])
+                    else "destination_pool"
+                ),
+                "underrated_signal": review_count < median_review_count,
+                "current_day_number": live_context.get("current_day_number"),
+                "current_slot_type": live_context.get("current_slot_type"),
+                "traveller_interests": list(parsed_constraints.get("interests") or []),
             }
         )
 
@@ -760,7 +994,7 @@ def _nearby_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
 
 
 def _gem_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
-    gem_recommendations = _gem_candidates_from_state(state)
+    gem_recommendations = _gem_candidates_from_state(db, state)
 
     result = {
         "agent": "gem_agent",

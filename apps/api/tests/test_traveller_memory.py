@@ -123,3 +123,34 @@ def test_list_traveller_memory_supports_event_type_and_planning_session_filters(
     assert len(payload["items"]) == 1
     assert payload["items"][0]["event_type"] == "selected_place_saved"
     assert payload["items"][0]["payload"]["planning_session_id"] == "plan_alpha"
+
+def test_list_traveller_memory_includes_live_gem_events() -> None:
+    client = get_test_client()
+    traveller_id = f"traveller_memory_gem_{uuid4().hex}"
+
+    create_response = client.post(
+        "/traveller-memory",
+        json={
+            "traveller_id": traveller_id,
+            "event_type": "live_gem_saved",
+            "source_surface": "live_runtime",
+            "payload": {
+                "trip_id": "trip_demo",
+                "planning_session_id": "plan_demo",
+                "location_id": "ta_lisbon_alfama_001",
+                "gem_score": 82.6,
+            },
+        },
+    )
+    assert create_response.status_code == 200
+
+    response = client.get(
+        f"/traveller-memory/{traveller_id}",
+        params={"limit": 10, "event_type": "live_gem_saved"},
+    )
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["event_type"] == "live_gem_saved"
+    assert payload["items"][0]["payload"]["location_id"] == "ta_lisbon_alfama_001"

@@ -13,6 +13,8 @@ from app.schemas.destination import (
     DestinationSearchResponse,
     SimilarPlaceRequest,
     SimilarPlaceResponse,
+    HiddenGemDiscoveryRequest,
+    HiddenGemDiscoveryResponse,
 )
 from app.services.destination_service import (
     build_destination_guide,
@@ -21,6 +23,7 @@ from app.services.destination_service import (
     index_destination_places,
     search_destinations,
     stream_destination_guide,
+    discover_hidden_gems,
 )
 
 router = APIRouter(prefix="/destinations", tags=["destinations"])
@@ -39,6 +42,15 @@ def generate_destination_guide(
 ) -> DestinationGuideResponse:
     return build_destination_guide(payload)
 
+@router.post("/gems", response_model=HiddenGemDiscoveryResponse)
+def discover_destination_hidden_gems(
+    payload: HiddenGemDiscoveryRequest,
+) -> HiddenGemDiscoveryResponse:
+    db = get_db_session()
+    try:
+        return discover_hidden_gems(db, payload)
+    finally:
+        db.close()
 
 @router.post("/guide/stream")
 def generate_destination_guide_stream(

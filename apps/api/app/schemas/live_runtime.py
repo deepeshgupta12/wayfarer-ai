@@ -12,6 +12,10 @@ LiveActionType = Literal[
     "nearby_rejected",
     "nearby_selected",
     "live_context_updated",
+    "gem_impressed",
+    "gem_saved",
+    "gem_skipped",
+    "gem_accepted",
 ]
 
 
