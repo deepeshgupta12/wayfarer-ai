@@ -1277,8 +1277,16 @@ def _assign_slots_for_day(
     previous_candidate: TripCandidatePlace | None = None
 
     for slot_type, _ in SLOT_SEQUENCE:
+        unused_pool = [
+            candidate
+            for candidate in pool
+            if slot_usage_counts.get(candidate.location_id, 0) == 0
+        ]
+
+        candidate_pool = unused_pool if unused_pool else pool
+
         ranked = sorted(
-            pool,
+            candidate_pool,
             key=lambda candidate: (
                 _slot_specialization_score(slot_type, candidate, pace, interests)
                 + _route_continuity_bonus(slot_type, candidate, dominant_cluster, previous_candidate, pace)

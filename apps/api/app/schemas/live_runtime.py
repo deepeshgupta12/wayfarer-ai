@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 LiveTransportMode = Literal["walk", "transit", "drive"]
@@ -146,7 +146,10 @@ class LiveRuntimeOrchestrateRequest(BaseModel):
     planning_session_id: str | None = Field(default=None, min_length=1)
     message: str = Field(..., min_length=1)
     source_surface: str = Field(default="live_runtime")
-    context_patch: LiveTripContextPatch | None = None
+    context_patch: LiveTripContextPatch | None = Field(
+        default=None,
+        validation_alias=AliasChoices("context_patch", "live_context"),
+    )
 
 
 class LiveRuntimeOrchestrateResponse(BaseModel):

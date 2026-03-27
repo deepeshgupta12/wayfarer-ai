@@ -70,6 +70,24 @@ def _json_safe(value: Any) -> Any:
         return [_json_safe(item) for item in value]
     return value
 
+def _merge_live_context_dicts(
+    persisted: dict[str, Any] | None,
+    override: dict[str, Any] | None,
+) -> dict[str, Any]:
+    base = dict(persisted or {})
+    incoming = dict(override or {})
+
+    if not incoming:
+        return base
+
+    merged = {**base, **incoming}
+
+    base_payload = dict(base.get("context_payload") or {})
+    incoming_payload = dict(incoming.get("context_payload") or {})
+    merged["context_payload"] = {**base_payload, **incoming_payload}
+
+    return merged
+
 
 def _build_live_context_response(record: ActiveTripContextRecord) -> LiveTripContextResponse:
     return LiveTripContextResponse(
@@ -642,10 +660,15 @@ def _bootstrap_node(db: Session, state: LiveGraphState) -> LiveGraphState:
     live_context_record = _get_live_context_record(db, state["trip_id"])
 
     saved_trip = _serialize_saved_trip(saved_trip_record)
-    live_context = (
+    persisted_live_context = (
         _build_live_context_response(live_context_record).model_dump(mode="json")
         if live_context_record is not None
         else {}
+    )
+    request_live_context = dict(state.get("live_context") or {})
+    live_context = _merge_live_context_dicts(
+        persisted_live_context,
+        request_live_context,
     )
     recent_signals = _load_recent_trip_signals(db, state["trip_id"], limit=20)
     recent_memories = _load_recent_trip_memories(
@@ -944,6 +967,7 @@ def orchestrate_live_runtime(
             "planning_session_id": payload.planning_session_id,
             "source_surface": payload.source_surface,
             "message": payload.message,
+            "live_context": live_context.model_dump(mode="json") if live_context is not None else {},
         }
 
         graph.invoke(
@@ -1004,6 +1028,7 @@ def stream_live_runtime(
             "planning_session_id": payload.planning_session_id,
             "source_surface": payload.source_surface,
             "message": payload.message,
+            "live_context": live_context.model_dump(mode="json") if live_context is not None else {},
         }
 
         for update in graph.stream(
