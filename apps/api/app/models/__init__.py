@@ -12,6 +12,7 @@ from app.models.review_intelligence import ReviewIntelligenceRecord
 from app.models.saved_trip import ItineraryVersionRecord, SavedTripRecord, TripSignalRecord
 from app.models.traveller_memory import TravellerMemoryRecord
 from app.models.trip_plan import TripPlanRecord
+from app.models.place_photo import PlacePhotoRecord
 
 __all__ = [
     "ActiveTripContextRecord",
@@ -28,4 +29,5 @@ __all__ = [
     "TravellerPersonaRecord",
     "TripPlanRecord",
     "TripSignalRecord",
+    "PlacePhotoRecord",
 ]

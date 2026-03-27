@@ -5,6 +5,19 @@ from pydantic import BaseModel, Field
 
 TravellerType = Literal["solo", "couple", "family", "friends"]
 
+class PlacePhotoAsset(BaseModel):
+    photo_id: str
+    location_id: str
+    image_url: str
+    source: str = "google_places"
+    width: int | None = None
+    height: int | None = None
+    aspect_ratio: float | None = None
+    caption: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    scene_type: str | None = None
+    visual_score: float = 0.0
+    why_ranked: str | None = None
 
 class DestinationSearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
@@ -21,6 +34,7 @@ class DestinationSearchResult(BaseModel):
     category: str
     rating: float
     review_count: int
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationSearchResponse(BaseModel):
@@ -65,6 +79,7 @@ class DestinationAlternative(BaseModel):
     relation_type: str | None = None
     source: str = "profile"
     city_match: bool = False
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationGuideResponse(BaseModel):
@@ -81,6 +96,7 @@ class DestinationGuideResponse(BaseModel):
     review_authenticity: str | None = None
     review_insight: DestinationReviewInsight | None = None
     youd_also_love: list[DestinationAlternative] = Field(default_factory=list)
+    featured_photos: list[PlacePhotoAsset] = Field(default_factory=list)
     hidden_gems: list["HiddenGemRecommendation"] = Field(default_factory=list)
 
 
@@ -97,6 +113,8 @@ class DestinationPlaceIndexItem(BaseModel):
     country: str
     category: str
     embedding_dimensions: int
+    photo_count: int = 0
+    preview_photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationPlaceIndexResponse(BaseModel):
@@ -153,6 +171,7 @@ class DestinationComparisonSide(BaseModel):
     review_authenticity: str | None = None
     suggested_areas: list[str] = Field(default_factory=list)
     weighted_score: float
+    hero_photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationComparisonDimension(BaseModel):
@@ -197,6 +216,7 @@ class HiddenGemRecommendation(BaseModel):
     why_hidden_gem: str
     fit_reasons: list[str] = Field(default_factory=list)
     source_context: str = "destination_pool"
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class HiddenGemDiscoveryRequest(BaseModel):
@@ -273,6 +293,7 @@ class NearbyPlaceRecommendation(BaseModel):
     fit_reasons: list[str] = Field(default_factory=list)
     why_recommended: str
     walking_friendly: bool = False
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class NearbyDiscoveryResponse(BaseModel):

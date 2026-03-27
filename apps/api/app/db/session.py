@@ -15,7 +15,7 @@ from app.models import (
     ItineraryVersionRecord,
     LocationRelationRecord,
     PlaceEmbeddingRecord,
-    ProactiveAlertRecord,
+    PlacePhotoRecord,
     ReviewIntelligenceRecord,
     SavedTripRecord,
     TravellerMemoryRecord,

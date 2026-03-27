@@ -5,6 +5,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
+from app.services.photo_intelligence_service import enrich_place_payload_with_ranked_photos
+
 from app.clients.google_places_client import GooglePlacesClient
 from app.models.saved_trip import SavedTripRecord
 from app.schemas.destination import (
@@ -16,6 +19,7 @@ from app.schemas.destination import (
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 
 google_places_client = GooglePlacesClient()
+settings = get_settings()
 
 
 def _haversine_meters(
@@ -308,6 +312,36 @@ def _build_reason_text(reasons: list[str]) -> str:
         return "Looks like a strong nearby option based on fit, distance, and current trip context."
     return "Recommended because it " + "; ".join(reasons[:3]) + "."
 
+def _attach_photos_to_nearby_recommendations(
+    db: Session,
+    *,
+    items: list[NearbyPlaceRecommendation],
+    traveller_id: str | None,
+    traveller_type: str | None,
+    interests: list[str],
+    context: NearbyDiscoveryContext,
+    limit: int,
+) -> list[NearbyPlaceRecommendation]:
+    context_tags = []
+    if context.intent_hint:
+        context_tags.append(context.intent_hint)
+    if context.current_slot_type:
+        context_tags.append(context.current_slot_type)
+
+    enriched: list[NearbyPlaceRecommendation] = []
+    for item in items:
+        payload = enrich_place_payload_with_ranked_photos(
+            db,
+            payload=item.model_dump(mode="json"),
+            traveller_id=traveller_id,
+            traveller_type=traveller_type,
+            interests=interests,
+            context_tags=context_tags,
+            limit=limit,
+        )
+        enriched.append(NearbyPlaceRecommendation(**payload))
+    return enriched
+
 
 def discover_context_aware_nearby_places(
     db: Session,
@@ -508,6 +542,34 @@ def discover_context_aware_nearby_places(
 
     if not fallbacks and len(recommendations) > 1:
         fallbacks = recommendations[1: min(len(recommendations), 4)]
+
+    recommendations = _attach_photos_to_nearby_recommendations(
+        db,
+        items=recommendations,
+        traveller_id=payload.traveller_id,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+        context=context,
+        limit=settings.photo_preview_limit,
+    )
+    walking_alternatives = _attach_photos_to_nearby_recommendations(
+        db,
+        items=walking_alternatives,
+        traveller_id=payload.traveller_id,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+        context=context,
+        limit=settings.photo_preview_limit,
+    )
+    fallbacks = _attach_photos_to_nearby_recommendations(
+        db,
+        items=fallbacks,
+        traveller_id=payload.traveller_id,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+        context=context,
+        limit=settings.photo_preview_limit,
+    )
 
     return NearbyDiscoveryResponse(
         city=payload.city or context.current_city,

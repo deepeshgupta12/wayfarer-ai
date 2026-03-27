@@ -6,6 +6,9 @@ from uuid import uuid4
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
+from app.services.photo_intelligence_service import enrich_place_payload_with_ranked_photos
+
 from app.clients.tripadvisor_client import TripadvisorClient
 from app.models.persona import TravellerPersonaRecord
 from app.models.saved_trip import ItineraryVersionRecord, SavedTripRecord, TripSignalRecord
@@ -91,6 +94,8 @@ CLUSTER_TRAVEL_COSTS: dict[tuple[str, str], float] = {
 }
 
 tripadvisor_client = TripadvisorClient()
+
+settings = get_settings()
 
 
 def _get_persona_defaults(db: Session, traveller_id: str) -> dict[str, object]:
@@ -427,6 +432,9 @@ def _build_trip_related_locations(
     source_location_id: str,
     city_filter: str | None,
     allowed_location_ids: set[str],
+    traveller_id: str | None = None,
+    traveller_type: str | None = None,
+    interests: list[str] | None = None,
     top_k: int = 3,
 ) -> list[TripAlternativeSuggestion]:
     suggestions = get_related_location_suggestions(
@@ -438,8 +446,9 @@ def _build_trip_related_locations(
         allowed_location_ids=allowed_location_ids,
     )
 
-    return [
-        TripAlternativeSuggestion(
+    items: list[TripAlternativeSuggestion] = []
+    for item in suggestions:
+        payload = TripAlternativeSuggestion(
             location_id=item["location_id"],
             name=item["name"],
             city=item["city"],
@@ -451,9 +460,21 @@ def _build_trip_related_locations(
             source_location_id=source_location_id,
             relation_type=item["relation_type"],
             city_match=item["city_match"],
+            photos=[],
+        ).model_dump(mode="json")
+
+        payload = enrich_place_payload_with_ranked_photos(
+            db,
+            payload=payload,
+            traveller_id=traveller_id,
+            traveller_type=traveller_type,
+            interests=interests or [],
+            context_tags=["trip_alternative"],
+            limit=settings.photo_preview_limit,
         )
-        for item in suggestions
-    ]
+        items.append(TripAlternativeSuggestion(**payload))
+
+    return items
 
 
 def _build_workspace_alternatives(
@@ -489,6 +510,7 @@ def _build_workspace_alternatives(
                 score=candidate.score,
                 why_alternative="A strong backup option from the current candidate pool.",
                 geo_cluster=candidate.geo_cluster,
+                photos=list(candidate.photos[: settings.photo_preview_limit]),
             )
         )
         if len(alternatives) >= max_items:
@@ -556,38 +578,52 @@ def _build_candidate_places(
             persona_relevance_score=persona_relevance_score,
         )
 
-        candidates.append(
-            TripCandidatePlace(
-                location_id=result.location_id,
-                name=result.name,
+        candidate_payload = TripCandidatePlace(
+            location_id=result.location_id,
+            name=result.name,
+            city=result.city,
+            country=result.country,
+            category=result.category,
+            rating=result.rating,
+            review_count=result.review_count,
+            review_authenticity=review_analysis.authenticity_label,
+            review_summary=review_analysis.quick_verdict,
+            score=score,
+            why_selected=_build_why_selected(
+                interests=list(parsed_constraints.interests or []),
+                review_themes=review_analysis.themes,
+                authenticity_label=review_analysis.authenticity_label,
+                persona_relevance_score=persona_relevance_score,
+            ),
+            geo_cluster=_infer_geo_cluster(
+                place_name=result.name,
                 city=result.city,
                 country=result.country,
-                category=result.category,
-                rating=result.rating,
-                review_count=result.review_count,
-                review_authenticity=review_analysis.authenticity_label,
-                review_summary=review_analysis.quick_verdict,
-                score=score,
-                why_selected=_build_why_selected(
-                    interests=list(parsed_constraints.interests or []),
-                    review_themes=review_analysis.themes,
-                    authenticity_label=review_analysis.authenticity_label,
-                    persona_relevance_score=persona_relevance_score,
-                ),
-                geo_cluster=_infer_geo_cluster(
-                    place_name=result.name,
-                    city=result.city,
-                    country=result.country,
-                ),
-                related_locations=_build_trip_related_locations(
-                    db=db,
-                    source_location_id=result.location_id,
-                    city_filter=result.city,
-                    allowed_location_ids=allowed_location_ids,
-                    top_k=3,
-                ),
-            )
+            ),
+            related_locations=_build_trip_related_locations(
+                db=db,
+                source_location_id=result.location_id,
+                city_filter=result.city,
+                allowed_location_ids=allowed_location_ids,
+                traveller_id=traveller_id,
+                traveller_type=parsed_constraints.group_type,
+                interests=list(parsed_constraints.interests or []),
+                top_k=3,
+            ),
+            photos=[],
+        ).model_dump(mode="json")
+
+        candidate_payload = enrich_place_payload_with_ranked_photos(
+            db,
+            payload=candidate_payload,
+            traveller_id=traveller_id,
+            traveller_type=parsed_constraints.group_type,
+            interests=list(parsed_constraints.interests or []),
+            context_tags=["trip_card", result.category],
+            limit=settings.photo_card_limit,
         )
+
+        candidates.append(TripCandidatePlace(**candidate_payload))
 
     candidates.sort(key=lambda item: item.score, reverse=True)
     return candidates
@@ -1411,6 +1447,7 @@ def _build_day_slots(
                 ),
                 assigned_place_name=candidate.name if candidate else None,
                 assigned_location_id=candidate.location_id if candidate else None,
+                assigned_place_photos=list(candidate.photos[: settings.photo_itinerary_limit]) if candidate else [],
                 rationale=_slot_rationale(
                     slot_type=slot_type,
                     candidate=candidate,
@@ -1697,6 +1734,11 @@ def _refresh_slot_and_day_metadata(
         )
         slot.continuity_note = _continuity_note(current_candidate, day.geo_cluster)
         slot.movement_note = _movement_note(current_candidate, previous_candidate)
+        slot.assigned_place_photos = (
+            list(current_candidate.photos[: settings.photo_itinerary_limit])
+            if current_candidate is not None
+            else []
+        )
         slot.alternatives = _build_slot_alternatives(
             slot_type=slot.slot_type,
             current_candidate=current_candidate,
