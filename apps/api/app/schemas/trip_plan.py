@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Literal
+from app.schemas.destination import PlacePhotoAsset
 
 from pydantic import BaseModel, Field
 
@@ -91,6 +92,7 @@ class TripCandidatePlace(BaseModel):
     why_selected: str
     geo_cluster: str | None = None
     related_locations: list["TripAlternativeSuggestion"] = Field(default_factory=list)
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class TripAlternativeSuggestion(BaseModel):
@@ -105,6 +107,7 @@ class TripAlternativeSuggestion(BaseModel):
     source_location_id: str | None = None
     relation_type: str | None = None
     city_match: bool = False
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class TripSlotAssignment(BaseModel):
@@ -119,6 +122,7 @@ class TripSlotAssignment(BaseModel):
     alternatives: list[TripAlternativeSuggestion] = Field(default_factory=list)
     fallback_candidate_ids: list[str] = Field(default_factory=list)
     fallback_candidate_names: list[str] = Field(default_factory=list)
+    assigned_place_photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class TripDayPlan(BaseModel):

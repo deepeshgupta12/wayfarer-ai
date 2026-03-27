@@ -21,6 +21,8 @@ def test_destination_place_index_returns_items() -> None:
     assert isinstance(payload["items"], list)
     assert len(payload["items"]) >= 1
     assert "location_id" in payload["items"][0]
+    assert "photo_count" in payload["items"][0]
+    assert "preview_photos" in payload["items"][0]
 
 
 def test_destination_place_similarity_returns_matches() -> None:

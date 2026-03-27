@@ -3,7 +3,13 @@ import math
 from collections.abc import Generator
 from typing import Any
 
+from statistics import median
+
 from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.schemas.destination import DestinationSearchResult, PlacePhotoAsset
+from app.services.photo_intelligence_service import enrich_place_payload_with_ranked_photos
 
 from app.clients.google_places_client import GooglePlacesClient
 from app.clients.tripadvisor_client import TripadvisorClient
@@ -29,6 +35,9 @@ from app.schemas.destination import (
     SimilarPlaceMatch,
     SimilarPlaceRequest,
     SimilarPlaceResponse,
+    HiddenGemDiscoveryRequest,
+    HiddenGemDiscoveryResponse,
+    HiddenGemRecommendation,
 )
 from app.services.embedding_service import get_embedding
 from app.services.persona_embedding_service import calculate_persona_relevance_score
@@ -36,6 +45,33 @@ from app.services.review_intelligence_service import analyze_review_bundle
 
 tripadvisor_client = TripadvisorClient()
 google_places_client = GooglePlacesClient()
+
+def _photo_context_tags_from_interests(interests: list[str]) -> list[str]:
+    return [interest.strip().lower() for interest in interests[:3] if interest.strip()]
+
+
+def _attach_ranked_photos_to_destination_result(
+    db: Session,
+    payload: dict[str, Any],
+    *,
+    traveller_id: str | None,
+    traveller_type: str | None,
+    interests: list[str],
+    limit: int | None = None,
+    output_field: str = "photos",
+) -> dict[str, Any]:
+    return enrich_place_payload_with_ranked_photos(
+        db,
+        payload=payload,
+        traveller_id=traveller_id,
+        traveller_type=traveller_type,
+        interests=interests,
+        context_tags=_photo_context_tags_from_interests(interests),
+        limit=limit,
+        output_field=output_field,
+    )
+
+settings = get_settings()
 
 COMPARISON_DIMENSIONS = [
     "vibe",
@@ -435,22 +471,33 @@ def _build_profile_based_you_would_also_love(
         if persona_relevance is not None:
             match_score = min(100.0, round(match_score + (persona_relevance * 12.0), 1))
 
-        alternatives.append(
-            DestinationAlternative(
-                location_id=result.location_id,
-                name=result.name,
-                city=result.city,
-                country=result.country,
-                category=result.category,
-                match_score=match_score,
-                reason=(
-                    f"A strong alternate if you want a trip with a comparable fit for "
-                    f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
-                ),
-                source="profile",
-                city_match=False,
+        base_payload = DestinationAlternative(
+            location_id=result.location_id,
+            name=result.name,
+            city=result.city,
+            country=result.country,
+            category=result.category,
+            match_score=match_score,
+            reason=(
+                f"A strong alternate if you want a trip with a comparable fit for "
+                f"{', '.join(payload.interests[:2]) if payload.interests else 'your stated travel style'}."
+            ),
+            source="profile",
+            city_match=False,
+            photos=[],
+        ).model_dump(mode="json")
+
+        if db is not None:
+            base_payload = _attach_ranked_photos_to_destination_result(
+                db,
+                base_payload,
+                traveller_id=payload.traveller_id,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+                limit=settings.photo_preview_limit,
             )
-        )
+
+        alternatives.append(DestinationAlternative(**base_payload))
 
     alternatives.sort(key=lambda item: item.match_score, reverse=True)
     return alternatives
@@ -727,7 +774,7 @@ def _build_comparison_side(
         finally:
             db.close()
 
-    return DestinationComparisonSide(
+    base_side = DestinationComparisonSide(
         location_id=primary.location_id,
         name=primary.name,
         city=primary.city,
@@ -744,8 +791,24 @@ def _build_comparison_side(
             interests,
             persona_relevance_score=persona_relevance,
         ),
+        hero_photos=[],
     )
 
+    local_db = get_db_session()
+    try:
+        enriched = _attach_ranked_photos_to_destination_result(
+            local_db,
+            base_side.model_dump(mode="json"),
+            traveller_id=traveller_id,
+            traveller_type=traveller_type,
+            interests=interests,
+            limit=settings.photo_card_limit,
+            output_field="hero_photos",
+        )
+    finally:
+        local_db.close()
+
+    return DestinationComparisonSide(**enriched)
 
 def _winner_label(score_a: float, score_b: float) -> str:
     if abs(score_a - score_b) < 0.15:
@@ -907,21 +970,31 @@ def _build_you_would_also_love(
                     continue
                 seen_ids.add(suggestion["location_id"])
 
-                alternatives.append(
-                    DestinationAlternative(
-                        location_id=suggestion["location_id"],
-                        name=suggestion["name"],
-                        city=suggestion["city"],
-                        country=suggestion["country"],
-                        category=suggestion["category"],
-                        match_score=suggestion["score"],
-                        reason=suggestion["why_alternative"],
-                        source_location_id=primary_item["location_id"],
-                        relation_type=suggestion["relation_type"],
-                        source=suggestion["source"],
-                        city_match=suggestion["city_match"],
-                    )
+                alternative_payload = DestinationAlternative(
+                    location_id=suggestion["location_id"],
+                    name=suggestion["name"],
+                    city=suggestion["city"],
+                    country=suggestion["country"],
+                    category=suggestion["category"],
+                    match_score=suggestion["score"],
+                    reason=suggestion["why_alternative"],
+                    source_location_id=primary_item["location_id"],
+                    relation_type=suggestion["relation_type"],
+                    source=suggestion["source"],
+                    city_match=suggestion["city_match"],
+                    photos=[],
+                ).model_dump(mode="json")
+
+                alternative_payload = _attach_ranked_photos_to_destination_result(
+                    db,
+                    alternative_payload,
+                    traveller_id=payload.traveller_id,
+                    traveller_type=payload.traveller_type,
+                    interests=payload.interests,
+                    limit=settings.photo_preview_limit,
                 )
+
+                alternatives.append(DestinationAlternative(**alternative_payload))
 
         profile_based = _build_profile_based_you_would_also_love(
             payload=payload,
@@ -940,6 +1013,126 @@ def _build_you_would_also_love(
     alternatives.sort(key=lambda item: item.match_score, reverse=True)
     return alternatives[:3]
 
+def _build_hidden_gem_explanation_for_destination(
+    place: Any,
+    interests: list[str],
+    median_review_count: float,
+    persona_relevance_score: float | None,
+) -> tuple[str, list[str], bool]:
+    reasons: list[str] = []
+    text_blob = f"{place.name} {place.category}".lower()
+
+    for interest in interests[:3]:
+        interest_lower = interest.lower()
+        if interest_lower == "food" and any(term in text_blob for term in ["market", "food", "restaurant", "cuisine"]):
+            reasons.append("matches your food-led preference")
+        elif interest_lower == "culture" and any(term in text_blob for term in ["temple", "museum", "heritage", "history", "shrine"]):
+            reasons.append("matches your culture-led preference")
+        elif interest_lower == "nature" and any(term in text_blob for term in ["park", "garden", "river", "scenic", "nature"]):
+            reasons.append("matches your nature preference")
+
+    underrated_signal = int(place.review_count) < median_review_count
+    if underrated_signal:
+        reasons.append("has lighter crowd saturation than the main destination pool")
+
+    if persona_relevance_score is not None and persona_relevance_score >= 0.72:
+        reasons.append("shows a strong persona fit for this traveller")
+
+    explanation = (
+        f"{place.name} looks like a strong hidden gem because it "
+        f"{'; '.join(reasons[:3])}."
+        if reasons
+        else f"{place.name} looks like a strong underrated pick based on fit and lower saturation."
+    )
+
+    return explanation, reasons[:4], underrated_signal
+
+
+def discover_hidden_gems(
+    db: Session,
+    payload: HiddenGemDiscoveryRequest,
+) -> HiddenGemDiscoveryResponse:
+    results = tripadvisor_client.search_locations(
+        query=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+
+    reranked_results = _rerank_destination_results_with_persona(
+        db=db if payload.traveller_id else None,
+        traveller_id=payload.traveller_id,
+        destination=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+        results=list(results),
+    )
+
+    scoped = list(reranked_results[:8])
+    review_counts = [int(item.review_count) for item in scoped if int(item.review_count) > 0]
+    median_review_count = median(review_counts) if review_counts else 1000
+
+    scored_rows: list[tuple[float, HiddenGemRecommendation]] = []
+
+    for place in scoped:
+        persona_relevance_score = _compute_persona_relevance_for_place(
+            db=db,
+            traveller_id=payload.traveller_id,
+            destination=payload.destination,
+            place=place,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+        )
+
+        explanation, fit_reasons, underrated_signal = _build_hidden_gem_explanation_for_destination(
+            place=place,
+            interests=payload.interests,
+            median_review_count=median_review_count,
+            persona_relevance_score=persona_relevance_score,
+        )
+
+        gem_score = (float(place.rating) * 10.0)
+        gem_score += 8.0 if underrated_signal else 1.5
+        gem_score -= min(float(place.review_count) / 2500.0, 8.0)
+        gem_score += (persona_relevance_score or 0.0) * 14.0
+
+        recommendation_payload = HiddenGemRecommendation(
+            location_id=place.location_id,
+            name=place.name,
+            city=place.city,
+            country=place.country,
+            category=place.category,
+            rating=float(place.rating),
+            review_count=int(place.review_count),
+            gem_score=round(gem_score, 1),
+            persona_relevance_score=round(persona_relevance_score, 4) if persona_relevance_score is not None else None,
+            underrated_signal=underrated_signal,
+            why_hidden_gem=explanation,
+            fit_reasons=fit_reasons,
+            source_context="destination_pool",
+            photos=[],
+        ).model_dump(mode="json")
+
+        recommendation_payload = _attach_ranked_photos_to_destination_result(
+            db,
+            recommendation_payload,
+            traveller_id=payload.traveller_id,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+            limit=settings.photo_card_limit,
+        )
+
+        recommendation = HiddenGemRecommendation(**recommendation_payload)
+
+        scored_rows.append((recommendation.gem_score, recommendation))
+
+    scored_rows.sort(key=lambda item: item[0], reverse=True)
+    gems = [item for _, item in scored_rows[: payload.limit]]
+
+    return HiddenGemDiscoveryResponse(
+        destination=payload.destination,
+        total=len(gems),
+        gems=gems,
+    )
 
 def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchResponse:
     results = tripadvisor_client.search_locations(
@@ -948,9 +1141,9 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
         interests=payload.interests,
     )
 
-    if payload.traveller_id:
-        db = get_db_session()
-        try:
+    db = get_db_session()
+    try:
+        if payload.traveller_id:
             results = _rerank_destination_results_with_persona(
                 db=db,
                 traveller_id=payload.traveller_id,
@@ -959,21 +1152,30 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
                 interests=payload.interests,
                 results=list(results),
             )
-        finally:
-            db.close()
 
-    normalized_results = [
-        {
-            "location_id": result.location_id,
-            "name": result.name,
-            "city": result.city,
-            "country": result.country,
-            "category": result.category,
-            "rating": result.rating,
-            "review_count": result.review_count,
-        }
-        for result in results
-    ]
+        normalized_results: list[DestinationSearchResult] = []
+        for result in results:
+            result_payload = {
+                "location_id": result.location_id,
+                "name": result.name,
+                "city": result.city,
+                "country": result.country,
+                "category": result.category,
+                "rating": result.rating,
+                "review_count": result.review_count,
+                "photos": [],
+            }
+            result_payload = _attach_ranked_photos_to_destination_result(
+                db,
+                result_payload,
+                traveller_id=payload.traveller_id,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+                limit=settings.photo_preview_limit,
+            )
+            normalized_results.append(DestinationSearchResult(**result_payload))
+    finally:
+        db.close()
 
     return DestinationSearchResponse(
         query=payload.query,
@@ -999,22 +1201,64 @@ def index_destination_places(
         results=list(results),
     )
 
-    indexed_items = [
-        DestinationPlaceIndexItem(
-            location_id=item["location_id"],
-            name=item["name"],
-            city=item["city"],
-            country=item["country"],
-            category=item["category"],
-            embedding_dimensions=item["embedding_dimensions"],
+    indexed_items: list[DestinationPlaceIndexItem] = []
+
+    for item in persisted_items:
+        preview_payload = {
+            "location_id": item["location_id"],
+            "name": item["name"],
+            "city": item["city"],
+            "country": item["country"],
+            "category": item["category"],
+        }
+        preview_payload = _attach_ranked_photos_to_destination_result(
+            db,
+            preview_payload,
+            traveller_id=None,
+            traveller_type=payload.traveller_type,
+            interests=payload.interests,
+            limit=settings.photo_preview_limit,
         )
-        for item in persisted_items
-    ]
+
+        indexed_items.append(
+            DestinationPlaceIndexItem(
+                location_id=item["location_id"],
+                name=item["name"],
+                city=item["city"],
+                country=item["country"],
+                category=item["category"],
+                embedding_dimensions=item["embedding_dimensions"],
+                photo_count=len(preview_payload["preview_photos"]) if "preview_photos" in preview_payload else len(preview_payload["photos"]),
+                preview_photos=[
+                    PlacePhotoAsset(**photo)
+                    for photo in (
+                        preview_payload["preview_photos"]
+                        if "preview_photos" in preview_payload
+                        else preview_payload["photos"]
+                    )
+                ],
+            )
+        )
+
+        normalized_items: list[DestinationPlaceIndexItem] = []
+        for item in indexed_items:
+            normalized_items.append(
+                DestinationPlaceIndexItem(
+                    location_id=item.location_id,
+                    name=item.name,
+                    city=item.city,
+                    country=item.country,
+                    category=item.category,
+                    embedding_dimensions=item.embedding_dimensions,
+                    photo_count=item.photo_count,
+                    preview_photos=item.preview_photos,
+                )
+            )
 
     return DestinationPlaceIndexResponse(
         destination=payload.destination,
-        indexed_count=len(indexed_items),
-        items=indexed_items,
+        indexed_count=len(normalized_items),
+        items=normalized_items,
     )
 
 def get_similar_places(
@@ -1106,6 +1350,26 @@ def get_similar_places(
         matches=normalized_matches[: payload.top_k],
     )
 
+def _build_hidden_gems_for_guide(
+    payload: DestinationGuideRequest,
+) -> list[HiddenGemRecommendation]:
+    db = get_db_session()
+    try:
+        response = discover_hidden_gems(
+            db=db,
+            payload=HiddenGemDiscoveryRequest(
+                destination=payload.destination,
+                traveller_id=payload.traveller_id,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+                pace_preference=payload.pace_preference,
+                budget=payload.budget,
+                limit=3,
+            ),
+        )
+        return response.gems
+    finally:
+        db.close()
 
 def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuideResponse:
     context = google_places_client.get_destination_context(payload.destination)
@@ -1124,6 +1388,34 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         review_signals=review_analysis.themes,
         authenticity=review_analysis.authenticity_label,
     )
+    
+    featured_photos: list[PlacePhotoAsset] = []
+    primary_results = tripadvisor_client.search_locations(
+        query=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+    if primary_results:
+        primary = primary_results[0]
+        local_db = get_db_session()
+        try:
+            featured_payload = _attach_ranked_photos_to_destination_result(
+                local_db,
+                {
+                    "location_id": primary.location_id,
+                    "name": primary.name,
+                    "city": primary.city,
+                    "country": primary.country,
+                    "category": primary.category,
+                },
+                traveller_id=payload.traveller_id,
+                traveller_type=payload.traveller_type,
+                interests=payload.interests,
+                limit=settings.photo_card_limit,
+            )
+            featured_photos = [PlacePhotoAsset(**photo) for photo in featured_payload["photos"]]
+        finally:
+            local_db.close()
 
     overview = (
         f"{payload.destination} looks like a strong match for a {payload.traveller_type} trip over "
@@ -1165,6 +1457,8 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         review_authenticity=review_analysis.authenticity_label,
         review_insight=review_insight,
         youd_also_love=_build_you_would_also_love(payload),
+        hidden_gems=_build_hidden_gems_for_guide(payload),
+        featured_photos=featured_photos,
     )
 
 

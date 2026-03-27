@@ -212,6 +212,62 @@ def test_trip_signal_persistence_updates_backend_counts() -> None:
     assert signals_payload["total"] == 3
     assert len(signals_payload["items"]) == 3
 
+def test_live_gem_actions_update_saved_trip_counts() -> None:
+    client = get_test_client()
+
+    result = _create_and_enrich_plan(
+        client,
+        traveller_id="traveller_saved_trip_gem_001",
+        brief="I have 4 days in Lisbon for a solo trip, mid-budget, relaxed pace, love food and culture",
+    )
+
+    create_trip_response = client.post(
+        f"/trips/from-plan/{result['planning_session_id']}",
+        json={
+            "title": "Lisbon gem trip",
+            "companions": "solo",
+            "status": "planning",
+            "source_surface": "assistant",
+        },
+    )
+    assert create_trip_response.status_code == 200
+    trip_id = create_trip_response.json()["trip_id"]
+
+    saved_response = client.post(
+        "/live-runtime/actions",
+        json={
+            "traveller_id": "traveller_saved_trip_gem_001",
+            "trip_id": trip_id,
+            "planning_session_id": result["planning_session_id"],
+            "action_type": "gem_saved",
+            "location_id": "ta_lisbon_alfama_001",
+            "source_surface": "live_runtime",
+            "payload": {"name": "Alfama"},
+        },
+    )
+    assert saved_response.status_code == 200
+
+    skipped_response = client.post(
+        "/live-runtime/actions",
+        json={
+            "traveller_id": "traveller_saved_trip_gem_001",
+            "trip_id": trip_id,
+            "planning_session_id": result["planning_session_id"],
+            "action_type": "gem_skipped",
+            "location_id": "ta_lisbon_bairro_001",
+            "source_surface": "live_runtime",
+            "payload": {"name": "Bairro Alto"},
+        },
+    )
+    assert skipped_response.status_code == 200
+
+    trip_response = client.get(f"/trips/{trip_id}")
+    assert trip_response.status_code == 200
+    trip_payload = trip_response.json()
+
+    assert trip_payload["selected_places_count"] == 1
+    assert trip_payload["skipped_recommendations_count"] == 1
+
 def test_promoted_saved_trip_exposes_comparison_context() -> None:
     client = get_test_client()
 

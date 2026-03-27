@@ -47,6 +47,12 @@ class Settings(BaseSettings):
         alias="EXTERNAL_API_TIMEOUT_SECONDS",
     )
 
+    photo_intelligence_enabled: bool = Field(default=True, alias="PHOTO_INTELLIGENCE_ENABLED")
+    photo_default_limit: int = Field(default=5, alias="PHOTO_DEFAULT_LIMIT")
+    photo_card_limit: int = Field(default=3, alias="PHOTO_CARD_LIMIT")
+    photo_itinerary_limit: int = Field(default=2, alias="PHOTO_ITINERARY_LIMIT")
+    photo_preview_limit: int = Field(default=2, alias="PHOTO_PREVIEW_LIMIT")
+
     default_llm_provider: str = Field(default="openai", alias="DEFAULT_LLM_PROVIDER")
     default_embed_provider: str = Field(default="ollama", alias="DEFAULT_EMBED_PROVIDER")
 

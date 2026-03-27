@@ -1,10 +1,23 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
 TravellerType = Literal["solo", "couple", "family", "friends"]
 
+class PlacePhotoAsset(BaseModel):
+    photo_id: str
+    location_id: str
+    image_url: str
+    source: str = "google_places"
+    width: int | None = None
+    height: int | None = None
+    aspect_ratio: float | None = None
+    caption: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    scene_type: str | None = None
+    visual_score: float = 0.0
+    why_ranked: str | None = None
 
 class DestinationSearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
@@ -21,6 +34,7 @@ class DestinationSearchResult(BaseModel):
     category: str
     rating: float
     review_count: int
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationSearchResponse(BaseModel):
@@ -65,6 +79,7 @@ class DestinationAlternative(BaseModel):
     relation_type: str | None = None
     source: str = "profile"
     city_match: bool = False
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationGuideResponse(BaseModel):
@@ -81,6 +96,8 @@ class DestinationGuideResponse(BaseModel):
     review_authenticity: str | None = None
     review_insight: DestinationReviewInsight | None = None
     youd_also_love: list[DestinationAlternative] = Field(default_factory=list)
+    featured_photos: list[PlacePhotoAsset] = Field(default_factory=list)
+    hidden_gems: list["HiddenGemRecommendation"] = Field(default_factory=list)
 
 
 class DestinationPlaceIndexRequest(BaseModel):
@@ -96,6 +113,8 @@ class DestinationPlaceIndexItem(BaseModel):
     country: str
     category: str
     embedding_dimensions: int
+    photo_count: int = 0
+    preview_photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationPlaceIndexResponse(BaseModel):
@@ -152,6 +171,7 @@ class DestinationComparisonSide(BaseModel):
     review_authenticity: str | None = None
     suggested_areas: list[str] = Field(default_factory=list)
     weighted_score: float
+    hero_photos: list[PlacePhotoAsset] = Field(default_factory=list)
 
 
 class DestinationComparisonDimension(BaseModel):
@@ -181,3 +201,109 @@ class DestinationComparisonResponse(BaseModel):
     next_step_suggestions: list[str] = Field(default_factory=list)
     youd_also_love: list[DestinationAlternative] = Field(default_factory=list)
     plan_start_options: list[ComparisonPlanStartOption] = Field(default_factory=list)
+
+class HiddenGemRecommendation(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    rating: float
+    review_count: int
+    gem_score: float
+    persona_relevance_score: float | None = None
+    underrated_signal: bool = False
+    why_hidden_gem: str
+    fit_reasons: list[str] = Field(default_factory=list)
+    source_context: str = "destination_pool"
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
+
+
+class HiddenGemDiscoveryRequest(BaseModel):
+    destination: str = Field(..., min_length=1)
+    traveller_id: str | None = None
+    traveller_type: str = Field(default="solo")
+    interests: list[str] = Field(default_factory=list)
+    pace_preference: str = Field(default="balanced")
+    budget: str = Field(default="midrange")
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class HiddenGemDiscoveryResponse(BaseModel):
+    destination: str
+    total: int
+    gems: list[HiddenGemRecommendation] = Field(default_factory=list)
+
+
+NearbyTransportMode = Literal["walk", "transit", "drive"]
+
+class NearbyDiscoveryContext(BaseModel):
+    traveller_id: str | None = Field(default=None, min_length=1)
+    trip_id: str | None = Field(default=None, min_length=1)
+    planning_session_id: str | None = Field(default=None, min_length=1)
+    intent_hint: str | None = None
+    transport_mode: NearbyTransportMode = Field(default="walk")
+    budget: str | None = None
+    current_day_number: int | None = Field(default=None, ge=1, le=30)
+    current_slot_type: str | None = None
+    available_minutes: int | None = Field(default=None, ge=1, le=1440)
+    current_place_name: str | None = None
+    current_city: str | None = None
+    current_country: str | None = None
+    open_now_only: bool = False
+    exclude_location_ids: list[str] = Field(default_factory=list)
+    rejected_location_ids: list[str] = Field(default_factory=list)
+    closed_location_ids: list[str] = Field(default_factory=list)
+    unavailable_location_ids: list[str] = Field(default_factory=list)
+    context_payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class NearbyDiscoveryRequest(BaseModel):
+    latitude: float
+    longitude: float
+    city: str | None = None
+    country: str | None = None
+    query: str | None = None
+    traveller_id: str | None = Field(default=None, min_length=1)
+    traveller_type: TravellerType | None = None
+    interests: list[str] = Field(default_factory=list)
+    budget: str = Field(default="midrange")
+    limit: int = Field(default=5, ge=1, le=10)
+    starting_radius_meters: int = Field(default=800, ge=100, le=5000)
+    max_radius_meters: int = Field(default=3000, ge=500, le=10000)
+    adaptive_radius: bool = True
+    source_surface: str = Field(default="nearby")
+    context: NearbyDiscoveryContext | None = None
+
+
+class NearbyPlaceRecommendation(BaseModel):
+    location_id: str
+    name: str
+    city: str
+    country: str
+    category: str
+    rating: float
+    review_count: int
+    distance_meters: int
+    walking_minutes: int | None = None
+    price_level: str | None = None
+    open_now: bool | None = None
+    source: str = "nearby"
+    live_score: float
+    fit_reasons: list[str] = Field(default_factory=list)
+    why_recommended: str
+    walking_friendly: bool = False
+    photos: list[PlacePhotoAsset] = Field(default_factory=list)
+
+
+class NearbyDiscoveryResponse(BaseModel):
+    city: str | None = None
+    country: str | None = None
+    query: str | None = None
+    total: int
+    radius_used_meters: int
+    search_expansions: list[int] = Field(default_factory=list)
+    blocked_location_ids: list[str] = Field(default_factory=list)
+    recommendations: list[NearbyPlaceRecommendation] = Field(default_factory=list)
+    walking_alternatives: list[NearbyPlaceRecommendation] = Field(default_factory=list)
+    fallbacks: list[NearbyPlaceRecommendation] = Field(default_factory=list)
