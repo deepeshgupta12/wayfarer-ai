@@ -49,6 +49,51 @@ google_places_client = GooglePlacesClient()
 def _photo_context_tags_from_interests(interests: list[str]) -> list[str]:
     return [interest.strip().lower() for interest in interests[:3] if interest.strip()]
 
+def _destination_category(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _scoped_destination_exploration_results(
+    destination: str,
+    results: list[Any],
+    *,
+    keep_root_destination: bool = True,
+) -> list[Any]:
+    if not results:
+        return []
+
+    destination_lower = destination.strip().lower()
+    safe_results = [
+        result
+        for result in results
+        if _destination_category(getattr(result, "category", "")) not in {"service", "hotel"}
+    ]
+    if not safe_results:
+        safe_results = list(results)
+
+    if keep_root_destination:
+        return safe_results
+
+    non_root_results = [
+        result
+        for result in safe_results
+        if getattr(result, "name", "").strip().lower() != destination_lower
+        and _destination_category(getattr(result, "category", "")) not in {"city", "region", "country"}
+    ]
+
+    return non_root_results or safe_results
+
+
+def _get_review_bundle_for_result(result: Any) -> dict[str, object]:
+    try:
+        return tripadvisor_client.get_destination_reviews(
+            result.name,
+            location_id=result.location_id,
+            category=result.category,
+        )
+    except TypeError:
+        return tripadvisor_client.get_destination_reviews(result.name)
+
 
 def _attach_ranked_photos_to_destination_result(
     db: Session,
@@ -751,7 +796,7 @@ def _build_comparison_side(
         interests=interests,
     )
     primary = search_results[0]
-    review_bundle = tripadvisor_client.get_destination_reviews(primary.name)
+    review_bundle = _get_review_bundle_for_result(primary)
     review_analysis = analyze_review_bundle(
         location_id=str(review_bundle["location_id"]),
         location_name=str(review_bundle["location_name"]),
@@ -1067,6 +1112,12 @@ def discover_hidden_gems(
         results=list(results),
     )
 
+    scoped = _scoped_destination_exploration_results(
+        payload.destination,
+        list(reranked_results),
+        keep_root_destination=False,
+    )[:8]
+
     scoped = list(reranked_results[:8])
     review_counts = [int(item.review_count) for item in scoped if int(item.review_count) > 0]
     median_review_count = median(review_counts) if review_counts else 1000
@@ -1153,8 +1204,14 @@ def search_destinations(payload: DestinationSearchRequest) -> DestinationSearchR
                 results=list(results),
             )
 
+        scoped_results = _scoped_destination_exploration_results(
+            payload.query,
+            list(results),
+            keep_root_destination=True,
+        )
+
         normalized_results: list[DestinationSearchResult] = []
-        for result in results:
+        for result in scoped_results:
             result_payload = {
                 "location_id": result.location_id,
                 "name": result.name,
@@ -1193,12 +1250,18 @@ def index_destination_places(
         interests=payload.interests,
     )
 
+    scoped_results = _scoped_destination_exploration_results(
+        payload.destination,
+        list(results),
+        keep_root_destination=False,
+    )
+
     persisted_items = persist_place_embeddings_and_relations(
         db=db,
         destination=payload.destination,
         traveller_type=payload.traveller_type,
         interests=payload.interests,
-        results=list(results),
+        results=scoped_results,
     )
 
     indexed_items: list[DestinationPlaceIndexItem] = []
