@@ -1,139 +1,224 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Bell, AlertCircle, Sparkles, Lightbulb, Clock, Check, Trash2 } from 'lucide-react';
+import {
+  Bell,
+  AlertCircle,
+  Sparkles,
+  Lightbulb,
+  Clock,
+  Check,
+  Loader2,
+  RefreshCw,
+  XCircle,
+} from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import EmptyState from '../components/ui/EmptyState';
-
-const sampleNotifications = [
-  {
-    id: 1,
-    type: 'alert',
-    title: 'Schedule Change Alert',
-    body: 'The Tsukiji Outer Market on Day 2 of your Tokyo trip is closed on Wednesdays. We recommend visiting Toyosu Market instead — it\'s equally rated and matches your food interests.',
-    time: '2 hours ago',
-    read: false,
-    priority: 'high',
-    confidence: 95,
-  },
-  {
-    id: 2,
-    type: 'recommendation',
-    title: 'Hidden Gem Near Your Hotel',
-    body: 'Café Kitsune in Omotesandō is just 5 min walk from where you\'re staying. Highly rated by food-loving solo travellers and rarely crowded in mornings.',
-    time: '5 hours ago',
-    read: false,
-    priority: 'medium',
-    confidence: 88,
-  },
-  {
-    id: 3,
-    type: 'insight',
-    title: 'Better Time to Visit',
-    body: 'Based on recent visitor patterns, Fushimi Inari Shrine is least crowded between 6-7am. Your current plan has you arriving at 10am. Want to adjust?',
-    time: '1 day ago',
-    read: true,
-    priority: 'medium',
-    confidence: 92,
-  },
-  {
-    id: 4,
-    type: 'reminder',
-    title: 'Trip Memory Available',
-    body: 'Your Lisbon trip ended a week ago. Rate your experience and help Wayfarer improve your future recommendations.',
-    time: '3 days ago',
-    read: true,
-    priority: 'low',
-    confidence: null,
-  },
-];
+import {
+  inspectProactiveAlerts,
+  listProactiveAlerts,
+  listSavedTrips,
+  resolveProactiveAlert,
+} from '@/api/wayfarerApi';
+import { getOrCreateTravellerId } from '@/lib/travellerProfile';
+import { cacheSavedTrips, getCachedSavedTrips } from '@/lib/tripStorage';
 
 const typeIcons = {
-  alert: AlertCircle,
-  recommendation: Sparkles,
-  insight: Lightbulb,
-  reminder: Clock,
+  signal_blocker: AlertCircle,
+  closure_risk: Sparkles,
+  quality_risk: Lightbulb,
+  timing_conflict: Clock,
+  fallback_gap: Bell,
 };
 
-const typeColors = {
-  alert: 'bg-destructive/10 text-destructive',
-  recommendation: 'bg-accent/10 text-accent',
-  insight: 'bg-ocean-light text-ocean',
-  reminder: 'bg-sage-light text-sage',
+const severityStyles = {
+  high: 'border-destructive/20 bg-destructive/5',
+  medium: 'border-accent/20 bg-accent/5',
+  low: 'border-border bg-card',
 };
+
+function getActiveTrip(trips = []) {
+  return trips.find((trip) => ['active', 'upcoming', 'planning'].includes(trip.status)) || trips[0] || null;
+}
 
 export default function Notifications() {
-  const [notifications, setNotifications] = useState(sampleNotifications);
+  const travellerId = getOrCreateTravellerId();
+  const [isRunningInspection, setIsRunningInspection] = useState(false);
+  const [actionState, setActionState] = useState({});
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const markAsRead = (id) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+  const { data: trips = [], refetch: refetchTrips } = useQuery({
+    queryKey: ['notifications-trips', travellerId],
+    queryFn: async () => {
+      const response = await listSavedTrips(travellerId, 50);
+      cacheSavedTrips(travellerId, response.items || []);
+      return response.items || [];
+    },
+    initialData: getCachedSavedTrips(travellerId),
+  });
+
+  const activeTrip = useMemo(() => getActiveTrip(trips), [trips]);
+
+  const {
+    data: alertResponse,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ['notifications-alerts', activeTrip?.trip_id],
+    enabled: Boolean(activeTrip?.trip_id),
+    queryFn: async () => listProactiveAlerts(activeTrip.trip_id, { limit: 100 }),
+    initialData: { items: [] },
+  });
+
+  const alerts = alertResponse?.items || [];
+  const unreadCount = alerts.filter((item) => item.status === 'generated').length;
+
+  const runInspection = async () => {
+    if (!activeTrip?.trip_id) return;
+    setIsRunningInspection(true);
+    setErrorMessage('');
+    try {
+      await inspectProactiveAlerts({
+        traveller_id: activeTrip.traveller_id,
+        trip_id: activeTrip.trip_id,
+        planning_session_id: activeTrip.planning_session_id,
+        source_surface: 'notifications_page',
+        current_day_only: false,
+        max_days_to_check: 4,
+      });
+      await Promise.all([refetch(), refetchTrips()]);
+    } catch (error) {
+      setErrorMessage(error?.message || 'Unable to inspect active trip alerts right now.');
+    } finally {
+      setIsRunningInspection(false);
+    }
   };
 
-  const unreadCount = notifications.filter(n => !n.read).length;
+  const resolveAlert = async (alertId, status) => {
+    setActionState((prev) => ({ ...prev, [alertId]: status }));
+    try {
+      await resolveProactiveAlert(alertId, {
+        status,
+        source_surface: 'notifications_page',
+        resolution_reason:
+          status === 'resolved'
+            ? 'Resolved from notifications page'
+            : 'Ignored from notifications page',
+        payload: {},
+      });
+      await refetch();
+    } catch (error) {
+      setErrorMessage(error?.message || 'Unable to update alert status right now.');
+    } finally {
+      setActionState((prev) => {
+        const next = { ...prev };
+        delete next[alertId];
+        return next;
+      });
+    }
+  };
 
   return (
-    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 lg:py-10">
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between mb-8">
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 lg:py-10">
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between gap-4 mb-8">
         <div>
           <h1 className="font-serif text-3xl font-bold mb-1">Notifications</h1>
           <p className="text-sm text-muted-foreground">
-            {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
+            {activeTrip?.title ? `${unreadCount} open alert${unreadCount === 1 ? '' : 's'} for ${activeTrip.title}` : 'No active trip selected'}
           </p>
         </div>
-        {unreadCount > 0 && (
-          <button
-            onClick={() => setNotifications(prev => prev.map(n => ({ ...n, read: true })))}
-            className="text-sm text-primary font-medium hover:underline"
-          >
-            Mark all read
-          </button>
-        )}
+        <button
+          onClick={runInspection}
+          disabled={!activeTrip?.trip_id || isRunningInspection}
+          className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:border-accent/30 disabled:opacity-50"
+        >
+          {isRunningInspection ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          Run check
+        </button>
       </motion.div>
 
-      {notifications.length === 0 ? (
+      {errorMessage ? (
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive mb-6">
+          {errorMessage}
+        </div>
+      ) : null}
+
+      {isLoading ? (
+        <div className="rounded-2xl border border-border bg-card p-8 text-center text-sm text-muted-foreground">Loading proactive alerts…</div>
+      ) : alerts.length === 0 ? (
         <EmptyState
           icon={Bell}
-          title="No notifications"
-          description="When Wayfarer has useful alerts, recommendations, or insights about your trips, they'll appear here."
+          title="No proactive alerts"
+          description="Run a proactive inspection to check for closure risks, timing issues, and freshness changes in your active itinerary."
         />
       ) : (
         <div className="space-y-3">
-          {notifications.map((notif, i) => {
-            const Icon = typeIcons[notif.type] || Bell;
+          {alerts.map((alert, index) => {
+            const Icon = typeIcons[alert.alert_type] || Bell;
+            const isBusy = Boolean(actionState[alert.alert_id]);
             return (
               <motion.div
-                key={notif.id}
+                key={alert.alert_id}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-                onClick={() => markAsRead(notif.id)}
-                className={`p-4 rounded-xl border cursor-pointer transition-all ${
-                  notif.read
-                    ? 'bg-card border-border'
-                    : 'bg-card border-primary/20 shadow-sm'
-                }`}
+                transition={{ delay: index * 0.04 }}
+                className={`rounded-2xl border p-4 ${severityStyles[alert.severity] || 'border-border bg-card'}`}
               >
-                <div className="flex gap-3">
-                  <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${typeColors[notif.type]}`}>
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-card flex items-center justify-center border border-border/60">
                     <Icon className="w-4 h-4" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <h4 className={`text-sm ${notif.read ? 'font-medium' : 'font-semibold'}`}>
-                          {notif.title}
-                          {!notif.read && <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent ml-2 -mt-1" />}
-                        </h4>
-                        <span className="text-xs text-muted-foreground">{notif.time}</span>
-                      </div>
-                      {notif.confidence && (
-                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-secondary text-muted-foreground flex-shrink-0">
-                          {notif.confidence}% confident
-                        </span>
-                      )}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-semibold text-sm">{alert.title}</h3>
+                      <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">
+                        {alert.severity}
+                      </span>
+                      <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">
+                        {alert.status.replaceAll('_', ' ')}
+                      </span>
                     </div>
-                    <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{notif.body}</p>
-                    <div className="flex items-center gap-3 mt-3">
-                      <button className="text-xs font-medium text-primary hover:underline">View Details</button>
-                      <button className="text-xs font-medium text-accent hover:underline">Take Action</button>
+
+                    <p className="text-sm text-muted-foreground mt-2">{alert.message}</p>
+
+                    {(alert.location_name || alert.slot_type || alert.day_number) ? (
+                      <div className="text-[11px] text-muted-foreground mt-2">
+                        {alert.location_name ? <span>{alert.location_name}</span> : null}
+                        {alert.day_number ? <span>{alert.location_name ? ' • ' : ''}Day {alert.day_number}</span> : null}
+                        {alert.slot_type ? <span>{alert.day_number || alert.location_name ? ' • ' : ''}{alert.slot_type}</span> : null}
+                      </div>
+                    ) : null}
+
+                    {alert.alternatives?.length ? (
+                      <div className="mt-3 rounded-xl bg-card/80 border border-border/60 p-3">
+                        <div className="text-xs font-medium mb-2">Alternatives</div>
+                        <div className="space-y-2">
+                          {alert.alternatives.slice(0, 3).map((item) => (
+                            <div key={item.location_id || item.name} className="text-xs text-muted-foreground">
+                              <span className="font-medium text-foreground">{item.name}</span>
+                              {item.why_alternative ? <span> — {item.why_alternative}</span> : null}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="flex gap-2 mt-4 flex-wrap">
+                      <button
+                        onClick={() => resolveAlert(alert.alert_id, 'resolved')}
+                        disabled={isBusy}
+                        className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
+                      >
+                        {isBusy && actionState[alert.alert_id] === 'resolved' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                        Resolve
+                      </button>
+                      <button
+                        onClick={() => resolveAlert(alert.alert_id, 'ignored')}
+                        disabled={isBusy}
+                        className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium bg-secondary text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      >
+                        {isBusy && actionState[alert.alert_id] === 'ignored' ? <Loader2 className="w-3 h-3 animate-spin" /> : <XCircle className="w-3 h-3" />}
+                        Ignore
+                      </button>
                     </div>
                   </div>
                 </div>

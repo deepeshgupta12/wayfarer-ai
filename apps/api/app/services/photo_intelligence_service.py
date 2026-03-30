@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from collections import Counter
 
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -368,3 +369,105 @@ def enrich_place_payload_with_ranked_photos(
     enriched = dict(payload)
     enriched[output_field] = [item.model_dump(mode="json") for item in photos]
     return enriched
+
+def build_deep_cv_research_summary(
+    photos: list[PlacePhotoAsset],
+) -> dict[str, Any]:
+    limited = photos[: settings.photo_research_sample_limit]
+    scene_counter = Counter(photo.scene_type or "unknown" for photo in limited)
+    tag_counter = Counter(
+        tag
+        for photo in limited
+        for tag in list(photo.tags or [])
+    )
+
+    return {
+        "enabled": settings.photo_deep_cv_research_enabled,
+        "mode": "future_ready_placeholder",
+        "sampled_photo_count": len(limited),
+        "dominant_scene_types": [
+            {"scene_type": scene_type, "count": count}
+            for scene_type, count in scene_counter.most_common(4)
+        ],
+        "dominant_tags": [
+            {"tag": tag, "count": count}
+            for tag, count in tag_counter.most_common(8)
+        ],
+        "next_step": (
+            "Replace this lightweight abstraction with a deeper CV research pipeline "
+            "when post-V3 model experimentation begins."
+        ),
+    }
+
+
+def build_custom_training_summary(
+    photos: list[PlacePhotoAsset],
+) -> dict[str, Any]:
+    scene_types = sorted(
+        {
+            photo.scene_type
+            for photo in photos
+            if photo.scene_type
+        }
+    )
+    tags = sorted(
+        {
+            tag
+            for photo in photos
+            for tag in list(photo.tags or [])
+            if tag
+        }
+    )
+
+    return {
+        "enabled": settings.photo_custom_training_enabled,
+        "mode": "future_ready_placeholder",
+        "training_ready_signal": bool(photos),
+        "photo_count": len(photos),
+        "scene_type_coverage": scene_types[:12],
+        "tag_coverage": tags[:20],
+        "next_step": (
+            "Use these persisted metadata distributions as seed inputs for future "
+            "custom large-scale visual model training beyond V3."
+        ),
+    }
+
+
+def build_visual_runtime_signal(
+    *,
+    photos: list[PlacePhotoAsset],
+    place_name: str,
+) -> dict[str, Any]:
+    if not settings.photo_runtime_visual_signals_enabled:
+        return {
+            "enabled": False,
+            "place_name": place_name,
+            "photo_count": 0,
+            "top_scene_types": [],
+            "top_tags": [],
+            "deep_cv_research": build_deep_cv_research_summary([]),
+            "custom_training": build_custom_training_summary([]),
+        }
+
+    scene_counter = Counter(photo.scene_type or "unknown" for photo in photos)
+    tag_counter = Counter(
+        tag
+        for photo in photos
+        for tag in list(photo.tags or [])
+    )
+
+    return {
+        "enabled": True,
+        "place_name": place_name,
+        "photo_count": len(photos),
+        "top_scene_types": [
+            {"scene_type": scene_type, "count": count}
+            for scene_type, count in scene_counter.most_common(4)
+        ],
+        "top_tags": [
+            {"tag": tag, "count": count}
+            for tag, count in tag_counter.most_common(8)
+        ],
+        "deep_cv_research": build_deep_cv_research_summary(photos),
+        "custom_training": build_custom_training_summary(photos),
+    }

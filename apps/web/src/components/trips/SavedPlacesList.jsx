@@ -14,11 +14,13 @@ export default function SavedPlacesList({ places }) {
           <PlaceCard
             name={place.name}
             image={place.image_url}
+            photos={place.photos || []}
             category={place.category}
             rating={place.rating}
             description={place.description}
             reason={place.reason_saved}
             isGem={place.is_hidden_gem}
+            tags={place.tags || []}
           />
         </motion.div>
       ))}

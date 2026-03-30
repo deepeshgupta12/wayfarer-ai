@@ -23,6 +23,7 @@ import {
   streamTripPlanEnrichment,
   updateTripPlan,
   listSavedTrips,
+  listProactiveAlerts,
 } from '@/api/wayfarerApi';
 import {
   getOrCreateTravellerId,
@@ -342,6 +343,79 @@ function buildAssistantMessageFromComparison(result) {
     chips: result.next_step_suggestions || [],
     timestamp: new Date().toISOString(),
   };
+}
+
+function buildAssistantMessageFromLiveRuntime(orchestration, savedTrip = null) {
+  const run = orchestration?.payload?.run || orchestration?.run || null;
+  const finalOutput = run?.final_output || orchestration?.payload?.final_output || orchestration?.final_output || {};
+  const recommendations =
+    finalOutput.recommendations ||
+    finalOutput.alternatives ||
+    finalOutput.gems ||
+    [];
+
+  const alerts = finalOutput.alerts || [];
+
+  return {
+    id: createMessageId(),
+    role: 'assistant',
+    type: 'live_runtime',
+    content:
+      finalOutput.message ||
+      'I routed this through the live runtime and surfaced context-aware recommendations for your active trip.',
+    liveRuntime: finalOutput,
+    savedTrip,
+    places: recommendations.map((item) => ({
+      location_id: item.location_id,
+      name: item.name,
+      city: item.city || null,
+      category: item.category || 'place',
+      rating: item.rating,
+      description:
+        item.why_recommended ||
+        item.gem_reason ||
+        item.why_alternative ||
+        item.live_reason ||
+        null,
+      why_recommended:
+        item.why_recommended ||
+        item.gem_reason ||
+        item.why_alternative ||
+        item.live_reason ||
+        null,
+      photos: item.photos || [],
+      image_url: item.photos?.[0]?.image_url || null,
+      visual_signal: item.visual_signal || null,
+    })),
+    alerts,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function isLiveRuntimePrompt(rawInput, savedTrip) {
+  if (!savedTrip?.trip_id) return false;
+
+  const lowered = rawInput.toLowerCase().trim();
+  const patterns = [
+    'near me',
+    'nearby',
+    'right now',
+    'open now',
+    'around me',
+    'walking distance',
+    'hidden gem',
+    'underrated',
+    'offbeat',
+    'check my plan',
+    'monitor',
+    'proactive',
+    'alert',
+    'closed',
+    'unavailable',
+    'alternative',
+  ];
+
+  return patterns.some((pattern) => lowered.includes(pattern));
 }
 
 function buildAssistantMessageFromTripPlan(result, savedTrip = null) {
@@ -678,6 +752,34 @@ export default function Assistant() {
       });
 
       const intent = orchestration?.classification?.intent || 'unknown';
+
+      if (intent === 'live_runtime' || isLiveRuntimePrompt(msg, currentSavedTrip)) {
+        const liveMessage = buildAssistantMessageFromLiveRuntime(orchestration, currentSavedTrip);
+
+        if (liveMessage.alerts?.length && currentSavedTrip?.trip_id) {
+          try {
+            const latestAlerts = await listProactiveAlerts(currentSavedTrip.trip_id, { limit: 20 });
+            liveMessage.alerts = latestAlerts.items || liveMessage.alerts;
+          } catch {
+            // keep runtime-provided alerts if list call fails
+          }
+        }
+
+        await createTravellerMemory({
+          traveller_id: travellerId,
+          event_type: 'assistant_live_runtime_routed',
+          source_surface: 'assistant',
+          payload: {
+            trip_id: currentSavedTrip?.trip_id || null,
+            planning_session_id: currentPlanningSession?.planning_session_id || null,
+            routed_agent: orchestration?.payload?.run?.routed_agent || null,
+            user_message: msg,
+          },
+        });
+
+        setMessages((prev) => [...prev, liveMessage]);
+        return;
+      }
 
       if (currentPlanningSession && isRefinementFollowUp(msg, currentPlanningSession)) {
         const planningSessionId = currentPlanningSession.planning_session_id;
@@ -1662,7 +1764,7 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
                 rating={place.rating}
                 description={place.description}
                 reason={place.why_recommended}
-                image={undefined}
+                image={place.image_url || place.photos?.[0]?.image_url || undefined}
                 distance={undefined}
                 onSave={() =>
                   onSavePlace?.(
@@ -1681,6 +1783,20 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
                 onClick={undefined}
               />
             ))}
+          </div>
+        ) : null}
+
+        {message.type === 'live_runtime' && message.alerts?.length > 0 ? (
+          <div className="mt-4 rounded-2xl border border-border bg-card p-4">
+            <div className="text-sm font-medium mb-3">Live alerts</div>
+            <div className="space-y-2">
+              {message.alerts.slice(0, 4).map((alert) => (
+                <div key={alert.alert_id || `${alert.title}-${alert.day_number || 0}`} className="rounded-xl border border-border p-3">
+                  <div className="font-medium text-sm">{alert.title}</div>
+                  <div className="text-xs text-muted-foreground mt-1">{alert.message}</div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 

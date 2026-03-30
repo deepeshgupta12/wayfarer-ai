@@ -1,27 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Search, Filter, Sparkles, TrendingUp, Gem, Globe, ArrowRight } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Search, Sparkles, TrendingUp, Gem, Globe, ArrowRight } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import DestinationCard from '../components/cards/DestinationCard';
-import { searchDestinations } from '@/api/wayfarerApi';
-import { getPersonaUpdatedEventName, getTravellerPersona } from '@/lib/travellerProfile';
-
-const trendingDestinations = [
-  { name: 'Kyoto', country: 'Japan', image: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=600&h=400&fit=crop', matchScore: 94, rating: 4.8, tags: ['Culture', 'Temples', 'Food', 'Gardens'] },
-  { name: 'Lisbon', country: 'Portugal', image: 'https://images.unsplash.com/photo-1585208798174-6cedd86e019a?w=600&h=400&fit=crop', matchScore: 91, rating: 4.7, tags: ['Coastal', 'Food', 'Nightlife', 'History'] },
-  { name: 'Medellín', country: 'Colombia', image: 'https://images.unsplash.com/photo-1583997052103-b4a1cb974ce5?w=600&h=400&fit=crop', matchScore: 88, rating: 4.6, tags: ['Spring City', 'Culture', 'Cafes', 'Nature'] },
-];
-
-const hiddenGems = [
-  { name: 'Luang Prabang', country: 'Laos', image: 'https://images.unsplash.com/photo-1583417319070-4a69db38a482?w=600&h=400&fit=crop', matchScore: 90, rating: 4.6, tags: ['Temples', 'River', 'Quiet'], isGem: true },
-  { name: 'Oaxaca', country: 'Mexico', image: 'https://images.unsplash.com/photo-1570737209810-87a8e7245c18?w=600&h=400&fit=crop', matchScore: 87, rating: 4.7, tags: ['Food', 'Art', 'Indigenous'], isGem: true },
-  { name: 'Valletta', country: 'Malta', image: 'https://images.unsplash.com/photo-1561473875-5f5f41204bc1?w=600&h=400&fit=crop', matchScore: 85, rating: 4.5, tags: ['History', 'Baroque', 'Sea'], isGem: true },
-];
+import LoadingState from '../components/ui/LoadingState';
+import { generateDestinationGuide, searchDestinations } from '@/api/wayfarerApi';
+import { getPersonaUpdatedEventName, getTravellerPersona, getOrCreateTravellerId } from '@/lib/travellerProfile';
 
 const categories = [
-  { label: 'All', icon: Globe },
   { label: 'For You', icon: Sparkles },
-  { label: 'Trending', icon: TrendingUp },
+  { label: 'Search', icon: Globe },
+  { label: 'Guided Picks', icon: TrendingUp },
   { label: 'Hidden Gems', icon: Gem },
 ];
 
@@ -30,14 +19,16 @@ function deriveSearchSeed(persona) {
   const interests = persona.signals.interests;
   if (interests.includes('food') && interests.includes('culture')) return 'Kyoto';
   if (interests.includes('nightlife')) return 'Lisbon';
-  if (interests.includes('nature')) return 'Cape Town';
-  return 'Kyoto';
+  if (interests.includes('nature')) return 'Prague';
+  return 'Tokyo';
 }
 
 export default function Discover() {
+  const navigate = useNavigate();
   const [activeCategory, setActiveCategory] = useState('For You');
   const [searchQuery, setSearchQuery] = useState('');
   const [liveResults, setLiveResults] = useState([]);
+  const [featuredGuides, setFeaturedGuides] = useState([]);
   const [isLoadingResults, setIsLoadingResults] = useState(false);
   const [resultsError, setResultsError] = useState('');
   const [persona, setPersona] = useState(null);
@@ -73,6 +64,7 @@ export default function Discover() {
       try {
         const response = await searchDestinations({
           query: searchQuery.trim() || seededQuery,
+          traveller_id: getOrCreateTravellerId(),
           traveller_type: persona?.signals?.group_type || 'solo',
           interests: persona?.signals?.interests || [],
         });
@@ -82,7 +74,7 @@ export default function Discover() {
         }
       } catch (error) {
         if (active) {
-          setResultsError(error.message || 'Unable to fetch live destination matches right now.');
+          setResultsError(error?.message || 'Unable to load destination results right now.');
           setLiveResults([]);
         }
       } finally {
@@ -93,175 +85,174 @@ export default function Discover() {
     }
 
     loadDestinations();
-
     return () => {
       active = false;
     };
-  }, [searchQuery, seededQuery, persona]);
+  }, [persona, searchQuery, seededQuery]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadGuides() {
+      const seeds = Array.from(new Set([seededQuery, 'Kyoto', 'Tokyo'])).slice(0, 3);
+      try {
+        const guides = await Promise.all(
+          seeds.map((destination) =>
+            generateDestinationGuide({
+              destination,
+              traveller_id: getOrCreateTravellerId(),
+              duration_days: 3,
+              traveller_type: persona?.signals?.group_type || 'solo',
+              interests: persona?.signals?.interests || [],
+              pace_preference: persona?.signals?.pace_preference || 'balanced',
+              budget: persona?.signals?.travel_style || 'midrange',
+            })
+          )
+        );
+        if (active) setFeaturedGuides(guides);
+      } catch {
+        if (active) setFeaturedGuides([]);
+      }
+    }
+    loadGuides();
+    return () => {
+      active = false;
+    };
+  }, [persona, seededQuery]);
+
+  const searchCards = liveResults.map((item) => ({
+    key: item.location_id,
+    name: item.name,
+    country: item.country,
+    city: item.city,
+    rating: item.rating,
+    matchScore: undefined,
+    photos: item.photos || [],
+    tags: [item.category],
+  }));
+
+  const guideCards = featuredGuides.map((guide) => ({
+    key: guide.destination,
+    name: guide.destination,
+    country: guide.destination,
+    rating: null,
+    matchScore: undefined,
+    photos: guide.featured_photos || [],
+    tags: guide.suggested_areas?.slice(0, 4) || [],
+    isGem: false,
+    description: guide.overview,
+  }));
+
+  const gemCards = featuredGuides.flatMap((guide) =>
+    (guide.hidden_gems || []).map((gem) => ({
+      key: `${guide.destination}-${gem.location_id}`,
+      name: gem.name,
+      country: gem.country,
+      city: gem.city,
+      rating: gem.rating,
+      matchScore: undefined,
+      photos: gem.photos || [],
+      tags: gem.fit_reasons || [],
+      isGem: true,
+      description: gem.why_hidden_gem,
+    }))
+  );
+
+  const cardsToRender =
+    activeCategory === 'Guided Picks'
+      ? guideCards
+      : activeCategory === 'Hidden Gems'
+      ? gemCards
+      : searchCards;
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
         <h1 className="font-serif text-3xl sm:text-4xl font-bold mb-2">Discover</h1>
-        <p className="text-muted-foreground">Destinations matched to your travel style</p>
+        <p className="text-muted-foreground">Backend-powered destination exploration with photo-rich guide and hidden gem signals</p>
       </motion.div>
 
-      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mb-6">
-        <div className="relative max-w-xl">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-muted-foreground" />
+      <div className="flex flex-col md:flex-row gap-4 md:items-center md:justify-between mb-8">
+        <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl w-fit overflow-x-auto">
+          {categories.map((category) => {
+            const Icon = category.icon;
+            return (
+              <button
+                key={category.label}
+                onClick={() => setActiveCategory(category.label)}
+                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all whitespace-nowrap ${
+                  activeCategory === category.label
+                    ? 'bg-card text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                {category.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="relative w-full md:max-w-md">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search destinations, vibes, or experiences..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-11 pr-4 py-3 rounded-xl bg-secondary/60 border border-border text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/30 transition-all"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder={`Search destinations like ${seededQuery}`}
+            className="w-full pl-10 pr-4 py-3 rounded-xl border border-border bg-card text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
-          <button className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-lg hover:bg-background transition-colors">
-            <Filter className="w-4 h-4 text-muted-foreground" />
-          </button>
         </div>
-      </motion.div>
-
-      <div className="flex gap-2 mb-8 overflow-x-auto pb-2 scrollbar-hide">
-        {categories.map((cat) => {
-          const Icon = cat.icon;
-          return (
-            <button
-              key={cat.label}
-              onClick={() => setActiveCategory(cat.label)}
-              className={`flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
-                activeCategory === cat.label
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary text-secondary-foreground hover:bg-secondary/80'
-              }`}
-            >
-              <Icon className="w-3.5 h-3.5" />
-              {cat.label}
-            </button>
-          );
-        })}
       </div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="mb-10 p-5 rounded-2xl bg-gradient-to-r from-accent/10 via-sage-light/50 to-ocean-light/50 border border-accent/10"
-      >
-        <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-xl bg-accent/20 flex items-center justify-center flex-shrink-0">
-            <Sparkles className="w-5 h-5 text-accent" />
-          </div>
-          <div className="flex-1">
-            <h3 className="font-semibold text-sm mb-1">Personalized for you</h3>
-            <p className="text-sm text-muted-foreground">
-              {persona?.summary
-                ? persona.summary
-                : 'Complete onboarding to get stronger destination matches tailored to your travel style.'}
-            </p>
-          </div>
-          <Link to="/assistant" className="flex items-center gap-1 text-sm font-medium text-accent hover:gap-2 transition-all whitespace-nowrap">
-            Ask AI <ArrowRight className="w-3.5 h-3.5" />
-          </Link>
+      {resultsError ? (
+        <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive mb-6">
+          {resultsError}
         </div>
-      </motion.div>
+      ) : null}
 
-      <section className="mb-12">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h2 className="font-semibold text-xl mb-0.5">Live Destination Matches</h2>
-            <p className="text-sm text-muted-foreground">Results from the current Wayfarer backend destination search contract</p>
-          </div>
-        </div>
+      {isLoadingResults && activeCategory !== 'Guided Picks' ? <LoadingState message="Loading destinations..." /> : null}
 
-        {isLoadingResults ? (
-          <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
-            Loading destination matches...
-          </div>
-        ) : resultsError ? (
-          <div className="rounded-2xl border border-destructive/20 bg-destructive/5 p-5 text-sm text-destructive">
-            {resultsError}
-          </div>
-        ) : (
-          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {liveResults.map((result) => (
-              <div key={result.location_id} className="rounded-2xl border border-border bg-card p-5">
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div>
-                    <h3 className="font-semibold text-base">{result.name}</h3>
-                    <p className="text-sm text-muted-foreground">
-                      {result.city}, {result.country}
-                    </p>
-                  </div>
-                  <div className="rounded-full bg-secondary px-2.5 py-1 text-xs font-medium text-secondary-foreground">
-                    {result.category}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                  <span>Rating: {result.rating}</span>
-                  <span>Reviews: {result.review_count}</span>
-                </div>
-
-                <div className="pt-4">
-                  <Link
-                    to={`/assistant?prompt=${encodeURIComponent(`I want a guide for ${result.name}`)}`}
-                    className="text-xs font-medium text-accent hover:underline"
-                  >
-                    Explore in assistant
-                  </Link>
-                </div>
+      {activeCategory === 'Guided Picks' && featuredGuides.length > 0 ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {featuredGuides.map((guide, index) => (
+            <motion.div key={guide.destination} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }} className="rounded-2xl border border-border bg-card p-4">
+              <DestinationCard
+                compact
+                name={guide.destination}
+                country={`${guide.traveller_type} • ${guide.duration_days} days`}
+                photos={guide.featured_photos || []}
+                tags={guide.suggested_areas || []}
+                onClick={() => navigate(`/assistant?prompt=${encodeURIComponent(`Create a guide for ${guide.destination}`)}`)}
+              />
+              <p className="text-sm text-muted-foreground mt-3 line-clamp-3">{guide.overview}</p>
+              <div className="mt-3 flex items-center justify-between">
+                <div className="text-xs text-muted-foreground">{guide.hidden_gems?.length || 0} hidden gems</div>
+                <Link to={`/assistant?prompt=${encodeURIComponent(`Plan ${guide.destination} for me`)}`} className="inline-flex items-center gap-1 text-sm font-medium text-accent hover:underline">
+                  Plan <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
               </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <section className="mb-12">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <h2 className="font-semibold text-xl mb-0.5">Top Matches</h2>
-            <p className="text-sm text-muted-foreground">Highest compatibility with your travel profile</p>
-          </div>
-          <Link to="/compare" className="text-sm font-medium text-primary hover:underline">Compare</Link>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {trendingDestinations.map((dest, i) => (
-            <motion.div
-              key={dest.name}
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 + i * 0.05 }}
-            >
-              <DestinationCard {...dest} onClick={() => {}} />
             </motion.div>
           ))}
         </div>
-      </section>
+      ) : null}
 
-      <section className="mb-12">
-        <div className="flex items-center justify-between mb-5">
-          <div className="flex items-center gap-2">
-            <Gem className="w-5 h-5 text-accent" />
-            <div>
-              <h2 className="font-semibold text-xl mb-0.5">Hidden Gems</h2>
-              <p className="text-sm text-muted-foreground">Lesser-known destinations that match your style</p>
-            </div>
-          </div>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {hiddenGems.map((dest, i) => (
-            <motion.div
-              key={dest.name}
-              initial={{ opacity: 0, y: 15 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 + i * 0.05 }}
-            >
-              <DestinationCard {...dest} onClick={() => {}} />
+      {activeCategory !== 'Guided Picks' && cardsToRender.length > 0 ? (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {cardsToRender.map((card, index) => (
+            <motion.div key={card.key} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
+              <DestinationCard
+                name={card.name}
+                country={card.country || card.city}
+                rating={card.rating}
+                photos={card.photos}
+                tags={card.tags}
+                isGem={card.isGem}
+                onClick={() => navigate(`/assistant?prompt=${encodeURIComponent(`I want to explore ${card.name}`)}`)}
+              />
             </motion.div>
           ))}
         </div>
-      </section>
+      ) : null}
     </div>
   );
 }

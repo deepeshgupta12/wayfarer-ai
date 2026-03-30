@@ -18,6 +18,7 @@ const tabs = [
 
 function deriveSavedPlaces(trips, signalsByTrip) {
   const savedMap = new Map();
+  const tripLookup = new Map((trips || []).map((trip) => [trip.trip_id, trip]));
 
   trips.forEach((trip) => {
     const tripSignals = signalsByTrip[trip.trip_id] || [];
@@ -27,19 +28,20 @@ function deriveSavedPlaces(trips, signalsByTrip) {
         const key = signal.location_id || `${trip.trip_id}_${signal.payload?.name || signal.signal_id}`;
         if (savedMap.has(key)) return;
 
+        const candidate = (trip.candidate_places || []).find((item) => item.location_id === signal.location_id);
         savedMap.set(key, {
           id: signal.signal_id,
           location_id: signal.location_id || null,
-          name: signal.payload?.name || 'Saved place',
-          image_url: null,
-          category: signal.payload?.category || null,
-          rating: null,
-          description: trip.destination
-            ? `Saved from ${trip.destination}`
-            : 'Saved from your itinerary',
+          name: signal.payload?.name || candidate?.name || 'Saved place',
+          image_url: candidate?.photos?.[0]?.image_url || null,
+          photos: candidate?.photos || [],
+          category: signal.payload?.category || candidate?.category || null,
+          rating: candidate?.rating || null,
+          description: trip.destination ? `Saved from ${trip.destination}` : 'Saved from your itinerary',
           reason_saved: trip.title,
           is_hidden_gem: false,
-          city: signal.payload?.city || null,
+          city: signal.payload?.city || candidate?.city || null,
+          tags: candidate?.photos?.[0]?.tags || [],
         });
       });
   });
@@ -51,10 +53,7 @@ export default function Trips() {
   const [activeTab, setActiveTab] = useState('trips');
   const travellerId = getOrCreateTravellerId();
 
-  const {
-    data: trips = [],
-    isLoading: tripsLoading,
-  } = useQuery({
+  const { data: trips = [], isLoading: tripsLoading } = useQuery({
     queryKey: ['trips-page-saved-trips', travellerId],
     queryFn: async () => {
       const response = await listSavedTrips(travellerId, 100);
@@ -65,10 +64,7 @@ export default function Trips() {
     initialData: () => getCachedSavedTrips(travellerId),
   });
 
-  const {
-    data: signalsByTrip = {},
-    isLoading: signalsLoading,
-  } = useQuery({
+  const { data: signalsByTrip = {}, isLoading: signalsLoading } = useQuery({
     queryKey: ['trips-page-signals', trips.map((trip) => trip.trip_id).join(',')],
     enabled: trips.length > 0,
     queryFn: async () => {
@@ -78,26 +74,20 @@ export default function Trips() {
           return [trip.trip_id, response.items || []];
         })
       );
-
       return Object.fromEntries(entries);
     },
     initialData: {},
   });
 
-  const activeTripsList = trips.filter((trip) =>
-    ['planning', 'upcoming', 'active'].includes(trip.status)
-  );
+  const activeTripsList = trips.filter((trip) => ['planning', 'upcoming', 'active'].includes(trip.status));
   const pastTripsList = trips.filter((trip) => trip.status === 'completed');
-  const savedPlaces = useMemo(
-    () => deriveSavedPlaces(trips, signalsByTrip),
-    [trips, signalsByTrip]
-  );
+  const savedPlaces = useMemo(() => deriveSavedPlaces(trips, signalsByTrip), [trips, signalsByTrip]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
         <h1 className="font-serif text-3xl sm:text-4xl font-bold mb-2">Your Trips</h1>
-        <p className="text-muted-foreground">Backend-saved travel memory — versions, signals, and continuity</p>
+        <p className="text-muted-foreground">Backend-saved travel memory — versions, signals, and photo-rich place context</p>
       </motion.div>
 
       <div className="flex gap-1 p-1 bg-secondary/60 rounded-xl w-fit mb-8">
@@ -108,9 +98,7 @@ export default function Trips() {
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                activeTab === tab.id
-                  ? 'bg-card text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
+                activeTab === tab.id ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -121,22 +109,12 @@ export default function Trips() {
       </div>
 
       {activeTab === 'trips' && (
-        tripsLoading ? (
-          <LoadingState message="Loading trips..." />
-        ) : activeTripsList.length === 0 ? (
-          <EmptyState
-              icon={Briefcase}
-              title="No active trips"
-              description="Your upcoming and in-progress trips will appear here. Start planning your next adventure!" action={undefined} actionLabel={undefined}          />
+        tripsLoading ? <LoadingState message="Loading trips..." /> : activeTripsList.length === 0 ? (
+          <EmptyState icon={Briefcase} title="No active trips" description="Your upcoming and in-progress trips will appear here. Start planning your next adventure!" />
         ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {activeTripsList.map((trip, i) => (
-              <motion.div
-                key={trip.trip_id}
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-              >
+              <motion.div key={trip.trip_id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
                 <TripPlanCard trip={trip} />
               </motion.div>
             ))}
@@ -145,35 +123,20 @@ export default function Trips() {
       )}
 
       {activeTab === 'saved' && (
-        signalsLoading ? (
-          <LoadingState message="Loading saved places..." />
-        ) : !savedPlaces || savedPlaces.length === 0 ? (
-          <EmptyState
-              icon={Heart}
-              title="No saved places yet"
-              description="Places saved through itinerary and assistant signals will appear here." action={undefined} actionLabel={undefined}          />
+        signalsLoading ? <LoadingState message="Loading saved places..." /> : !savedPlaces.length ? (
+          <EmptyState icon={Heart} title="No saved places yet" description="Places saved through itinerary and live-runtime signals will appear here." />
         ) : (
           <SavedPlacesList places={savedPlaces} />
         )
       )}
 
       {activeTab === 'history' && (
-        tripsLoading ? (
-          <LoadingState message="Loading history..." />
-        ) : pastTripsList.length === 0 ? (
-          <EmptyState
-              icon={Clock}
-              title="No past trips"
-              description="Completed trips and your travel memories will live here. Wayfarer learns from each trip to improve future recommendations." action={undefined} actionLabel={undefined}          />
+        tripsLoading ? <LoadingState message="Loading history..." /> : pastTripsList.length === 0 ? (
+          <EmptyState icon={Clock} title="No past trips" description="Completed trips and your travel memories will live here." />
         ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {pastTripsList.map((trip, i) => (
-              <motion.div
-                key={trip.trip_id}
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-              >
+              <motion.div key={trip.trip_id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
                 <TripPlanCard trip={trip} />
               </motion.div>
             ))}
@@ -182,11 +145,7 @@ export default function Trips() {
       )}
 
       {activeTab === 'history' && pastTripsList.length > 0 ? (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="mt-10 p-5 rounded-2xl bg-gradient-to-r from-lavender-light to-sage-light border border-lavender/10"
-        >
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mt-10 p-5 rounded-2xl bg-gradient-to-r from-lavender-light to-sage-light border border-lavender/10">
           <div className="flex items-start gap-3">
             <Star className="w-5 h-5 text-lavender flex-shrink-0 mt-0.5" />
             <div>
