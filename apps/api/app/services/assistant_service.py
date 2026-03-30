@@ -2,8 +2,11 @@ import json
 import re
 from collections.abc import Generator
 
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.models.saved_trip import SavedTripRecord
+from app.models.trip_plan import TripPlanRecord
 from app.schemas.assistant import (
     AssistantIntentClassification,
     AssistantOrchestrateRequest,
@@ -49,6 +52,28 @@ _LIVE_RUNTIME_PATTERNS = [
     r"\breplace this place\b",
 ]
 
+_EXISTING_CONTEXT_PATTERNS = [
+    r"\bmy trip\b",
+    r"\bmy itinerary\b",
+    r"\bthis trip\b",
+    r"\bthis itinerary\b",
+    r"\bcurrent trip\b",
+    r"\bactive trip\b",
+    r"\bday\s+\d+\b",
+    r"\breplace\b",
+    r"\bswap\b",
+    r"\bchange\b",
+    r"\bslot\b",
+    r"\bnear me\b",
+    r"\bnearby\b",
+    r"\bright now\b",
+    r"\bmonitor\b",
+    r"\balert\b",
+    r"\bclosed\b",
+    r"\bunavailable\b",
+    r"\balternative\b",
+]
+
 
 def _extract_known_destinations(message: str) -> list[str]:
     lowered = message.lower()
@@ -75,6 +100,115 @@ def _extract_known_destinations(message: str) -> list[str]:
 def _looks_like_live_runtime_request(message: str) -> bool:
     lowered = message.lower().strip()
     return any(re.search(pattern, lowered) for pattern in _LIVE_RUNTIME_PATTERNS)
+
+
+def _looks_like_existing_context_follow_up(message: str) -> bool:
+    lowered = message.lower().strip()
+    return any(re.search(pattern, lowered) for pattern in _EXISTING_CONTEXT_PATTERNS)
+
+
+def _get_trip_by_id(db: Session, trip_id: str | None) -> SavedTripRecord | None:
+    if not trip_id:
+        return None
+    return (
+        db.query(SavedTripRecord)
+        .filter(SavedTripRecord.trip_id == trip_id)
+        .first()
+    )
+
+
+def _get_trip_by_planning_session(db: Session, planning_session_id: str | None) -> SavedTripRecord | None:
+    if not planning_session_id:
+        return None
+    return (
+        db.query(SavedTripRecord)
+        .filter(SavedTripRecord.planning_session_id == planning_session_id)
+        .order_by(desc(SavedTripRecord.updated_at), desc(SavedTripRecord.id))
+        .first()
+    )
+
+
+def _get_plan_by_id(db: Session, planning_session_id: str | None) -> TripPlanRecord | None:
+    if not planning_session_id:
+        return None
+    return (
+        db.query(TripPlanRecord)
+        .filter(TripPlanRecord.planning_session_id == planning_session_id)
+        .first()
+    )
+
+
+def _get_latest_trip_for_traveller(db: Session, traveller_id: str | None) -> SavedTripRecord | None:
+    if not traveller_id:
+        return None
+    return (
+        db.query(SavedTripRecord)
+        .filter(SavedTripRecord.traveller_id == traveller_id)
+        .order_by(desc(SavedTripRecord.updated_at), desc(SavedTripRecord.id))
+        .first()
+    )
+
+
+def _get_latest_plan_for_traveller(db: Session, traveller_id: str | None) -> TripPlanRecord | None:
+    if not traveller_id:
+        return None
+    return (
+        db.query(TripPlanRecord)
+        .filter(TripPlanRecord.traveller_id == traveller_id)
+        .order_by(desc(TripPlanRecord.updated_at), desc(TripPlanRecord.id))
+        .first()
+    )
+
+
+def _resolve_assistant_context(
+    db: Session,
+    payload: AssistantOrchestrateRequest,
+) -> dict[str, str | None]:
+    traveller_id = payload.context.traveller_id
+    planning_session_id = payload.context.planning_session_id
+    trip_id = payload.context.trip_id
+    message = payload.message
+
+    resolved_trip = _get_trip_by_id(db, trip_id)
+    if resolved_trip is not None:
+        trip_id = resolved_trip.trip_id
+        traveller_id = resolved_trip.traveller_id
+        planning_session_id = planning_session_id or resolved_trip.planning_session_id
+
+    resolved_plan = _get_plan_by_id(db, planning_session_id)
+    if resolved_plan is not None:
+        planning_session_id = resolved_plan.planning_session_id
+        traveller_id = traveller_id or resolved_plan.traveller_id
+
+        trip_from_plan = _get_trip_by_planning_session(db, resolved_plan.planning_session_id)
+        if trip_from_plan is not None:
+            trip_id = trip_from_plan.trip_id
+            traveller_id = trip_from_plan.traveller_id
+            planning_session_id = trip_from_plan.planning_session_id or planning_session_id
+
+    if traveller_id and not trip_id and _looks_like_existing_context_follow_up(message):
+        latest_trip = _get_latest_trip_for_traveller(db, traveller_id)
+        if latest_trip is not None:
+            trip_id = latest_trip.trip_id
+            planning_session_id = planning_session_id or latest_trip.planning_session_id
+
+    if traveller_id and not planning_session_id and _looks_like_existing_context_follow_up(message):
+        latest_plan = _get_latest_plan_for_traveller(db, traveller_id)
+        if latest_plan is not None:
+            planning_session_id = latest_plan.planning_session_id
+
+    if traveller_id and not trip_id and planning_session_id:
+        trip_from_plan = _get_trip_by_planning_session(db, planning_session_id)
+        if trip_from_plan is not None:
+            trip_id = trip_from_plan.trip_id
+            traveller_id = trip_from_plan.traveller_id
+            planning_session_id = trip_from_plan.planning_session_id or planning_session_id
+
+    return {
+        "traveller_id": traveller_id,
+        "planning_session_id": planning_session_id,
+        "trip_id": trip_id,
+    }
 
 
 def classify_assistant_intent(payload: AssistantOrchestrateRequest) -> AssistantIntentClassification:
@@ -155,26 +289,31 @@ def orchestrate_assistant_request(
     db: Session,
     payload: AssistantOrchestrateRequest,
 ) -> AssistantOrchestrateResponse:
-    classification = classify_assistant_intent(payload)
+    resolved_context = _resolve_assistant_context(db, payload)
+
+    resolved_payload = AssistantOrchestrateRequest(
+        message=payload.message,
+        context=payload.context.__class__(**resolved_context),
+        source_surface=payload.source_surface,
+        stream=payload.stream,
+    )
+    classification = classify_assistant_intent(resolved_payload)
 
     if classification.intent == "live_runtime":
-        if not payload.context.traveller_id or not payload.context.trip_id:
+        if not resolved_context["traveller_id"] or not resolved_context["trip_id"]:
             return AssistantOrchestrateResponse(
                 classification=classification,
                 route="unknown",
-                continuity_context={
-                    "traveller_id": payload.context.traveller_id,
-                    "trip_id": payload.context.trip_id,
-                },
+                continuity_context=resolved_context,
                 payload={"error": "traveller_id and trip_id are required for live runtime routing."},
             )
 
         result = orchestrate_live_runtime(
             db,
             LiveRuntimeOrchestrateRequest(
-                traveller_id=payload.context.traveller_id,
-                trip_id=payload.context.trip_id,
-                planning_session_id=payload.context.planning_session_id,
+                traveller_id=resolved_context["traveller_id"],
+                trip_id=resolved_context["trip_id"],
+                planning_session_id=resolved_context["planning_session_id"],
                 message=payload.message,
                 source_surface=payload.source_surface,
             ),
@@ -183,9 +322,7 @@ def orchestrate_assistant_request(
             classification=classification,
             route="live_runtime.orchestrate",
             continuity_context={
-                "traveller_id": payload.context.traveller_id,
-                "planning_session_id": payload.context.planning_session_id,
-                "trip_id": payload.context.trip_id,
+                **resolved_context,
                 "run_id": result.run.run_id,
             },
             payload=result.model_dump(mode="json"),
@@ -197,13 +334,14 @@ def orchestrate_assistant_request(
             return AssistantOrchestrateResponse(
                 classification=classification,
                 route="unknown",
+                continuity_context=resolved_context,
                 payload={"error": "No destination could be extracted for destination guide generation."},
             )
 
         result = build_destination_guide(
             DestinationGuideRequest(
                 destination=destination,
-                traveller_id=payload.context.traveller_id,
+                traveller_id=resolved_context["traveller_id"],
                 duration_days=classification.extracted_duration_days or 3,
                 traveller_type="solo",
                 interests=[],
@@ -214,10 +352,7 @@ def orchestrate_assistant_request(
         return AssistantOrchestrateResponse(
             classification=classification,
             route="destinations.guide",
-            continuity_context={
-                "traveller_id": payload.context.traveller_id,
-                "planning_session_id": payload.context.planning_session_id,
-            },
+            continuity_context=resolved_context,
             payload=result.model_dump(mode="json"),
         )
 
@@ -226,6 +361,7 @@ def orchestrate_assistant_request(
             return AssistantOrchestrateResponse(
                 classification=classification,
                 route="unknown",
+                continuity_context=resolved_context,
                 payload={"error": "Two destinations are required for comparison routing."},
             )
 
@@ -233,7 +369,7 @@ def orchestrate_assistant_request(
             DestinationComparisonRequest(
                 destination_a=classification.extracted_destination_a,
                 destination_b=classification.extracted_destination_b,
-                traveller_id=payload.context.traveller_id,
+                traveller_id=resolved_context["traveller_id"],
                 traveller_type="solo",
                 interests=[],
                 pace_preference="balanced",
@@ -244,24 +380,23 @@ def orchestrate_assistant_request(
         return AssistantOrchestrateResponse(
             classification=classification,
             route="destinations.compare",
-            continuity_context={
-                "traveller_id": payload.context.traveller_id,
-            },
+            continuity_context=resolved_context,
             payload=result.model_dump(mode="json"),
         )
 
     if classification.intent == "trip_plan_create":
-        if not payload.context.traveller_id:
+        if not resolved_context["traveller_id"]:
             return AssistantOrchestrateResponse(
                 classification=classification,
                 route="unknown",
+                continuity_context=resolved_context,
                 payload={"error": "traveller_id is required for trip planning orchestration."},
             )
 
         result = parse_and_save_trip_brief(
             db,
             TripBriefParseRequest(
-                traveller_id=payload.context.traveller_id,
+                traveller_id=resolved_context["traveller_id"],
                 brief=payload.message,
                 source_surface=payload.source_surface,
             ),
@@ -270,39 +405,33 @@ def orchestrate_assistant_request(
             classification=classification,
             route="trip_plans.parse_and_save",
             continuity_context={
-                "traveller_id": payload.context.traveller_id,
+                **resolved_context,
                 "planning_session_id": result.planning_session_id,
             },
             payload=result.model_dump(mode="json"),
         )
 
     if classification.intent == "itinerary_follow_up":
-        if not payload.context.planning_session_id:
+        if not resolved_context["planning_session_id"]:
             return AssistantOrchestrateResponse(
                 classification=classification,
                 route="unknown",
+                continuity_context=resolved_context,
                 payload={"error": "planning_session_id is required for itinerary follow-up routing."},
             )
 
-        result = get_trip_plan_summary(db, payload.context.planning_session_id)
+        result = get_trip_plan_summary(db, resolved_context["planning_session_id"])
         return AssistantOrchestrateResponse(
             classification=classification,
             route="trip_plans.get_summary",
-            continuity_context={
-                "traveller_id": payload.context.traveller_id,
-                "planning_session_id": payload.context.planning_session_id,
-            },
+            continuity_context=resolved_context,
             payload=result.model_dump(mode="json"),
         )
 
     return AssistantOrchestrateResponse(
         classification=classification,
         route="unknown",
-        continuity_context={
-            "traveller_id": payload.context.traveller_id,
-            "planning_session_id": payload.context.planning_session_id,
-            "trip_id": payload.context.trip_id,
-        },
+        continuity_context=resolved_context,
         payload={
             "message": "The assistant router could not deterministically classify this message into a supported flow."
         },
@@ -313,7 +442,15 @@ def stream_assistant_request(
     db: Session,
     payload: AssistantOrchestrateRequest,
 ) -> Generator[str, None, None]:
-    classification = classify_assistant_intent(payload)
+    resolved_context = _resolve_assistant_context(db, payload)
+
+    resolved_payload = AssistantOrchestrateRequest(
+        message=payload.message,
+        context=payload.context.__class__(**resolved_context),
+        source_surface=payload.source_surface,
+        stream=payload.stream,
+    )
+    classification = classify_assistant_intent(resolved_payload)
 
     yield json.dumps(
         {
@@ -321,21 +458,19 @@ def stream_assistant_request(
             "intent": classification.intent,
             "confidence": classification.confidence,
             "rationale": classification.rationale,
+            "continuity_context": resolved_context,
         }
     ) + "\n"
 
     if classification.intent == "live_runtime":
-        if not payload.context.traveller_id or not payload.context.trip_id:
+        if not resolved_context["traveller_id"] or not resolved_context["trip_id"]:
             yield json.dumps(
                 {
                     "type": "final",
                     "payload": AssistantOrchestrateResponse(
                         classification=classification,
                         route="unknown",
-                        continuity_context={
-                            "traveller_id": payload.context.traveller_id,
-                            "trip_id": payload.context.trip_id,
-                        },
+                        continuity_context=resolved_context,
                         payload={"error": "traveller_id and trip_id are required for live runtime routing."},
                     ).model_dump(mode="json"),
                 }
@@ -343,9 +478,9 @@ def stream_assistant_request(
             return
 
         live_payload = LiveRuntimeOrchestrateRequest(
-            traveller_id=payload.context.traveller_id,
-            trip_id=payload.context.trip_id,
-            planning_session_id=payload.context.planning_session_id,
+            traveller_id=resolved_context["traveller_id"],
+            trip_id=resolved_context["trip_id"],
+            planning_session_id=resolved_context["planning_session_id"],
             message=payload.message,
             source_surface=payload.source_surface,
         )
@@ -355,7 +490,7 @@ def stream_assistant_request(
     if classification.intent == "destination_guide" and classification.extracted_destination_a:
         guide_payload = DestinationGuideRequest(
             destination=classification.extracted_destination_a,
-            traveller_id=payload.context.traveller_id,
+            traveller_id=resolved_context["traveller_id"],
             duration_days=classification.extracted_duration_days or 3,
             traveller_type="solo",
             interests=[],

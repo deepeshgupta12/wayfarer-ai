@@ -168,6 +168,23 @@ def _get_saved_trip_or_raise(db: Session, trip_id: str) -> SavedTripRecord:
         raise ValueError(f"Saved trip not found for trip_id={trip_id}")
     return record
 
+def _resolve_trip_bound_context(
+    db: Session,
+    *,
+    traveller_id: str,
+    trip_id: str,
+    planning_session_id: str | None,
+) -> tuple[SavedTripRecord, str, str | None]:
+    saved_trip = _get_saved_trip_or_raise(db, trip_id)
+
+    if traveller_id != saved_trip.traveller_id:
+        raise ValueError(
+            f"trip_id={trip_id} does not belong to traveller_id={traveller_id}"
+        )
+
+    resolved_planning_session_id = planning_session_id or saved_trip.planning_session_id
+    return saved_trip, saved_trip.traveller_id, resolved_planning_session_id
+
 
 def _get_live_context_record(db: Session, trip_id: str) -> ActiveTripContextRecord | None:
     return db.query(ActiveTripContextRecord).filter(ActiveTripContextRecord.trip_id == trip_id).first()
@@ -217,14 +234,19 @@ def upsert_live_trip_context(
     db: Session,
     payload: LiveTripContextUpsertRequest,
 ) -> LiveTripContextResponse:
-    _get_saved_trip_or_raise(db, payload.trip_id)
+    saved_trip, resolved_traveller_id, resolved_planning_session_id = _resolve_trip_bound_context(
+        db,
+        traveller_id=payload.traveller_id,
+        trip_id=payload.trip_id,
+        planning_session_id=payload.planning_session_id,
+    )
 
     record = _get_live_context_record(db, payload.trip_id)
     if record is None:
         record = ActiveTripContextRecord(
             trip_id=payload.trip_id,
-            traveller_id=payload.traveller_id,
-            planning_session_id=payload.planning_session_id,
+            traveller_id=resolved_traveller_id,
+            planning_session_id=resolved_planning_session_id,
             source_surface=payload.source_surface,
             trip_status=payload.trip_status,
             intent_hint=payload.intent_hint,
@@ -239,14 +261,14 @@ def upsert_live_trip_context(
             local_time_iso=payload.local_time_iso,
             timezone=payload.timezone,
             current_place_name=payload.current_place_name,
-            current_city=payload.current_city,
+            current_city=payload.current_city or saved_trip.destination,
             current_country=payload.current_country,
             context_payload=dict(payload.context_payload or {}),
         )
         db.add(record)
     else:
-        record.traveller_id = payload.traveller_id
-        record.planning_session_id = payload.planning_session_id
+        record.traveller_id = resolved_traveller_id
+        record.planning_session_id = resolved_planning_session_id
         record.source_surface = payload.source_surface
         record.trip_status = payload.trip_status
         record.intent_hint = payload.intent_hint
@@ -262,7 +284,7 @@ def upsert_live_trip_context(
         record.local_time_iso = payload.local_time_iso
         record.timezone = payload.timezone
         record.current_place_name = payload.current_place_name
-        record.current_city = payload.current_city
+        record.current_city = payload.current_city or record.current_city or saved_trip.destination
         record.current_country = payload.current_country
         record.context_payload = dict(payload.context_payload or {})
 
@@ -1441,19 +1463,24 @@ def _create_graph_run_record(
     db: Session,
     payload: LiveRuntimeOrchestrateRequest,
 ) -> AgentGraphRunRecord:
-    _get_saved_trip_or_raise(db, payload.trip_id)
-
-    run_record = AgentGraphRunRecord(
-        run_id=f"live_run_{uuid4().hex}",
+    saved_trip, resolved_traveller_id, resolved_planning_session_id = _resolve_trip_bound_context(
+        db,
         traveller_id=payload.traveller_id,
         trip_id=payload.trip_id,
         planning_session_id=payload.planning_session_id,
+    )
+
+    run_record = AgentGraphRunRecord(
+        run_id=f"live_run_{uuid4().hex}",
+        traveller_id=resolved_traveller_id,
+        trip_id=saved_trip.trip_id,
+        planning_session_id=resolved_planning_session_id,
         source_surface=payload.source_surface,
         user_message=payload.message,
         status="running",
         routed_agent=None,
         supervisor_intent=None,
-        checkpoint_thread_id=f"trip::{payload.trip_id}",
+        checkpoint_thread_id=f"trip::{saved_trip.trip_id}",
         graph_state={},
         final_output={},
     )
@@ -1467,15 +1494,22 @@ def _apply_context_patch_if_present(
     db: Session,
     payload: LiveRuntimeOrchestrateRequest,
 ) -> LiveTripContextResponse | None:
+    saved_trip, resolved_traveller_id, resolved_planning_session_id = _resolve_trip_bound_context(
+        db,
+        traveller_id=payload.traveller_id,
+        trip_id=payload.trip_id,
+        planning_session_id=payload.planning_session_id,
+    )
+
     if payload.context_patch is None:
         existing = _get_live_context_record(db, payload.trip_id)
         return _build_live_context_response(existing) if existing is not None else None
 
     existing = _get_live_context_record(db, payload.trip_id)
     request = LiveTripContextUpsertRequest(
-        traveller_id=payload.traveller_id,
+        traveller_id=resolved_traveller_id,
         trip_id=payload.trip_id,
-        planning_session_id=payload.planning_session_id or (existing.planning_session_id if existing else None),
+        planning_session_id=resolved_planning_session_id,
         source_surface=payload.source_surface,
         trip_status=payload.context_patch.trip_status or (existing.trip_status if existing else "active"),
         intent_hint=payload.context_patch.intent_hint if payload.context_patch.intent_hint is not None else (existing.intent_hint if existing else None),
@@ -1488,7 +1522,7 @@ def _apply_context_patch_if_present(
         local_time_iso=payload.context_patch.local_time_iso if payload.context_patch.local_time_iso is not None else (existing.local_time_iso if existing else None),
         timezone=payload.context_patch.timezone if payload.context_patch.timezone is not None else (existing.timezone if existing else None),
         current_place_name=payload.context_patch.current_place_name if payload.context_patch.current_place_name is not None else (existing.current_place_name if existing else None),
-        current_city=payload.context_patch.current_city if payload.context_patch.current_city is not None else (existing.current_city if existing else None),
+        current_city=payload.context_patch.current_city if payload.context_patch.current_city is not None else (existing.current_city if existing else saved_trip.destination),
         current_country=payload.context_patch.current_country if payload.context_patch.current_country is not None else (existing.current_country if existing else None),
         context_payload=payload.context_patch.context_payload if payload.context_patch.context_payload is not None else (dict(existing.context_payload or {}) if existing else {}),
     )
@@ -1499,18 +1533,34 @@ def orchestrate_live_runtime(
     db: Session,
     payload: LiveRuntimeOrchestrateRequest,
 ) -> LiveRuntimeOrchestrateResponse:
-    live_context = _apply_context_patch_if_present(db, payload)
-    run_record = _create_graph_run_record(db, payload)
+    saved_trip, resolved_traveller_id, resolved_planning_session_id = _resolve_trip_bound_context(
+        db,
+        traveller_id=payload.traveller_id,
+        trip_id=payload.trip_id,
+        planning_session_id=payload.planning_session_id,
+    )
+
+    normalized_payload = LiveRuntimeOrchestrateRequest(
+        traveller_id=resolved_traveller_id,
+        trip_id=saved_trip.trip_id,
+        planning_session_id=resolved_planning_session_id,
+        message=payload.message,
+        source_surface=payload.source_surface,
+        context_patch=payload.context_patch,
+    )
+
+    live_context = _apply_context_patch_if_present(db, normalized_payload)
+    run_record = _create_graph_run_record(db, normalized_payload)
 
     try:
         graph = _build_graph(db)
         initial_state: LiveGraphState = {
             "run_id": run_record.run_id,
-            "traveller_id": payload.traveller_id,
-            "trip_id": payload.trip_id,
-            "planning_session_id": payload.planning_session_id,
-            "source_surface": payload.source_surface,
-            "message": payload.message,
+            "traveller_id": resolved_traveller_id,
+            "trip_id": saved_trip.trip_id,
+            "planning_session_id": resolved_planning_session_id,
+            "source_surface": normalized_payload.source_surface,
+            "message": normalized_payload.message,
             "live_context": live_context.model_dump(mode="json") if live_context is not None else {},
         }
 
@@ -1537,8 +1587,8 @@ def orchestrate_live_runtime(
         _record_graph_event(
             db,
             run_id=run_record.run_id,
-            traveller_id=payload.traveller_id,
-            trip_id=payload.trip_id,
+            traveller_id=resolved_traveller_id,
+            trip_id=saved_trip.trip_id,
             event_type="run_failed",
             node_name="runtime",
             payload={"error": str(exc)},
@@ -1550,15 +1600,32 @@ def stream_live_runtime(
     db: Session,
     payload: LiveRuntimeOrchestrateRequest,
 ) -> Generator[str, None, None]:
-    live_context = _apply_context_patch_if_present(db, payload)
-    run_record = _create_graph_run_record(db, payload)
+    saved_trip, resolved_traveller_id, resolved_planning_session_id = _resolve_trip_bound_context(
+        db,
+        traveller_id=payload.traveller_id,
+        trip_id=payload.trip_id,
+        planning_session_id=payload.planning_session_id,
+    )
+
+    normalized_payload = LiveRuntimeOrchestrateRequest(
+        traveller_id=resolved_traveller_id,
+        trip_id=saved_trip.trip_id,
+        planning_session_id=resolved_planning_session_id,
+        message=payload.message,
+        source_surface=payload.source_surface,
+        context_patch=payload.context_patch,
+    )
+
+    live_context = _apply_context_patch_if_present(db, normalized_payload)
+    run_record = _create_graph_run_record(db, normalized_payload)
 
     yield json.dumps(
         {
             "type": "meta",
             "run_id": run_record.run_id,
-            "trip_id": payload.trip_id,
-            "traveller_id": payload.traveller_id,
+            "trip_id": saved_trip.trip_id,
+            "traveller_id": resolved_traveller_id,
+            "planning_session_id": resolved_planning_session_id,
             "has_live_context": live_context is not None,
         }
     ) + "\n"
@@ -1567,11 +1634,11 @@ def stream_live_runtime(
         graph = _build_graph(db)
         initial_state: LiveGraphState = {
             "run_id": run_record.run_id,
-            "traveller_id": payload.traveller_id,
-            "trip_id": payload.trip_id,
-            "planning_session_id": payload.planning_session_id,
-            "source_surface": payload.source_surface,
-            "message": payload.message,
+            "traveller_id": resolved_traveller_id,
+            "trip_id": saved_trip.trip_id,
+            "planning_session_id": resolved_planning_session_id,
+            "source_surface": normalized_payload.source_surface,
+            "message": normalized_payload.message,
             "live_context": live_context.model_dump(mode="json") if live_context is not None else {},
         }
 
@@ -1613,8 +1680,8 @@ def stream_live_runtime(
         _record_graph_event(
             db,
             run_id=run_record.run_id,
-            traveller_id=payload.traveller_id,
-            trip_id=payload.trip_id,
+            traveller_id=resolved_traveller_id,
+            trip_id=saved_trip.trip_id,
             event_type="run_failed",
             node_name="runtime",
             payload={"error": str(exc)},

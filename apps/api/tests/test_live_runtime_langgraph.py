@@ -395,3 +395,25 @@ def test_live_runtime_stream_returns_graph_updates_and_final() -> None:
     assert '"type": "meta"' in body
     assert '"type": "graph_update"' in body
     assert '"type": "final"' in body
+
+def test_live_runtime_rejects_cross_traveller_trip_binding() -> None:
+    client = get_test_client()
+
+    trip = _create_enriched_saved_trip(
+        client,
+        traveller_id="traveller_live_guard_001",
+        brief="I have 4 days in Kyoto for a solo trip, mid-budget, relaxed pace, love food and culture",
+    )
+
+    response = client.post(
+        "/live-runtime/orchestrate",
+        json={
+            "traveller_id": "traveller_live_guard_002",
+            "trip_id": trip["trip_id"],
+            "planning_session_id": trip["planning_session_id"],
+            "message": "Show me something nearby",
+            "source_surface": "live_runtime",
+        },
+    )
+    assert response.status_code == 404
+    assert "does not belong" in response.json()["detail"]
