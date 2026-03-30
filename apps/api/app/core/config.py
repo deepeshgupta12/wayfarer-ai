@@ -47,6 +47,48 @@ class Settings(BaseSettings):
         alias="EXTERNAL_API_TIMEOUT_SECONDS",
     )
 
+    tripadvisor_retry_attempts: int = Field(default=2, alias="TRIPADVISOR_RETRY_ATTEMPTS")
+    tripadvisor_retry_backoff_seconds: float = Field(
+        default=0.35,
+        alias="TRIPADVISOR_RETRY_BACKOFF_SECONDS",
+    )
+    tripadvisor_http_cache_ttl_seconds: int = Field(
+        default=900,
+        alias="TRIPADVISOR_HTTP_CACHE_TTL_SECONDS",
+    )
+    tripadvisor_search_cache_ttl_seconds: int = Field(
+        default=900,
+        alias="TRIPADVISOR_SEARCH_CACHE_TTL_SECONDS",
+    )
+    tripadvisor_reviews_cache_ttl_seconds: int = Field(
+        default=1800,
+        alias="TRIPADVISOR_REVIEWS_CACHE_TTL_SECONDS",
+    )
+    tripadvisor_details_cache_ttl_seconds: int = Field(
+        default=1800,
+        alias="TRIPADVISOR_DETAILS_CACHE_TTL_SECONDS",
+    )
+    tripadvisor_photos_cache_ttl_seconds: int = Field(
+        default=1800,
+        alias="TRIPADVISOR_PHOTOS_CACHE_TTL_SECONDS",
+    )
+    tripadvisor_nearby_cache_ttl_seconds: int = Field(
+        default=300,
+        alias="TRIPADVISOR_NEARBY_CACHE_TTL_SECONDS",
+    )
+    tripadvisor_max_search_results: int = Field(
+        default=10,
+        alias="TRIPADVISOR_MAX_SEARCH_RESULTS",
+    )
+    tripadvisor_max_review_count: int = Field(
+        default=5,
+        alias="TRIPADVISOR_MAX_REVIEW_COUNT",
+    )
+    tripadvisor_min_live_reviews: int = Field(
+        default=2,
+        alias="TRIPADVISOR_MIN_LIVE_REVIEWS",
+    )
+
     photo_intelligence_enabled: bool = Field(default=True, alias="PHOTO_INTELLIGENCE_ENABLED")
     photo_default_limit: int = Field(default=5, alias="PHOTO_DEFAULT_LIMIT")
     photo_card_limit: int = Field(default=3, alias="PHOTO_CARD_LIMIT")

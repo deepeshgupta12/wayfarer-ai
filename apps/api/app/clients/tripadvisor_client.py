@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import threading
+import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -11,6 +15,10 @@ from app.schemas.destination import DestinationSearchResult
 class TripadvisorClient:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_lock = threading.Lock()
+        self._inflight_locks: dict[str, threading.Lock] = {}
+        self._inflight_lock = threading.Lock()
 
     def _build_stub_results(self) -> list[DestinationSearchResult]:
         return [
@@ -636,71 +644,260 @@ class TripadvisorClient:
 
         return self._filter_stub_results(query, self._build_stub_results())
 
+    def _normalized(self, value: str | None) -> str:
+        return str(value or "").strip().lower()
+
+    def _build_cache_key(self, namespace: str, payload: dict[str, Any]) -> str:
+        return f"{namespace}:{json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
+
+    def _get_cache(self, key: str) -> Any | None:
+        now = time.time()
+        with self._cache_lock:
+            entry = self._cache.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if expires_at <= now:
+                self._cache.pop(key, None)
+                return None
+            return value
+
+    def _set_cache(self, key: str, ttl_seconds: int, value: Any) -> Any:
+        expires_at = time.time() + max(ttl_seconds, 1)
+        with self._cache_lock:
+            self._cache[key] = (expires_at, value)
+        return value
+
+    def _get_inflight_lock(self, key: str) -> threading.Lock:
+        with self._inflight_lock:
+            lock = self._inflight_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._inflight_locks[key] = lock
+            return lock
+
+    def _cache_or_compute(
+        self,
+        namespace: str,
+        payload: dict[str, Any],
+        ttl_seconds: int,
+        factory: Callable[[], Any],
+    ) -> Any:
+        key = self._build_cache_key(namespace, payload)
+        cached = self._get_cache(key)
+        if cached is not None:
+            return cached
+
+        lock = self._get_inflight_lock(key)
+        with lock:
+            cached = self._get_cache(key)
+            if cached is not None:
+                return cached
+            value = factory()
+            return self._set_cache(key, ttl_seconds, value)
+
+    def _http_get_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any],
+        ttl_seconds: int,
+        cache_namespace: str,
+    ) -> dict[str, Any]:
+        filtered_params = {key: value for key, value in params.items() if value not in (None, "", [])}
+
+        def _request() -> dict[str, Any]:
+            attempts = max(self.settings.tripadvisor_retry_attempts, 1)
+            last_error: Exception | None = None
+
+            for attempt in range(attempts):
+                try:
+                    with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
+                        response = client.get(url, params=filtered_params)
+                        if response.status_code == 429 or response.status_code >= 500:
+                            response.raise_for_status()
+                        if response.status_code >= 400:
+                            response.raise_for_status()
+                        return response.json()
+                except Exception as exc:
+                    last_error = exc
+                    if attempt == attempts - 1:
+                        break
+                    time.sleep(self.settings.tripadvisor_retry_backoff_seconds * (attempt + 1))
+
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Tripadvisor request failed without a surfaced exception.")
+
+        return self._cache_or_compute(
+            cache_namespace,
+            {"url": url, "params": filtered_params},
+            ttl_seconds,
+            _request,
+        )
+
+    def _normalize_category_name(self, item: dict[str, Any]) -> str:
+        category_name = self._normalized((item.get("category") or {}).get("name"))
+        subcategory_names = " ".join(
+            self._normalized(subcategory.get("name"))
+            for subcategory in list(item.get("subcategory") or [])
+            if isinstance(subcategory, dict)
+        )
+        combined = f"{category_name} {subcategory_names}".strip()
+
+        name = self._normalized(item.get("name"))
+
+        if "geo" in combined or "municipality" in combined or "city" in combined:
+            return "city"
+        if "neighborhood" in combined:
+            return "neighborhood"
+        if "district" in combined:
+            return "district"
+        if "province" in combined or "region" in combined:
+            return "region"
+        if "island" in combined:
+            return "island"
+        if "market" in combined or "market" in name:
+            return "market"
+        if "park" in combined or "park" in name or "garden" in name:
+            return "park"
+        if "museum" in combined or "museum" in name:
+            return "museum"
+        if "temple" in combined or "temple" in name or "shrine" in name:
+            return "temple"
+        if "restaurant" in combined or "cafe" in combined or "food" in combined:
+            return "restaurant"
+        if "attraction" in combined:
+            return "attraction"
+        if "hotel" in combined or "lodging" in combined or "accommodation" in combined:
+            return "hotel"
+        if "tour" in combined or "activity" in combined or "transport" in combined:
+            return "service"
+
+        return "place"
+
+    def _is_service_like_result(self, item: dict[str, Any]) -> bool:
+        name = self._normalized(item.get("name"))
+        category = self._normalize_category_name(item)
+        raw_category = self._normalized((item.get("category") or {}).get("name"))
+
+        blocked_name_keywords = [
+            "airport transfer",
+            "transfer",
+            "taxi",
+            "cab",
+            "shuttle",
+            "chauffeur",
+            "car service",
+            "tour",
+            "ticket",
+            "experience",
+            "activity",
+            "operator",
+            "travel agency",
+            "booking",
+            "airport",
+            "hotel",
+            "hostel",
+            "resort",
+            "apartment",
+            "inn",
+        ]
+        blocked_category_keywords = [
+            "tour",
+            "activity",
+            "transport",
+            "ticket",
+            "hotel",
+            "lodging",
+            "accommodation",
+            "service",
+            "airline",
+            "car rental",
+        ]
+
+        if category in {"service", "hotel"}:
+            return True
+        if any(keyword in name for keyword in blocked_name_keywords):
+            return True
+        if any(keyword in raw_category for keyword in blocked_category_keywords):
+            return True
+
+        return False
+
     def _is_destination_like_result(
         self,
         item: dict[str, Any],
         query: str,
     ) -> bool:
-        name = str(item.get("name", "")).strip().lower()
-        category_name = str(item.get("category", {}).get("name", "")).strip().lower()
+        if self._is_service_like_result(item):
+            return False
+
+        name = self._normalized(item.get("name"))
+        category = self._normalize_category_name(item)
         address_obj = item.get("address_obj") or {}
-        city = str(address_obj.get("city", "")).strip().lower()
-        query_lower = query.strip().lower()
+        city = self._normalized(address_obj.get("city") or item.get("city"))
+        query_lower = self._normalized(query)
 
         if not name:
             return False
 
-        blocked_keywords = [
-            "hotel",
-            "tour",
-            "experience",
-            "bus",
-            "samurai",
-            "resort",
-            "hostel",
-            "inn",
-            "apartment",
-            "museum ticket",
-        ]
-        if any(keyword in name for keyword in blocked_keywords):
-            return False
-
-        preferred_category_keywords = [
-            "geographic",
-            "municipality",
-            "city",
-            "neighborhood",
-            "district",
-            "province",
-            "island",
-        ]
-        if any(keyword in category_name for keyword in preferred_category_keywords):
+        if category in {"city", "neighborhood", "district", "region", "island"}:
             return True
 
         return name == query_lower or city == query_lower
+
+    def _is_exploration_safe_result(
+        self,
+        item: dict[str, Any],
+        query: str,
+    ) -> bool:
+        if self._is_service_like_result(item):
+            return False
+
+        name = self._normalized(item.get("name"))
+        query_lower = self._normalized(query)
+        category = self._normalize_category_name(item)
+
+        if not name:
+            return False
+
+        if category in {"city", "neighborhood", "district", "region", "island", "market", "park", "museum", "temple", "attraction", "restaurant", "place"}:
+            return True
+
+        return query_lower in name or name == query_lower
 
     def _score_live_result(
         self,
         item: dict[str, Any],
         query: str,
-    ) -> tuple[int, int]:
-        name = str(item.get("name", "")).strip().lower()
-        category_name = str(item.get("category", {}).get("name", "")).strip().lower()
+    ) -> tuple[int, int, int, float, int]:
+        name = self._normalized(item.get("name"))
         address_obj = item.get("address_obj") or {}
-        city = str(address_obj.get("city", "")).strip().lower()
-        query_lower = query.strip().lower()
+        city = self._normalized(address_obj.get("city") or item.get("city"))
+        query_lower = self._normalized(query)
+        category = self._normalize_category_name(item)
 
         exact_name = 1 if name == query_lower else 0
         exact_city = 1 if city == query_lower else 0
-        geographic_bias = 1 if any(
-            keyword in category_name
-            for keyword in ["geographic", "municipality", "city", "district", "neighborhood"]
-        ) else 0
+        destination_like = 1 if self._is_destination_like_result(item, query) else 0
+        category_bias = {
+            "city": 4,
+            "neighborhood": 4,
+            "district": 4,
+            "region": 3,
+            "island": 3,
+            "market": 2,
+            "park": 2,
+            "museum": 2,
+            "temple": 2,
+            "attraction": 1,
+            "restaurant": 1,
+            "place": 0,
+        }.get(category, 0)
+        review_count = int(item.get("num_reviews") or item.get("review_count") or 0)
 
-        return (
-            exact_name + exact_city + geographic_bias,
-            1 if self._is_destination_like_result(item, query) else 0,
-        )
+        return (exact_name, exact_city, destination_like, float(category_bias), review_count)
 
     def _parse_live_search_results(
         self,
@@ -708,44 +905,55 @@ class TripadvisorClient:
         query: str,
     ) -> list[DestinationSearchResult]:
         raw_items = payload.get("data", []) or []
-
         filtered_items = [
-            item for item in raw_items
+            item
+            for item in raw_items
             if item.get("name") and item.get("location_id")
         ]
 
-        destination_like_items = [
-            item for item in filtered_items
-            if self._is_destination_like_result(item, query)
+        exploration_safe = [
+            item for item in filtered_items if self._is_exploration_safe_result(item, query)
+        ]
+        candidate_items = exploration_safe or [
+            item for item in filtered_items if not self._is_service_like_result(item)
         ]
 
-        candidate_items = destination_like_items or filtered_items
         candidate_items = sorted(
             candidate_items,
             key=lambda item: self._score_live_result(item, query),
             reverse=True,
         )
 
+        seen_keys: set[str] = set()
         results: list[DestinationSearchResult] = []
 
-        for item in candidate_items[:10]:
-            name = item.get("name")
-            location_id = item.get("location_id")
+        for item in candidate_items:
+            name = str(item.get("name") or "").strip()
+            location_id = str(item.get("location_id") or "").strip()
             address_obj = item.get("address_obj") or {}
-            city = address_obj.get("city") or item.get("city") or name or "Unknown"
-            country = address_obj.get("country") or item.get("country") or "Unknown"
+            city = str(address_obj.get("city") or item.get("city") or name or "Unknown").strip()
+            country = str(address_obj.get("country") or item.get("country") or "Unknown").strip()
+            category = self._normalize_category_name(item)
+
+            dedupe_key = f"{location_id}:{name.lower()}:{city.lower()}:{country.lower()}"
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
 
             results.append(
                 DestinationSearchResult(
-                    location_id=str(location_id),
-                    name=str(name),
-                    city=str(city),
-                    country=str(country),
-                    category=str(item.get("category", {}).get("name", "place")),
-                    rating=4.5,
-                    review_count=1000,
+                    location_id=location_id,
+                    name=name,
+                    city=city,
+                    country=country,
+                    category=category,
+                    rating=float(item.get("rating") or 4.5),
+                    review_count=int(item.get("num_reviews") or item.get("review_count") or 1000),
                 )
             )
+
+            if len(results) >= self.settings.tripadvisor_max_search_results:
+                break
 
         return results
 
@@ -754,17 +962,16 @@ class TripadvisorClient:
         query: str,
     ) -> list[DestinationSearchResult]:
         url = f"{self.settings.tripadvisor_base_url}/location/search"
-        params = {
-            "searchQuery": query,
-            "key": self.settings.tripadvisor_api_key,
-            "language": "en",
-        }
-
-        with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            payload = response.json()
-
+        payload = self._http_get_json(
+            url,
+            params={
+                "searchQuery": query,
+                "key": self.settings.tripadvisor_api_key,
+                "language": "en",
+            },
+            ttl_seconds=self.settings.tripadvisor_search_cache_ttl_seconds,
+            cache_namespace="tripadvisor_search_http",
+        )
         return self._parse_live_search_results(payload, query)
 
     def _live_location_reviews(
@@ -772,15 +979,15 @@ class TripadvisorClient:
         location_id: str,
     ) -> list[dict[str, object]]:
         url = f"{self.settings.tripadvisor_base_url}/location/{location_id}/reviews"
-        params = {
-            "key": self.settings.tripadvisor_api_key,
-            "language": "en",
-        }
-
-        with httpx.Client(timeout=self.settings.external_api_timeout_seconds) as client:
-            response = client.get(url, params=params)
-            response.raise_for_status()
-            payload = response.json()
+        payload = self._http_get_json(
+            url,
+            params={
+                "key": self.settings.tripadvisor_api_key,
+                "language": "en",
+            },
+            ttl_seconds=self.settings.tripadvisor_reviews_cache_ttl_seconds,
+            cache_namespace="tripadvisor_reviews_http",
+        )
 
         reviews: list[dict[str, object]] = []
 
@@ -798,10 +1005,145 @@ class TripadvisorClient:
                 }
             )
 
-            if len(reviews) >= 5:
+            if len(reviews) >= self.settings.tripadvisor_max_review_count:
                 break
 
         return reviews
+
+    def get_location_details(
+        self,
+        location_id: str,
+    ) -> dict[str, Any]:
+        if not self.settings.tripadvisor_api_key_configured or not location_id:
+            return {}
+
+        url = f"{self.settings.tripadvisor_base_url}/location/{location_id}/details"
+        try:
+            return self._http_get_json(
+                url,
+                params={
+                    "key": self.settings.tripadvisor_api_key,
+                    "language": "en",
+                },
+                ttl_seconds=self.settings.tripadvisor_details_cache_ttl_seconds,
+                cache_namespace="tripadvisor_details_http",
+            )
+        except Exception:
+            return {}
+
+    def get_location_photos(
+        self,
+        location_id: str,
+        *,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        if not self.settings.tripadvisor_api_key_configured or not location_id:
+            return []
+
+        def _load() -> list[dict[str, Any]]:
+            url = f"{self.settings.tripadvisor_base_url}/location/{location_id}/photos"
+            payload = self._http_get_json(
+                url,
+                params={
+                    "key": self.settings.tripadvisor_api_key,
+                    "language": "en",
+                },
+                ttl_seconds=self.settings.tripadvisor_photos_cache_ttl_seconds,
+                cache_namespace="tripadvisor_photos_http",
+            )
+
+            photos: list[dict[str, Any]] = []
+            for index, item in enumerate(payload.get("data", []) or [], start=1):
+                images = item.get("images") or {}
+                preferred_image = (
+                    images.get("large")
+                    or images.get("original")
+                    or images.get("medium")
+                    or images.get("small")
+                    or {}
+                )
+                image_url = str(
+                    preferred_image.get("url")
+                    or item.get("images", {}).get("thumbnail", {}).get("url")
+                    or ""
+                ).strip()
+                if not image_url:
+                    continue
+
+                caption = str(item.get("caption") or "").strip() or None
+                width = preferred_image.get("width")
+                height = preferred_image.get("height")
+
+                photos.append(
+                    {
+                        "photo_id": str(item.get("id") or item.get("photo_id") or f"ta_photo_{location_id}_{index}"),
+                        "location_id": location_id,
+                        "image_url": image_url,
+                        "source": "tripadvisor",
+                        "width": int(width) if width is not None else None,
+                        "height": int(height) if height is not None else None,
+                        "caption": caption,
+                        "tags": [],
+                        "scene_type": None,
+                        "quality_score": 8.5,
+                    }
+                )
+
+                if len(photos) >= limit:
+                    break
+
+            return photos
+
+        try:
+            return self._cache_or_compute(
+                "tripadvisor_location_photos",
+                {"location_id": location_id, "limit": limit},
+                self.settings.tripadvisor_photos_cache_ttl_seconds,
+                _load,
+            )
+        except Exception:
+            return []
+
+    def search_nearby_locations(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        query: str | None = None,
+        limit: int = 10,
+    ) -> list[DestinationSearchResult]:
+        if not self.settings.tripadvisor_api_key_configured:
+            return []
+
+        def _load() -> list[DestinationSearchResult]:
+            url = f"{self.settings.tripadvisor_base_url}/location/nearby_search"
+            payload = self._http_get_json(
+                url,
+                params={
+                    "key": self.settings.tripadvisor_api_key,
+                    "language": "en",
+                    "latLong": f"{latitude},{longitude}",
+                    "searchQuery": query,
+                },
+                ttl_seconds=self.settings.tripadvisor_nearby_cache_ttl_seconds,
+                cache_namespace="tripadvisor_nearby_http",
+            )
+            return self._parse_live_search_results(payload, query or "nearby")[:limit]
+
+        try:
+            return self._cache_or_compute(
+                "tripadvisor_nearby_results",
+                {
+                    "latitude": round(latitude, 5),
+                    "longitude": round(longitude, 5),
+                    "query": query or "",
+                    "limit": limit,
+                },
+                self.settings.tripadvisor_nearby_cache_ttl_seconds,
+                _load,
+            )
+        except Exception:
+            return []
 
     def _merge_live_with_destination_stub_results(
         self,
@@ -832,42 +1174,87 @@ class TripadvisorClient:
         if not self.settings.tripadvisor_api_key_configured:
             return self._get_destination_specific_stub_results(query)
 
-        try:
-            live_results = self._live_search_locations(query)
-            if live_results:
-                if len(live_results) < 4:
-                    return self._merge_live_with_destination_stub_results(query, live_results)
-                return live_results
-        except Exception:
-            pass
+        def _load() -> list[DestinationSearchResult]:
+            try:
+                live_results = self._live_search_locations(query)
+                if live_results:
+                    if len(live_results) < 4:
+                        return self._merge_live_with_destination_stub_results(query, live_results)
+                    return live_results
+            except Exception:
+                pass
 
-        return self._get_destination_specific_stub_results(query)
+            return self._get_destination_specific_stub_results(query)
+
+        return self._cache_or_compute(
+            "tripadvisor_search_results",
+            {"query": query.strip().lower()},
+            self.settings.tripadvisor_search_cache_ttl_seconds,
+            _load,
+        )
 
     def get_destination_reviews(
         self,
         destination: str,
+        *,
+        location_id: str | None = None,
+        category: str | None = None,
     ) -> dict[str, object]:
         stub_bundle = self._stub_reviews(destination)
 
         if not self.settings.tripadvisor_api_key_configured:
             return stub_bundle
 
-        try:
-            live_results = self._live_search_locations(destination)
-            if not live_results:
+        resolved_location_id = (location_id or "").strip()
+
+        if not resolved_location_id:
+            try:
+                live_results = self.search_locations(destination)
+                if not live_results:
+                    return stub_bundle
+
+                preferred = []
+                for item in live_results:
+                    normalized_category = self._normalized(item.category)
+                    if normalized_category in {"service", "hotel"}:
+                        continue
+                    preferred.append(item)
+
+                if not preferred:
+                    return stub_bundle
+
+                if category:
+                    category_lower = self._normalized(category)
+                    matching_category = [item for item in preferred if self._normalized(item.category) == category_lower]
+                    if matching_category:
+                        preferred = matching_category
+
+                resolved_location_id = preferred[0].location_id
+                destination = preferred[0].name
+            except Exception:
                 return stub_bundle
 
-            top_result = live_results[0]
-            live_reviews = self._live_location_reviews(top_result.location_id)
-
-            if len(live_reviews) < 2:
+        def _load() -> dict[str, object]:
+            live_reviews = self._live_location_reviews(resolved_location_id)
+            if len(live_reviews) < self.settings.tripadvisor_min_live_reviews:
                 return stub_bundle
 
             return {
-                "location_id": top_result.location_id,
-                "location_name": top_result.name,
+                "location_id": resolved_location_id,
+                "location_name": destination,
                 "reviews": live_reviews,
                 "source": "live",
             }
+
+        try:
+            return self._cache_or_compute(
+                "tripadvisor_review_bundle",
+                {
+                    "destination": destination.strip().lower(),
+                    "location_id": resolved_location_id,
+                },
+                self.settings.tripadvisor_reviews_cache_ttl_seconds,
+                _load,
+            )
         except Exception:
             return stub_bundle

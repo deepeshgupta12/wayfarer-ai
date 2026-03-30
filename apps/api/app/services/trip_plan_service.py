@@ -518,6 +518,51 @@ def _build_workspace_alternatives(
 
     return alternatives[:max_items]
 
+def _trip_candidate_category(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _scoped_trip_candidate_results(
+    destination: str,
+    results: list[TripCandidatePlace] | list[object],
+    *,
+    keep_root_destination: bool = False,
+) -> list[object]:
+    if not results:
+        return []
+
+    destination_lower = destination.strip().lower()
+    safe_results = [
+        result
+        for result in results
+        if _trip_candidate_category(getattr(result, "category", "")) not in {"service", "hotel"}
+    ]
+    if not safe_results:
+        safe_results = list(results)
+
+    if keep_root_destination:
+        return safe_results
+
+    non_root_results = [
+        result
+        for result in safe_results
+        if getattr(result, "name", "").strip().lower() != destination_lower
+        and _trip_candidate_category(getattr(result, "category", "")) not in {"city", "region", "country"}
+    ]
+
+    return non_root_results or safe_results
+
+
+def _get_trip_review_bundle_for_result(result: object) -> dict[str, object]:
+    try:
+        return tripadvisor_client.get_destination_reviews(
+            getattr(result, "name"),
+            location_id=getattr(result, "location_id"),
+            category=getattr(result, "category"),
+        )
+    except TypeError:
+        return tripadvisor_client.get_destination_reviews(getattr(result, "name"))
+
 
 def _build_candidate_places(
     db: Session,
@@ -533,8 +578,11 @@ def _build_candidate_places(
         traveller_type=parsed_constraints.group_type,
         interests=list(parsed_constraints.interests or []),
     )
-
-    scoped_results = list(results[:8])
+    scoped_results = _scoped_trip_candidate_results(
+        destination,
+        list(results),
+        keep_root_destination=True,
+    )[:8]
     allowed_location_ids = {result.location_id for result in scoped_results}
 
     persist_place_embeddings_and_relations(
@@ -548,7 +596,7 @@ def _build_candidate_places(
     candidates: list[TripCandidatePlace] = []
 
     for result in scoped_results:
-        review_bundle = tripadvisor_client.get_destination_reviews(result.name)
+        review_bundle = _get_trip_review_bundle_for_result(result)
         review_analysis = analyze_review_bundle(
             location_id=str(review_bundle["location_id"]),
             location_name=str(review_bundle["location_name"]),

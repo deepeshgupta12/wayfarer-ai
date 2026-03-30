@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.services.photo_intelligence_service import enrich_place_payload_with_ranked_photos
 
 from app.clients.google_places_client import GooglePlacesClient
+from app.clients.tripadvisor_client import TripadvisorClient
 from app.models.saved_trip import SavedTripRecord
 from app.schemas.destination import (
     NearbyDiscoveryContext,
@@ -18,6 +19,7 @@ from app.schemas.destination import (
 )
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 
+tripadvisor_client = TripadvisorClient()
 google_places_client = GooglePlacesClient()
 settings = get_settings()
 
@@ -342,6 +344,30 @@ def _attach_photos_to_nearby_recommendations(
         enriched.append(NearbyPlaceRecommendation(**payload))
     return enriched
 
+def _is_nearby_item_safe(item: dict[str, Any]) -> bool:
+    category = str(item.get("category") or "").strip().lower()
+    name = str(item.get("name") or "").strip().lower()
+
+    if category in {"service", "hotel"}:
+        return False
+
+    blocked_terms = [
+        "airport transfer",
+        "transfer",
+        "taxi",
+        "shuttle",
+        "car service",
+        "tour",
+        "ticket",
+        "experience",
+        "hotel",
+        "hostel",
+        "resort",
+        "apartment",
+        "inn",
+    ]
+    return not any(term in name for term in blocked_terms)
+
 
 def discover_context_aware_nearby_places(
     db: Session,
@@ -383,6 +409,38 @@ def discover_context_aware_nearby_places(
             limit=max(payload.limit * 3, 12),
             open_now_only=open_now_only,
         )
+
+        if len(provider_items) < payload.limit:
+            supplemental_results = tripadvisor_client.search_nearby_locations(
+                latitude=payload.latitude,
+                longitude=payload.longitude,
+                query=payload.query or context.intent_hint,
+                limit=max(payload.limit * 2, 8),
+            )
+            provider_items.extend(
+                [
+                    {
+                        "location_id": item.location_id,
+                        "name": item.name,
+                        "city": item.city,
+                        "country": item.country,
+                        "category": item.category,
+                        "rating": item.rating,
+                        "review_count": item.review_count,
+                        "latitude": payload.latitude,
+                        "longitude": payload.longitude,
+                        "price_level": None,
+                        "open_now": None,
+                        "source": "tripadvisor_nearby",
+                        "vibe_tags": [item.category],
+                    }
+                    for item in supplemental_results
+                ]
+            )
+
+        for item in provider_items:
+            if not _is_nearby_item_safe(item):
+                continue
 
         for item in provider_items:
             location_id = str(item.get("location_id") or "")
@@ -492,6 +550,8 @@ def discover_context_aware_nearby_places(
         for candidate in candidate_places:
             location_id = str(candidate.get("location_id") or "")
             if not location_id or location_id in blocked_location_ids or location_id in seen_fallback_ids:
+                continue
+            if str(candidate.get("category") or "").strip().lower() in {"service", "hotel", "city", "region", "country"}:
                 continue
 
             seen_fallback_ids.add(location_id)

@@ -7,12 +7,14 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.clients.google_places_client import GooglePlacesClient
+from app.clients.tripadvisor_client import TripadvisorClient
 from app.core.config import get_settings
 from app.models.place_photo import PlacePhotoRecord
 from app.schemas.destination import PlacePhotoAsset
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 
 google_places_client = GooglePlacesClient()
+tripadvisor_client = TripadvisorClient()
 settings = get_settings()
 
 
@@ -168,7 +170,7 @@ def _upsert_place_photo(
             tags=tags,
             scene_type=scene_type,
             quality_score=quality_score,
-            metadata={
+            photo_metadata={
                 "provider_payload": dict(photo),
             },
         )
@@ -184,11 +186,42 @@ def _upsert_place_photo(
         record.tags = tags
         record.scene_type = scene_type
         record.quality_score = quality_score
-        record.metadata = {
+        record.photo_metadata = {
             "provider_payload": dict(photo),
         }
 
     return record
+
+def _merge_provider_photos(
+    primary: list[dict[str, Any]],
+    secondary: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_urls: set[str] = set()
+
+    for photo in primary + secondary:
+        photo_id = str(photo.get("photo_id") or "").strip()
+        image_url = str(photo.get("image_url") or "").strip()
+
+        if not image_url:
+            continue
+        if photo_id and photo_id in seen_ids:
+            continue
+        if image_url in seen_urls:
+            continue
+
+        if photo_id:
+            seen_ids.add(photo_id)
+        seen_urls.add(image_url)
+        merged.append(photo)
+
+        if len(merged) >= limit:
+            break
+
+    return merged
 
 
 def ingest_place_photos(
@@ -203,12 +236,23 @@ def ingest_place_photos(
 ) -> list[PlacePhotoRecord]:
     resolved_limit = limit or settings.photo_default_limit
 
-    provider_photos = google_places_client.get_place_photos(
+    tripadvisor_photos = tripadvisor_client.get_location_photos(
+        location_id,
+        limit=resolved_limit,
+    )
+
+    google_photos = google_places_client.get_place_photos(
         location_id=location_id,
         name=place_name,
         city=city,
         country=country,
         category=category,
+        limit=resolved_limit,
+    )
+
+    provider_photos = _merge_provider_photos(
+        tripadvisor_photos,
+        google_photos,
         limit=resolved_limit,
     )
 
