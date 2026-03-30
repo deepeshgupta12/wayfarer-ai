@@ -1,12 +1,23 @@
 import { motion } from 'framer-motion';
-import { Trophy, Route, Scale, ChevronRight } from 'lucide-react';
+import { Trophy, Route, Scale, ChevronRight, Camera } from 'lucide-react';
+
+function renderHero(side) {
+  const photo = side?.hero_photos?.[0]?.image_url;
+  if (!photo) return null;
+
+  return (
+    <div className="mt-3 h-32 rounded-xl overflow-hidden bg-secondary">
+      <img src={photo} alt={side?.name} className="w-full h-full object-cover" />
+    </div>
+  );
+}
 
 export default function ComparisonResult({ data, onPlanDestination }) {
   if (!data) return null;
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="space-y-8">
-      <div className="grid grid-cols-[1fr_auto_1fr] gap-4 items-center">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] gap-4 items-stretch">
         <div className="p-5 rounded-2xl bg-card border border-border text-center">
           <h3 className="font-serif text-xl font-bold">{data.destination_a?.name}</h3>
           <p className="text-sm text-muted-foreground mt-1">{data.destination_a?.tagline}</p>
@@ -14,9 +25,16 @@ export default function ComparisonResult({ data, onPlanDestination }) {
           <p className="text-xs text-muted-foreground mt-2">
             Weighted score: <span className="font-semibold">{data.destination_a?.weighted_score}</span>
           </p>
+          {data.destination_a?.hero_photos?.length ? (
+            <div className="text-[11px] text-muted-foreground mt-2 inline-flex items-center gap-1">
+              <Camera className="w-3 h-3" />
+              {data.destination_a.hero_photos.length} ranked photos
+            </div>
+          ) : null}
+          {renderHero(data.destination_a)}
         </div>
 
-        <div className="text-lg font-bold text-muted-foreground">VS</div>
+        <div className="hidden lg:flex text-lg font-bold text-muted-foreground items-center justify-center">VS</div>
 
         <div className="p-5 rounded-2xl bg-card border border-border text-center">
           <h3 className="font-serif text-xl font-bold">{data.destination_b?.name}</h3>
@@ -25,6 +43,13 @@ export default function ComparisonResult({ data, onPlanDestination }) {
           <p className="text-xs text-muted-foreground mt-2">
             Weighted score: <span className="font-semibold">{data.destination_b?.weighted_score}</span>
           </p>
+          {data.destination_b?.hero_photos?.length ? (
+            <div className="text-[11px] text-muted-foreground mt-2 inline-flex items-center gap-1">
+              <Camera className="w-3 h-3" />
+              {data.destination_b.hero_photos.length} ranked photos
+            </div>
+          ) : null}
+          {renderHero(data.destination_b)}
         </div>
       </div>
 
@@ -33,7 +58,7 @@ export default function ComparisonResult({ data, onPlanDestination }) {
 
         {data.dimensions?.map((dim, i) => (
           <motion.div
-            key={i}
+            key={dim.name || i}
             initial={{ opacity: 0, x: -10 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: i * 0.04 }}
@@ -82,7 +107,7 @@ export default function ComparisonResult({ data, onPlanDestination }) {
             </div>
 
             <div className="mt-2 text-[11px] text-muted-foreground">
-              Winner: <span className="font-medium capitalize">{dim.winner.replace('_', ' ')}</span>
+              Winner: <span className="font-medium capitalize">{String(dim.winner).replace('_', ' ')}</span>
             </div>
           </motion.div>
         ))}
@@ -121,26 +146,36 @@ export default function ComparisonResult({ data, onPlanDestination }) {
         ) : null}
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-4">
-        <button
-          onClick={() => onPlanDestination?.(data.destination_a?.name)}
-          className="p-4 rounded-xl bg-card border border-border text-left hover:border-accent/30 transition-colors"
-        >
-          <div className="font-medium text-sm">Plan {data.destination_a?.name}</div>
-          <div className="text-xs text-muted-foreground mt-1">
-            Start a Wayfarer-native itinerary flow from this comparison.
+      {data.youd_also_love?.length ? (
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <h3 className="font-semibold mb-3">You’d also love</h3>
+          <div className="grid gap-3 md:grid-cols-2">
+            {data.youd_also_love.slice(0, 4).map((item) => (
+              <div key={item.location_id} className="rounded-xl border border-border p-3">
+                <div className="font-medium text-sm">{item.name}</div>
+                <div className="text-xs text-muted-foreground mt-1">{item.reason}</div>
+              </div>
+            ))}
           </div>
-        </button>
+        </div>
+      ) : null}
 
-        <button
-          onClick={() => onPlanDestination?.(data.destination_b?.name)}
-          className="p-4 rounded-xl bg-card border border-border text-left hover:border-accent/30 transition-colors"
-        >
-          <div className="font-medium text-sm">Plan {data.destination_b?.name}</div>
-          <div className="text-xs text-muted-foreground mt-1">
-            Open the planner with this destination as the active branch.
-          </div>
-        </button>
+      <div className="grid sm:grid-cols-2 gap-4">
+        {(data.plan_start_options?.length ? data.plan_start_options : [
+          { destination: data.destination_a?.name },
+          { destination: data.destination_b?.name },
+        ]).map((option) => (
+          <button
+            key={option.destination}
+            onClick={() => onPlanDestination?.(option.destination, option)}
+            className="p-4 rounded-xl bg-card border border-border text-left hover:border-accent/30 transition-colors"
+          >
+            <div className="font-medium text-sm">Plan {option.destination}</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {option.recommended ? 'Recommended branch from comparison.' : 'Open the planner with this destination as the active branch.'}
+            </div>
+          </button>
+        ))}
       </div>
     </motion.div>
   );

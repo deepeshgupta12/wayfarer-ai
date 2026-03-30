@@ -13,6 +13,13 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
+from app.schemas.destination import PlacePhotoAsset
+from app.services.photo_intelligence_service import (
+    build_visual_runtime_signal,
+    enrich_place_payload_with_ranked_photos,
+)
+
 from app.models.live_runtime import (
     ActiveTripContextRecord,
     AgentGraphEventRecord,
@@ -40,7 +47,7 @@ from app.services.persona_embedding_service import calculate_persona_relevance_s
 _CHECKPOINTER = MemorySaver()
 _MAX_NEARBY_RESULTS = 5
 _MAX_GEM_RESULTS = 5
-
+settings = get_settings()
 
 class LiveGraphState(TypedDict, total=False):
     run_id: str
@@ -871,6 +878,78 @@ def _build_replan_alternatives(state: LiveGraphState) -> list[dict[str, Any]]:
 
     return filtered[:_MAX_NEARBY_RESULTS]
 
+def _runtime_visual_context_tags(
+    state: LiveGraphState,
+    extra_tags: list[str] | None = None,
+) -> list[str]:
+    live_context = dict(state.get("live_context") or {})
+    values = [
+        str(live_context.get("intent_hint") or "").strip().lower(),
+        str(live_context.get("current_slot_type") or "").strip().lower(),
+        *(extra_tags or []),
+    ]
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _build_visual_signal_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    photos = [
+        PlacePhotoAsset(**photo)
+        for photo in list(payload.get("photos") or [])
+    ]
+    return build_visual_runtime_signal(
+        photos=photos,
+        place_name=str(payload.get("name") or "place"),
+    )
+
+
+def _enrich_runtime_item_with_visuals(
+    db: Session,
+    state: LiveGraphState,
+    item: dict[str, Any],
+    *,
+    extra_tags: list[str] | None = None,
+) -> dict[str, Any]:
+    saved_trip = dict(state.get("saved_trip") or {})
+    parsed_constraints = dict(saved_trip.get("parsed_constraints") or {})
+
+    enriched = enrich_place_payload_with_ranked_photos(
+        db,
+        payload=dict(item),
+        traveller_id=str(state.get("traveller_id") or "") or None,
+        traveller_type=parsed_constraints.get("group_type"),
+        interests=list(parsed_constraints.get("interests") or []),
+        context_tags=_runtime_visual_context_tags(state, extra_tags=extra_tags),
+        limit=settings.photo_card_limit,
+    )
+    enriched["visual_signal"] = _build_visual_signal_from_payload(enriched)
+    return enriched
+
+
+def _enrich_runtime_items_with_visuals(
+    db: Session,
+    state: LiveGraphState,
+    items: list[dict[str, Any]],
+    *,
+    extra_tags: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        _enrich_runtime_item_with_visuals(
+            db,
+            state,
+            item,
+            extra_tags=extra_tags,
+        )
+        for item in items
+    ]
+
+
 def _signal_location_ids_by_type(
     recent_signals: list[dict[str, Any]],
     signal_types: set[str],
@@ -1093,6 +1172,25 @@ def _nearby_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
             **payload,
         }
 
+        result["recommendations"] = _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            list(result.get("recommendations") or []),
+            extra_tags=["nearby_runtime"],
+        )
+        result["walking_alternatives"] = _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            list(result.get("walking_alternatives") or []),
+            extra_tags=["walking_alternative"],
+        )
+        result["fallbacks"] = _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            list(result.get("fallbacks") or []),
+            extra_tags=["fallback_runtime"],
+        )
+
     _record_graph_event(
         db,
         run_id=state["run_id"],
@@ -1113,7 +1211,12 @@ def _gem_agent_node(db: Session, state: LiveGraphState) -> LiveGraphState:
         "agent": "gem_agent",
         "title": "Underrated places around your current trip",
         "message": "These recommendations tilt toward stronger fit with lighter crowd saturation inside your active trip pool.",
-        "gems": gem_recommendations,
+        "gems": _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            gem_recommendations,
+            extra_tags=["hidden_gem_runtime"],
+        ),
     }
 
     _record_graph_event(
@@ -1193,6 +1296,25 @@ def _live_replan_agent_node(db: Session, state: LiveGraphState) -> LiveGraphStat
             "blocked_location_ids": nearby_response.blocked_location_ids,
         }
 
+        result["alternatives"] = _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            list(result.get("alternatives") or []),
+            extra_tags=["live_replan"],
+        )
+        result["walking_alternatives"] = _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            list(result.get("walking_alternatives") or []),
+            extra_tags=["walking_alternative"],
+        )
+        result["fallbacks"] = _enrich_runtime_items_with_visuals(
+            db,
+            state,
+            list(result.get("fallbacks") or []),
+            extra_tags=["fallback_runtime"],
+        )
+
     _record_graph_event(
         db,
         run_id=state["run_id"],
@@ -1222,12 +1344,13 @@ def _proactive_monitor_agent_node(db: Session, state: LiveGraphState) -> LiveGra
 
     result = {
         "agent": "proactive_monitor_agent",
-        "title": "Active itinerary monitoring",
+        "title": "Proactive itinerary monitor",
         "message": "I inspected the active itinerary for closure, quality, timing, and fallback risks before the traveller manually encounters them.",
         "alerts": alerts,
         "generated_count": inspect_response.generated_count,
         "open_alert_count": inspect_response.open_alert_count,
         "checked_at": inspect_response.checked_at.isoformat(),
+        "monitor_mode": "pseudo_scheduled",
     }
 
     _record_graph_event(

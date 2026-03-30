@@ -1,27 +1,31 @@
 import { motion } from 'framer-motion';
-import { Calendar, MapPin, Layers, Heart } from 'lucide-react';
+import { MapPin, Calendar, Layers, Heart, Camera } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import moment from 'moment';
 
-const statusColors = {
-  planning: 'bg-ocean-light text-ocean',
-  upcoming: 'bg-sage-light text-sage',
-  active: 'bg-accent/10 text-accent',
-  completed: 'bg-secondary text-muted-foreground',
-};
-
 const defaultImages = [
-  'https://images.unsplash.com/photo-1488646953014-85cb44e25828?w=600&h=300&fit=crop',
-  'https://images.unsplash.com/photo-1469854523086-cc02fe5d8800?w=600&h=300&fit=crop',
-  'https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?w=600&h=300&fit=crop',
+  'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=800&h=500&fit=crop',
+  'https://images.unsplash.com/photo-1585208798174-6cedd86e019a?w=800&h=500&fit=crop',
+  'https://images.unsplash.com/photo-1512453979798-5ea266f8880c?w=800&h=500&fit=crop',
 ];
 
-export default function TripPlanCard({ trip }) {
-  const image =
-    trip.destination_image || defaultImages[Math.floor(Math.random() * defaultImages.length)];
+const statusColors = {
+  planning: 'bg-secondary text-secondary-foreground',
+  upcoming: 'bg-ocean-light text-ocean',
+  active: 'bg-accent/10 text-accent',
+  completed: 'bg-sage-light text-sage',
+};
 
+function getTripImage(trip) {
+  const firstSlotPhoto = trip?.itinerary_skeleton?.flatMap((day) => day?.slots || []).flatMap((slot) => slot?.assigned_place_photos || [])[0]?.image_url;
+  return firstSlotPhoto || trip?.destination_image || defaultImages[Math.floor(Math.random() * defaultImages.length)];
+}
+
+export default function TripPlanCard({ trip }) {
+  const image = getTripImage(trip);
   const versionCount = trip.current_version_number || 0;
   const selectedPlacesCount = trip.selected_places_count || 0;
+  const photoCount = trip?.candidate_places?.reduce((acc, item) => acc + (item?.photos?.length || 0), 0) || 0;
 
   return (
     <Link to={`/itinerary?trip=${trip.trip_id}`}>
@@ -29,7 +33,7 @@ export default function TripPlanCard({ trip }) {
         whileHover={{ y: -3 }}
         className="group rounded-2xl overflow-hidden bg-card border border-border hover:shadow-lg transition-all duration-300"
       >
-        <div className="relative h-36 overflow-hidden">
+        <div className="relative h-36 overflow-hidden bg-secondary">
           <img
             src={image}
             alt={trip.destination || trip.title}
@@ -64,7 +68,7 @@ export default function TripPlanCard({ trip }) {
             </div>
           ) : null}
 
-          <div className="flex items-center gap-3 text-[11px] text-muted-foreground pt-1">
+          <div className="flex items-center gap-3 text-[11px] text-muted-foreground pt-1 flex-wrap">
             <span className="inline-flex items-center gap-1">
               <Layers className="w-3 h-3" />
               {versionCount} versions
@@ -72,6 +76,10 @@ export default function TripPlanCard({ trip }) {
             <span className="inline-flex items-center gap-1">
               <Heart className="w-3 h-3" />
               {selectedPlacesCount} saved
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Camera className="w-3 h-3" />
+              {photoCount} photos
             </span>
           </div>
         </div>

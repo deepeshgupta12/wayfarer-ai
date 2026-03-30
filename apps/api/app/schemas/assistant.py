@@ -8,6 +8,7 @@ AssistantIntent = Literal[
     "destination_compare",
     "trip_plan_create",
     "itinerary_follow_up",
+    "live_runtime",
     "unknown",
 ]
 

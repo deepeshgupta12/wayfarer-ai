@@ -53,6 +53,23 @@ class Settings(BaseSettings):
     photo_itinerary_limit: int = Field(default=2, alias="PHOTO_ITINERARY_LIMIT")
     photo_preview_limit: int = Field(default=2, alias="PHOTO_PREVIEW_LIMIT")
 
+    photo_runtime_visual_signals_enabled: bool = Field(
+        default=True,
+        alias="PHOTO_RUNTIME_VISUAL_SIGNALS_ENABLED",
+    )
+    photo_deep_cv_research_enabled: bool = Field(
+        default=True,
+        alias="PHOTO_DEEP_CV_RESEARCH_ENABLED",
+    )
+    photo_custom_training_enabled: bool = Field(
+        default=True,
+        alias="PHOTO_CUSTOM_TRAINING_ENABLED",
+    )
+    photo_research_sample_limit: int = Field(
+        default=8,
+        alias="PHOTO_RESEARCH_SAMPLE_LIMIT",
+    )
+
     default_llm_provider: str = Field(default="openai", alias="DEFAULT_LLM_PROVIDER")
     default_embed_provider: str = Field(default="ollama", alias="DEFAULT_EMBED_PROVIDER")
 

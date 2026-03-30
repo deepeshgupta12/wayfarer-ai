@@ -161,6 +161,14 @@ export async function getSimilarPlaces(payload) {
   return sendJson('/destinations/places/similar', payload);
 }
 
+export async function discoverNearbyPlaces(payload) {
+  return sendJson('/destinations/nearby', payload);
+}
+
+export async function discoverHiddenGems(payload) {
+  return sendJson('/destinations/gems', payload);
+}
+
 export async function orchestrateAssistant(payload) {
   return sendJson('/assistant/orchestrate', payload);
 }
@@ -300,6 +308,56 @@ export async function getTravellerMemory(travellerId, limit = 20, filters = {}) 
   return sendGet(
     `/traveller-memory/${encodeURIComponent(travellerId)}?${params.toString()}`
   );
+}
+
+export async function upsertLiveRuntimeContext(payload) {
+  return sendJson('/live-runtime/context', payload);
+}
+
+export async function getLiveRuntimeContext(tripId) {
+  return sendGet(`/live-runtime/context/${encodeURIComponent(tripId)}`);
+}
+
+export async function writeLiveRuntimeAction(payload) {
+  return sendJson('/live-runtime/actions', payload);
+}
+
+export async function orchestrateLiveRuntime(payload) {
+  return sendJson('/live-runtime/orchestrate', payload);
+}
+
+export async function streamLiveRuntime(payload, options = {}) {
+  const response = await fetch(`${API_BASE_URL}/live-runtime/orchestrate/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return parseNdjsonStream(response, options.onEvent);
+}
+
+export async function inspectProactiveAlerts(payload) {
+  return sendJson('/live-runtime/monitor/inspect', payload);
+}
+
+export async function listProactiveAlerts(tripId, { status, limit = 100 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (status) params.set('status', status);
+  return sendGet(`/live-runtime/alerts/${encodeURIComponent(tripId)}?${params.toString()}`);
+}
+
+export async function resolveProactiveAlert(alertId, payload) {
+  return sendJson(`/live-runtime/alerts/${encodeURIComponent(alertId)}/resolve`, payload);
+}
+
+export async function getLiveRuntimeRun(runId) {
+  return sendGet(`/live-runtime/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function getLiveRuntimeEvents(runId, limit = 200) {
+  return sendGet(`/live-runtime/runs/${encodeURIComponent(runId)}/events?limit=${limit}`);
 }
 
 export async function getBackendHealth() {

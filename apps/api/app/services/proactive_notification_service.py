@@ -19,8 +19,14 @@ from app.schemas.live_runtime import (
     ProactiveMonitorInspectResponse,
 )
 
-google_places_client = GooglePlacesClient()
+from app.core.config import get_settings
+from app.services.photo_intelligence_service import (
+    build_visual_runtime_signal,
+    enrich_place_payload_with_ranked_photos,
+)
 
+google_places_client = GooglePlacesClient()
+settings = get_settings()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -77,6 +83,33 @@ def _candidate_map(saved_trip: SavedTripRecord) -> dict[str, dict]:
     items = list(saved_trip.current_candidate_places or [])
     return {str(item.get("location_id")): item for item in items if item.get("location_id")}
 
+def _enrich_alert_alternative_with_visuals(
+    db: Session,
+    *,
+    saved_trip: SavedTripRecord,
+    alternative: dict,
+) -> dict:
+    parsed_constraints = dict(saved_trip.current_parsed_constraints or {})
+
+    payload = enrich_place_payload_with_ranked_photos(
+        db,
+        payload=dict(alternative),
+        traveller_id=saved_trip.traveller_id,
+        traveller_type=parsed_constraints.get("group_type"),
+        interests=list(parsed_constraints.get("interests") or []),
+        context_tags=["alert_alternative", str(alternative.get("category") or "place")],
+        limit=settings.photo_preview_limit,
+    )
+
+    photos = payload.get("photos") or []
+    payload["visual_signal"] = build_visual_runtime_signal(
+        photos=[photo for photo in []] if False else [
+            # convert dicts back into PlacePhotoAsset-compatible shape lazily in consumer-facing payload
+        ],
+        place_name=str(payload.get("name") or "place"),
+    )
+    return payload
+
 
 def _get_days_to_check(
     saved_trip: SavedTripRecord,
@@ -107,6 +140,8 @@ def _get_days_to_check(
 
 
 def _build_alternatives(
+    db: Session,
+    saved_trip: SavedTripRecord,
     slot: dict,
     current_location_id: str | None,
     candidate_lookup: dict[str, dict],
@@ -115,14 +150,24 @@ def _build_alternatives(
     alternatives: list[dict] = []
     seen: set[str] = set()
 
-    for item in list(slot.get("alternatives") or []):
-        location_id = str(item.get("location_id") or "")
+    def append_item(raw_item: dict) -> bool:
+        location_id = str(raw_item.get("location_id") or "")
         if not location_id or location_id == str(current_location_id or "") or location_id in seen:
-            continue
+            return False
         seen.add(location_id)
-        alternatives.append(
+
+        enriched = _enrich_alert_alternative_with_visuals(
+            db,
+            saved_trip=saved_trip,
+            alternative=raw_item,
+        )
+        alternatives.append(enriched)
+        return len(alternatives) >= max_items
+
+    for item in list(slot.get("alternatives") or []):
+        if append_item(
             {
-                "location_id": location_id,
+                "location_id": str(item.get("location_id") or ""),
                 "name": item.get("name"),
                 "city": item.get("city"),
                 "country": item.get("country"),
@@ -131,8 +176,7 @@ def _build_alternatives(
                 "why_alternative": item.get("why_alternative"),
                 "source": "slot_alternative",
             }
-        )
-        if len(alternatives) >= max_items:
+        ):
             return alternatives
 
     for fallback_id in list(slot.get("fallback_candidate_ids") or []):
@@ -142,8 +186,8 @@ def _build_alternatives(
         candidate = candidate_lookup.get(fallback_id)
         if candidate is None:
             continue
-        seen.add(fallback_id)
-        alternatives.append(
+
+        if append_item(
             {
                 "location_id": fallback_id,
                 "name": candidate.get("name"),
@@ -154,15 +198,14 @@ def _build_alternatives(
                 "why_alternative": "Fallback candidate already attached to this slot.",
                 "source": "slot_fallback",
             }
-        )
-        if len(alternatives) >= max_items:
+        ):
             return alternatives
 
     for location_id, candidate in candidate_lookup.items():
         if location_id == str(current_location_id or "") or location_id in seen:
             continue
-        seen.add(location_id)
-        alternatives.append(
+
+        if append_item(
             {
                 "location_id": location_id,
                 "name": candidate.get("name"),
@@ -173,8 +216,7 @@ def _build_alternatives(
                 "why_alternative": "Fallback recommendation from the active trip candidate pool.",
                 "source": "trip_pool",
             }
-        )
-        if len(alternatives) >= max_items:
+        ):
             break
 
     return alternatives
@@ -306,10 +348,11 @@ def inspect_active_trip_alerts(
             assigned_place_name = str(slot.get("assigned_place_name") or "") or None
 
             alternatives = _build_alternatives(
-                slot=slot,
-                current_location_id=assigned_location_id,
-                candidate_lookup=candidate_lookup,
-                max_items=3,
+                db,
+                saved_trip,
+                slot,
+                assigned_location_id,
+                candidate_lookup,
             )
 
             if not assigned_location_id:

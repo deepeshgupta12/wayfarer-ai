@@ -4,8 +4,9 @@ import { ArrowLeft, Sparkles, Loader2 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import LoadingState from '../components/ui/LoadingState';
 import ComparisonResult from '../components/compare/ComparisonResult';
-import { compareDestinations, createTravellerMemory } from '@/api/wayfarerApi';
+import { compareDestinations, createTravellerMemory, createTripPlanFromComparison } from '@/api/wayfarerApi';
 import { getOrCreateTravellerId, getTravellerPersona } from '@/lib/travellerProfile';
+import { cacheTripPlan } from '@/lib/tripStorage';
 
 export default function Compare() {
   const [destA, setDestA] = useState('');
@@ -13,6 +14,7 @@ export default function Compare() {
   const [comparison, setComparison] = useState(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [creatingPlan, setCreatingPlan] = useState('');
   const navigate = useNavigate();
 
   const handleCompare = async () => {
@@ -34,6 +36,7 @@ export default function Compare() {
         pace_preference: persona?.signals?.pace_preference || 'balanced',
         budget: persona?.signals?.travel_style || 'midrange',
         duration_days: 4,
+        traveller_id: travellerId,
       };
 
       const result = await compareDestinations(payload);
@@ -52,6 +55,7 @@ export default function Compare() {
             (result.destination_a?.weighted_score || 0) >= (result.destination_b?.weighted_score || 0)
               ? result.destination_a?.name
               : result.destination_b?.name,
+          comparison_id: result.comparison_id,
         },
       });
     } catch (error) {
@@ -61,9 +65,52 @@ export default function Compare() {
     }
   };
 
-  const handlePlanDestination = (destinationName) => {
-    if (!destinationName) return;
-    navigate(`/assistant?prompt=${encodeURIComponent(`I have 4 days in ${destinationName} for a personalized trip`)}`);
+  const handlePlanDestination = async (destinationName, option) => {
+    if (!comparison || !destinationName) return;
+
+    const travellerId = getOrCreateTravellerId();
+    const persona = getTravellerPersona();
+    setCreatingPlan(destinationName);
+    setErrorMessage('');
+
+    try {
+      const plan = await createTripPlanFromComparison({
+        traveller_id: travellerId,
+        source_surface: 'compare',
+        duration_days: 4,
+        group_type: persona?.signals?.group_type || 'solo',
+        interests: persona?.signals?.interests || [],
+        pace_preference: persona?.signals?.pace_preference || 'balanced',
+        budget: persona?.signals?.travel_style || 'midrange',
+        comparison_context: {
+          comparison_id: comparison.comparison_id,
+          source_surface: 'compare',
+          destination_a: comparison.destination_a?.name,
+          destination_b: comparison.destination_b?.name,
+          selected_branch: option?.branch || null,
+          selected_destination: destinationName,
+          selected_location_id: option?.location_id || null,
+          verdict: comparison.verdict,
+          planning_recommendation: comparison.planning_recommendation,
+          options: (comparison.plan_start_options || []).map((item) => ({
+            branch: item.branch,
+            location_id: item.location_id,
+            destination: item.destination,
+            weighted_score: item.weighted_score,
+            why_pick_this: item.recommended
+              ? 'Recommended from comparison result.'
+              : 'Alternate branch from comparison result.',
+          })),
+        },
+      });
+
+      cacheTripPlan(plan);
+      navigate(`/assistant?planning_session_id=${encodeURIComponent(plan.planning_session_id)}&prompt=${encodeURIComponent(`Plan ${destinationName} using my selected comparison branch`)}`);
+    } catch (error) {
+      setErrorMessage(error?.message || 'Unable to create planning branch from comparison.');
+    } finally {
+      setCreatingPlan('');
+    }
   };
 
   return (
@@ -121,6 +168,12 @@ export default function Compare() {
       </div>
 
       {loading ? <LoadingState message="Comparing destinations with persona-weighted backend scoring..." /> : null}
+
+      {creatingPlan ? (
+        <div className="rounded-xl border border-accent/20 bg-accent/5 px-4 py-3 text-sm text-accent mb-6">
+          Creating planning branch for {creatingPlan}…
+        </div>
+      ) : null}
 
       {errorMessage ? (
         <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive mb-6">

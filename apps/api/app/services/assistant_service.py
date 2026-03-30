@@ -10,11 +10,16 @@ from app.schemas.assistant import (
     AssistantOrchestrateResponse,
 )
 from app.schemas.destination import DestinationComparisonRequest, DestinationGuideRequest
+from app.schemas.live_runtime import LiveRuntimeOrchestrateRequest
 from app.schemas.trip_plan import TripBriefParseRequest
 from app.services.destination_service import (
+    build_destination_guide,
     compare_destinations,
     stream_destination_guide,
-    build_destination_guide,
+)
+from app.services.live_runtime_service import (
+    orchestrate_live_runtime,
+    stream_live_runtime,
 )
 from app.services.trip_plan_service import (
     DESTINATION_HINTS,
@@ -22,6 +27,27 @@ from app.services.trip_plan_service import (
     get_trip_plan_summary,
     parse_and_save_trip_brief,
 )
+
+
+_LIVE_RUNTIME_PATTERNS = [
+    r"\bnear me\b",
+    r"\bnearby\b",
+    r"\bright now\b",
+    r"\bopen now\b",
+    r"\baround me\b",
+    r"\bwalking distance\b",
+    r"\bhidden gem\b",
+    r"\bunderrated\b",
+    r"\boffbeat\b",
+    r"\bcheck my plan\b",
+    r"\bmonitor\b",
+    r"\bproactive\b",
+    r"\balert\b",
+    r"\bclosed\b",
+    r"\bunavailable\b",
+    r"\balternative\b",
+    r"\breplace this place\b",
+]
 
 
 def _extract_known_destinations(message: str) -> list[str]:
@@ -46,6 +72,11 @@ def _extract_known_destinations(message: str) -> list[str]:
     return found[:2]
 
 
+def _looks_like_live_runtime_request(message: str) -> bool:
+    lowered = message.lower().strip()
+    return any(re.search(pattern, lowered) for pattern in _LIVE_RUNTIME_PATTERNS)
+
+
 def classify_assistant_intent(payload: AssistantOrchestrateRequest) -> AssistantIntentClassification:
     message = payload.message.strip()
     lowered = message.lower()
@@ -60,6 +91,14 @@ def classify_assistant_intent(payload: AssistantOrchestrateRequest) -> Assistant
             intent="itinerary_follow_up",
             confidence=0.95,
             rationale="Detected itinerary-edit or itinerary-follow-up language with planning session context.",
+            extracted_duration_days=duration_days,
+        )
+
+    if payload.context.trip_id and _looks_like_live_runtime_request(message):
+        return AssistantIntentClassification(
+            intent="live_runtime",
+            confidence=0.94,
+            rationale="Detected live-travel runtime language with an active saved trip context.",
             extracted_duration_days=duration_days,
         )
 
@@ -117,6 +156,40 @@ def orchestrate_assistant_request(
     payload: AssistantOrchestrateRequest,
 ) -> AssistantOrchestrateResponse:
     classification = classify_assistant_intent(payload)
+
+    if classification.intent == "live_runtime":
+        if not payload.context.traveller_id or not payload.context.trip_id:
+            return AssistantOrchestrateResponse(
+                classification=classification,
+                route="unknown",
+                continuity_context={
+                    "traveller_id": payload.context.traveller_id,
+                    "trip_id": payload.context.trip_id,
+                },
+                payload={"error": "traveller_id and trip_id are required for live runtime routing."},
+            )
+
+        result = orchestrate_live_runtime(
+            db,
+            LiveRuntimeOrchestrateRequest(
+                traveller_id=payload.context.traveller_id,
+                trip_id=payload.context.trip_id,
+                planning_session_id=payload.context.planning_session_id,
+                message=payload.message,
+                source_surface=payload.source_surface,
+            ),
+        )
+        return AssistantOrchestrateResponse(
+            classification=classification,
+            route="live_runtime.orchestrate",
+            continuity_context={
+                "traveller_id": payload.context.traveller_id,
+                "planning_session_id": payload.context.planning_session_id,
+                "trip_id": payload.context.trip_id,
+                "run_id": result.run.run_id,
+            },
+            payload=result.model_dump(mode="json"),
+        )
 
     if classification.intent == "destination_guide":
         destination = classification.extracted_destination_a
@@ -250,6 +323,34 @@ def stream_assistant_request(
             "rationale": classification.rationale,
         }
     ) + "\n"
+
+    if classification.intent == "live_runtime":
+        if not payload.context.traveller_id or not payload.context.trip_id:
+            yield json.dumps(
+                {
+                    "type": "final",
+                    "payload": AssistantOrchestrateResponse(
+                        classification=classification,
+                        route="unknown",
+                        continuity_context={
+                            "traveller_id": payload.context.traveller_id,
+                            "trip_id": payload.context.trip_id,
+                        },
+                        payload={"error": "traveller_id and trip_id are required for live runtime routing."},
+                    ).model_dump(mode="json"),
+                }
+            ) + "\n"
+            return
+
+        live_payload = LiveRuntimeOrchestrateRequest(
+            traveller_id=payload.context.traveller_id,
+            trip_id=payload.context.trip_id,
+            planning_session_id=payload.context.planning_session_id,
+            message=payload.message,
+            source_surface=payload.source_surface,
+        )
+        yield from stream_live_runtime(db, live_payload)
+        return
 
     if classification.intent == "destination_guide" and classification.extracted_destination_a:
         guide_payload = DestinationGuideRequest(
