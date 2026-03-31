@@ -310,13 +310,19 @@ class GooglePlacesClient:
 
         if not suggested_areas:
             return {
-                "suggested_areas": self._stub_destination_context(destination)["suggested_areas"],
-                "freshness_note": "Live Google Places candidates did not meet minimum area-quality thresholds, so curated destination defaults were used.",
+                "suggested_areas": [],
+                "freshness_note": (
+                    "Google Places live neighborhood enrichment returned results, but none met "
+                    "the minimum area-quality thresholds for safe destination guidance."
+                ),
             }
 
         return {
             "suggested_areas": suggested_areas,
-            "freshness_note": "Suggested areas were enriched from Google Places live text search with canonicalization, POI suppression, and area-quality guardrails.",
+            "freshness_note": (
+                "Suggested areas were enriched from Google Places live text search with "
+                "canonicalization, POI suppression, and area-quality guardrails."
+            ),
         }
 
     def get_destination_context(self, destination: str) -> dict[str, object]:

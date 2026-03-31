@@ -97,6 +97,91 @@ tripadvisor_client = TripadvisorClient()
 
 settings = get_settings()
 
+_TRIP_PLACE_CATEGORIES = {
+    "neighborhood",
+    "district",
+    "market",
+    "park",
+    "museum",
+    "temple",
+    "restaurant",
+    "attraction",
+    "place",
+    "riverfront",
+}
+
+_TRIP_NOISE_KEYWORDS = [
+    "hotel",
+    "hostel",
+    "resort",
+    "apartment",
+    "apartments",
+    "inn",
+    "guest house",
+    "guesthouse",
+    "suite",
+    "suites",
+    "villa",
+    "airport transfer",
+    "transfer",
+    "taxi",
+    "cab",
+    "shuttle",
+    "tour",
+    "ticket",
+    "activity",
+    "operator",
+    "travel agency",
+    "booking",
+    "airport",
+    "massage",
+    "spa",
+    "wellness centre",
+    "wellness center",
+    "beauty salon",
+    "clinic",
+    "marriott",
+    "hilton",
+    "hyatt",
+    "ritz",
+    "ritz-carlton",
+    "four seasons",
+    "corinthia",
+    "regency",
+    "intercontinental",
+    "holiday inn",
+    "ibis",
+    "novotel",
+    "westin",
+    "sheraton",
+]
+
+
+def _trip_candidate_blob(result: object) -> str:
+    return " ".join(
+        [
+            str(getattr(result, "name", "") or ""),
+            str(getattr(result, "city", "") or ""),
+            str(getattr(result, "country", "") or ""),
+            str(getattr(result, "category", "") or ""),
+        ]
+    ).strip().lower()
+
+
+def _is_trip_candidate_noise(result: object) -> bool:
+    category = _trip_candidate_category(getattr(result, "category", ""))
+    blob = _trip_candidate_blob(result)
+
+    if category in {"service", "hotel"}:
+        return True
+
+    return any(keyword in blob for keyword in _TRIP_NOISE_KEYWORDS)
+
+
+def _is_trip_place_candidate(result: object) -> bool:
+    category = _trip_candidate_category(getattr(result, "category", ""))
+    return category in _TRIP_PLACE_CATEGORIES and not _is_trip_candidate_noise(result)
+
 
 def _get_persona_defaults(db: Session, traveller_id: str) -> dict[str, object]:
     persona = db.get(TravellerPersonaRecord, traveller_id)
@@ -535,22 +620,59 @@ def _scoped_trip_candidate_results(
     safe_results = [
         result
         for result in results
-        if _trip_candidate_category(getattr(result, "category", "")) not in {"service", "hotel"}
+        if not _is_trip_candidate_noise(result)
     ]
     if not safe_results:
         safe_results = list(results)
 
-    if keep_root_destination:
-        return safe_results
-
-    non_root_results = [
+    root_destination_matches = [
         result
         for result in safe_results
-        if getattr(result, "name", "").strip().lower() != destination_lower
-        and _trip_candidate_category(getattr(result, "category", "")) not in {"city", "region", "country"}
+        if getattr(result, "name", "").strip().lower() == destination_lower
+        and _trip_candidate_category(getattr(result, "category", "")) in {"city", "region", "country"}
     ]
 
-    return non_root_results or safe_results
+    place_like_results = [
+        result
+        for result in safe_results
+        if _is_trip_place_candidate(result)
+    ]
+
+    non_root_place_results = [
+        result
+        for result in place_like_results
+        if getattr(result, "name", "").strip().lower() != destination_lower
+    ]
+
+    if keep_root_destination:
+        if len(place_like_results) >= 4:
+            return place_like_results
+        if root_destination_matches:
+            return [*place_like_results, *root_destination_matches]
+        return place_like_results or safe_results
+
+    if len(non_root_place_results) >= 4:
+        return non_root_place_results
+
+    if len(place_like_results) >= 4:
+        return place_like_results
+
+    if root_destination_matches:
+        merged: list[object] = []
+        seen_ids: set[str] = set()
+
+        for result in [*non_root_place_results, *place_like_results, *root_destination_matches]:
+            location_id = str(getattr(result, "location_id", "") or "").strip().lower()
+            name = str(getattr(result, "name", "") or "").strip().lower()
+            dedupe_key = location_id or name
+            if not dedupe_key or dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+            merged.append(result)
+
+        return merged
+
+    return non_root_place_results or place_like_results or safe_results
 
 
 def _get_trip_review_bundle_for_result(result: object) -> dict[str, object]:
@@ -562,6 +684,40 @@ def _get_trip_review_bundle_for_result(result: object) -> dict[str, object]:
         )
     except TypeError:
         return tripadvisor_client.get_destination_reviews(getattr(result, "name"))
+
+def _augment_trip_candidate_results_if_too_thin(
+    destination: str,
+    results: list[object],
+    minimum_candidates: int = 4,
+) -> list[object]:
+    safe_results = list(results or [])
+    scoped_non_root = _scoped_trip_candidate_results(
+        destination,
+        safe_results,
+        keep_root_destination=False,
+    )
+
+    if len(safe_results) >= minimum_candidates and len(scoped_non_root) >= 2:
+        return safe_results
+
+    fallback_results = tripadvisor_client._get_destination_specific_stub_results(destination)
+
+    merged: list[object] = []
+    seen_keys: set[str] = set()
+
+    for result in [*safe_results, *fallback_results]:
+        location_id = str(getattr(result, "location_id", "") or "").strip().lower()
+        name = str(getattr(result, "name", "") or "").strip().lower()
+        city = str(getattr(result, "city", "") or "").strip().lower()
+
+        dedupe_key = location_id or f"{name}:{city}"
+        if not dedupe_key or dedupe_key in seen_keys:
+            continue
+
+        seen_keys.add(dedupe_key)
+        merged.append(result)
+
+    return merged
 
 
 def _build_candidate_places(
@@ -578,10 +734,14 @@ def _build_candidate_places(
         traveller_type=parsed_constraints.group_type,
         interests=list(parsed_constraints.interests or []),
     )
+    results = _augment_trip_candidate_results_if_too_thin(
+        destination,
+        list(results),
+    )
     scoped_results = _scoped_trip_candidate_results(
         destination,
         list(results),
-        keep_root_destination=True,
+        keep_root_destination=False,
     )[:8]
     allowed_location_ids = {result.location_id for result in scoped_results}
 

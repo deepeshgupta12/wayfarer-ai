@@ -1,3 +1,5 @@
+from collections.abc import Generator
+
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
@@ -6,6 +8,16 @@ from app.schemas.assistant import AssistantOrchestrateRequest, AssistantOrchestr
 from app.services.assistant_service import orchestrate_assistant_request, stream_assistant_request
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
+
+
+def _stream_with_db_close(
+    payload: AssistantOrchestrateRequest,
+) -> Generator[str, None, None]:
+    db = get_db_session()
+    try:
+        yield from stream_assistant_request(db, payload)
+    finally:
+        db.close()
 
 
 @router.post("/orchestrate", response_model=AssistantOrchestrateResponse)
@@ -23,9 +35,7 @@ def orchestrate_assistant(
 def orchestrate_assistant_stream(
     payload: AssistantOrchestrateRequest,
 ) -> StreamingResponse:
-    db = get_db_session()
     return StreamingResponse(
-        stream_assistant_request(db, payload),
+        _stream_with_db_close(payload),
         media_type="application/x-ndjson",
-        background=None,
     )

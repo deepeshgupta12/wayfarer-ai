@@ -17,6 +17,51 @@ google_places_client = GooglePlacesClient()
 tripadvisor_client = TripadvisorClient()
 settings = get_settings()
 
+_MAX_DB_CAPTION_LENGTH = 240
+_MAX_DB_SOURCE_LENGTH = 100
+_MAX_DB_SCENE_TYPE_LENGTH = 100
+_MAX_DB_IMAGE_URL_LENGTH = 1024
+_MAX_DB_LOCATION_ID_LENGTH = 255
+_MAX_DB_PHOTO_ID_LENGTH = 255
+
+
+def _truncate_text(value: str | None, limit: int) -> str | None:
+    if value is None:
+        return None
+
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+
+    if len(normalized) <= limit:
+        return normalized
+
+    return normalized[: limit - 1].rstrip()
+
+
+def _sanitize_photo_payload(photo: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(photo)
+
+    sanitized["photo_id"] = _truncate_text(str(photo.get("photo_id") or "").strip(), _MAX_DB_PHOTO_ID_LENGTH) or ""
+    sanitized["location_id"] = _truncate_text(
+        str(photo.get("location_id") or "").strip(),
+        _MAX_DB_LOCATION_ID_LENGTH,
+    )
+    sanitized["image_url"] = _truncate_text(
+        str(photo.get("image_url") or "").strip(),
+        _MAX_DB_IMAGE_URL_LENGTH,
+    ) or ""
+    sanitized["source"] = _truncate_text(
+        str(photo.get("source") or "google_places").strip(),
+        _MAX_DB_SOURCE_LENGTH,
+    ) or "google_places"
+    sanitized["caption"] = _truncate_text(
+        str(photo.get("caption") or "").strip(),
+        _MAX_DB_CAPTION_LENGTH,
+    )
+
+    return sanitized
+
 
 def _safe_aspect_ratio(width: int | None, height: int | None) -> float | None:
     if not width or not height or height == 0:
@@ -140,16 +185,22 @@ def _upsert_place_photo(
     photo: dict[str, Any],
     category: str,
 ) -> PlacePhotoRecord:
-    photo_id = str(photo.get("photo_id") or "").strip()
+    sanitized_photo = _sanitize_photo_payload(photo)
+
+    photo_id = str(sanitized_photo.get("photo_id") or "").strip()
     if not photo_id:
         raise ValueError("photo_id is required for photo persistence.")
 
-    width = int(photo.get("width")) if photo.get("width") is not None else None
-    height = int(photo.get("height")) if photo.get("height") is not None else None
+    resolved_location_id = _truncate_text(location_id, _MAX_DB_LOCATION_ID_LENGTH) or location_id
+    width = int(sanitized_photo.get("width")) if sanitized_photo.get("width") is not None else None
+    height = int(sanitized_photo.get("height")) if sanitized_photo.get("height") is not None else None
     tags = _unique_strings(list(photo.get("tags") or []))
-    caption = str(photo.get("caption") or "").strip() or None
-    scene_type = str(photo.get("scene_type") or "").strip() or _infer_scene_type(tags, category, caption)
+    caption = sanitized_photo.get("caption")
+    raw_scene_type = str(photo.get("scene_type") or "").strip() or _infer_scene_type(tags, category, caption)
+    scene_type = _truncate_text(raw_scene_type, _MAX_DB_SCENE_TYPE_LENGTH)
     quality_score = float(photo.get("quality_score") or 0.0)
+    source = str(sanitized_photo.get("source") or "google_places")
+    image_url = str(sanitized_photo.get("image_url") or "").strip()
 
     record = (
         db.query(PlacePhotoRecord)
@@ -160,9 +211,9 @@ def _upsert_place_photo(
     if record is None:
         record = PlacePhotoRecord(
             photo_id=photo_id,
-            location_id=location_id,
-            image_url=str(photo.get("image_url") or ""),
-            source=str(photo.get("source") or "google_places"),
+            location_id=resolved_location_id,
+            image_url=image_url,
+            source=source,
             width=width,
             height=height,
             aspect_ratio=_safe_aspect_ratio(width, height),
@@ -176,9 +227,9 @@ def _upsert_place_photo(
         )
         db.add(record)
     else:
-        record.location_id = location_id
-        record.image_url = str(photo.get("image_url") or record.image_url)
-        record.source = str(photo.get("source") or record.source)
+        record.location_id = resolved_location_id
+        record.image_url = image_url or record.image_url
+        record.source = source or record.source
         record.width = width
         record.height = height
         record.aspect_ratio = _safe_aspect_ratio(width, height)
@@ -266,7 +317,11 @@ def ingest_place_photos(
         )
         persisted.append(record)
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return (
         db.query(PlacePhotoRecord)

@@ -265,6 +265,34 @@ def _ensure_step6_versioning_and_history_columns() -> None:
         for statement in statements:
             connection.execute(text(statement))
 
+def _ensure_photo_intelligence_step7_schema() -> None:
+    inspector = inspect(engine)
+
+    if "place_photos" not in inspector.get_table_names():
+        return
+
+    existing_columns = {
+        column["name"]: column
+        for column in inspector.get_columns("place_photos")
+    }
+    statements: list[str] = []
+
+    if engine.dialect.name == "postgresql":
+        caption_column = existing_columns.get("caption")
+        if caption_column is not None:
+            caption_type = str(caption_column["type"]).lower()
+            if "varchar" in caption_type or "character varying" in caption_type:
+                statements.append(
+                    "ALTER TABLE place_photos "
+                    "ALTER COLUMN caption TYPE TEXT"
+                )
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
 
 def create_db_tables() -> None:
     enable_pgvector_extension()
@@ -273,6 +301,7 @@ def create_db_tables() -> None:
     _ensure_review_intelligence_step2_columns()
     _ensure_step5_comparison_context_columns()
     _ensure_step6_versioning_and_history_columns()
+    _ensure_photo_intelligence_step7_schema()
 
 
 def ensure_runtime_schema_ready() -> None:
