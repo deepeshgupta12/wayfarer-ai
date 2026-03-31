@@ -1,5 +1,5 @@
 from app.clients.tripadvisor_client import TripadvisorClient
-from apps.api.app.schemas.destination import DestinationSearchResult
+from app.schemas.destination import DestinationSearchResult
 
 
 def test_tripadvisor_search_filters_service_and_hotel_results(monkeypatch) -> None:

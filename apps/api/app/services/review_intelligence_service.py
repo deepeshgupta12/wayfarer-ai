@@ -156,6 +156,9 @@ def _extract_themes_heuristically(
 
 def _compute_trust_score(reviews: list[dict[str, object]]) -> float:
     review_count = len(reviews)
+    if review_count == 0:
+        return 0.2
+
     short_review_count = sum(1 for review in reviews if len(str(review["text"]).strip()) < 20)
 
     ratings = [float(review["rating"]) for review in reviews]
@@ -225,12 +228,40 @@ def _record_to_persisted_output(
         cache_status=cache_status,
     )
 
+def _build_empty_review_output(
+    location_id: str,
+    location_name: str,
+) -> ReviewIntelligenceOutput:
+    return ReviewIntelligenceOutput(
+        location_id=location_id,
+        location_name=location_name,
+        quick_verdict=(
+            "There are not enough traveller reviews yet to build strong review intelligence "
+            "for this place."
+        ),
+        themes={
+            "service": "neutral",
+            "food_quality": "neutral",
+            "value": "neutral",
+            "ambience": "neutral",
+        },
+        trust_score=0.2,
+        authenticity_label="low",
+        review_count=0,
+    )
+
 
 def _analyze_review_bundle_live(
     location_id: str,
     location_name: str,
     reviews: list[dict[str, object]],
 ) -> ReviewIntelligenceOutput:
+    if not reviews:
+        return _build_empty_review_output(
+            location_id=location_id,
+            location_name=location_name,
+        )
+
     combined_text = " ".join(str(review["text"]) for review in reviews)
     average_rating = sum(float(review["rating"]) for review in reviews) / len(reviews)
 
