@@ -46,6 +46,105 @@ from app.services.review_intelligence_service import analyze_review_bundle
 tripadvisor_client = TripadvisorClient()
 google_places_client = GooglePlacesClient()
 
+_DISCOVER_DESTINATION_CATEGORIES = {
+    "city",
+    "region",
+    "country",
+    "island",
+    "neighborhood",
+    "district",
+}
+
+_DISCOVER_PLACE_CATEGORIES = {
+    "market",
+    "park",
+    "museum",
+    "temple",
+    "restaurant",
+    "attraction",
+    "place",
+    "riverfront",
+    "neighborhood",
+    "district",
+}
+
+_DISCOVER_NOISE_KEYWORDS = [
+    "hotel",
+    "hostel",
+    "resort",
+    "apartment",
+    "apartments",
+    "inn",
+    "guest house",
+    "guesthouse",
+    "suite",
+    "suites",
+    "villa",
+    "airport transfer",
+    "transfer",
+    "taxi",
+    "cab",
+    "shuttle",
+    "tour",
+    "ticket",
+    "activity",
+    "operator",
+    "travel agency",
+    "booking",
+    "airport",
+    "massage",
+    "spa",
+    "wellness centre",
+    "wellness center",
+    "beauty salon",
+    "clinic",
+    "marriott",
+    "hilton",
+    "hyatt",
+    "ritz",
+    "ritz-carlton",
+    "four seasons",
+    "corinthia",
+    "regency",
+    "intercontinental",
+    "holiday inn",
+    "ibis",
+    "novotel",
+    "westin",
+    "sheraton",
+]
+
+
+def _destination_entity_blob(item: Any) -> str:
+    return " ".join(
+        [
+            str(getattr(item, "name", "") or ""),
+            str(getattr(item, "city", "") or ""),
+            str(getattr(item, "country", "") or ""),
+            str(getattr(item, "category", "") or ""),
+        ]
+    ).strip().lower()
+
+
+def _is_noise_or_lodging_entity(item: Any) -> bool:
+    category = _destination_category(getattr(item, "category", ""))
+    blob = _destination_entity_blob(item)
+
+    if category in {"service", "hotel"}:
+        return True
+
+    return any(keyword in blob for keyword in _DISCOVER_NOISE_KEYWORDS)
+
+
+def _is_destination_card_candidate(item: Any) -> bool:
+    category = _destination_category(getattr(item, "category", ""))
+    return category in _DISCOVER_DESTINATION_CATEGORIES and not _is_noise_or_lodging_entity(item)
+
+
+def _is_place_exploration_candidate(item: Any) -> bool:
+    category = _destination_category(getattr(item, "category", ""))
+    return category in _DISCOVER_PLACE_CATEGORIES and not _is_noise_or_lodging_entity(item)
+
 def _photo_context_tags_from_interests(interests: list[str]) -> list[str]:
     return [interest.strip().lower() for interest in interests[:3] if interest.strip()]
 
@@ -135,7 +234,7 @@ def _scoped_destination_exploration_results(
     safe_results = [
         result
         for result in results
-        if _destination_category(getattr(result, "category", "")) not in {"service", "hotel"}
+        if not _is_noise_or_lodging_entity(result)
     ]
     if not safe_results:
         safe_results = list(results)
@@ -143,14 +242,19 @@ def _scoped_destination_exploration_results(
     if keep_root_destination:
         return safe_results
 
-    non_root_results = [
+    non_root_place_results = [
         result
         for result in safe_results
         if getattr(result, "name", "").strip().lower() != destination_lower
         and _destination_category(getattr(result, "category", "")) not in {"city", "region", "country"}
+        and _is_place_exploration_candidate(result)
     ]
 
-    return non_root_results or safe_results
+    if non_root_place_results:
+        return non_root_place_results
+
+    place_like_results = [result for result in safe_results if _is_place_exploration_candidate(result)]
+    return place_like_results or safe_results
 
 
 def _get_review_bundle_for_result(result: Any) -> dict[str, object]:
@@ -1193,27 +1297,19 @@ def discover_hidden_gems(
         keep_root_destination=False,
     )
 
-    place_like_categories = {
-        "market",
-        "park",
-        "museum",
-        "temple",
-        "attraction",
-        "restaurant",
-        "place",
-        "riverfront",
-        "neighborhood",
-        "district",
-    }
-
     curated_pool = [
         item
         for item in scoped
-        if _destination_category(getattr(item, "category", "")) in place_like_categories
+        if _is_place_exploration_candidate(item)
+        and getattr(item, "name", "").strip().lower() != payload.destination.strip().lower()
     ]
 
     if not curated_pool:
-        curated_pool = list(scoped)
+        curated_pool = [
+            item
+            for item in scoped
+            if not _is_noise_or_lodging_entity(item)
+        ]
 
     curated_pool = curated_pool[:8]
 

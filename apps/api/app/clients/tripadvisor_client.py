@@ -646,6 +646,65 @@ class TripadvisorClient:
 
     def _normalized(self, value: str | None) -> str:
         return str(value or "").strip().lower()
+    
+    def _name_has_lodging_brand(self, name: str) -> bool:
+        lodging_keywords = [
+            "hotel",
+            "hostel",
+            "resort",
+            "apartment",
+            "apartments",
+            "inn",
+            "guest house",
+            "guesthouse",
+            "suites",
+            "suite",
+            "villa",
+            "stay",
+            "lodge",
+            "marriott",
+            "hilton",
+            "hyatt",
+            "ritz",
+            "ritz-carlton",
+            "four seasons",
+            "corinthia",
+            "regency",
+            "intercontinental",
+            "holiday inn",
+            "ibis",
+            "novotel",
+            "westin",
+            "sheraton",
+        ]
+        return any(keyword in name for keyword in lodging_keywords)
+
+    def _name_has_service_noise(self, name: str) -> bool:
+        service_keywords = [
+            "airport transfer",
+            "transfer",
+            "taxi",
+            "cab",
+            "shuttle",
+            "chauffeur",
+            "car service",
+            "car rental",
+            "tour",
+            "ticket",
+            "experience",
+            "activity",
+            "operator",
+            "travel agency",
+            "booking",
+            "airport",
+            "massage",
+            "spa",
+            "wellness centre",
+            "wellness center",
+            "beauty salon",
+            "clinic",
+        ]
+        return any(keyword in name for keyword in service_keywords)
 
     def _build_cache_key(self, namespace: str, payload: dict[str, Any]) -> str:
         return f"{namespace}:{json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(',', ':'))}"
@@ -747,6 +806,13 @@ class TripadvisorClient:
 
         name = self._normalized(item.get("name"))
 
+        if self._name_has_lodging_brand(name):
+            return "hotel"
+        if self._name_has_service_noise(name):
+            return "service"
+
+        if any(term in combined for term in ["spa", "massage", "wellness"]):
+            return "service"
         if "geo" in combined or "municipality" in combined or "city" in combined:
             return "city"
         if "neighborhood" in combined:
@@ -781,28 +847,6 @@ class TripadvisorClient:
         category = self._normalize_category_name(item)
         raw_category = self._normalized((item.get("category") or {}).get("name"))
 
-        blocked_name_keywords = [
-            "airport transfer",
-            "transfer",
-            "taxi",
-            "cab",
-            "shuttle",
-            "chauffeur",
-            "car service",
-            "tour",
-            "ticket",
-            "experience",
-            "activity",
-            "operator",
-            "travel agency",
-            "booking",
-            "airport",
-            "hotel",
-            "hostel",
-            "resort",
-            "apartment",
-            "inn",
-        ]
         blocked_category_keywords = [
             "tour",
             "activity",
@@ -814,11 +858,16 @@ class TripadvisorClient:
             "service",
             "airline",
             "car rental",
+            "spa",
+            "massage",
+            "wellness",
         ]
 
         if category in {"service", "hotel"}:
             return True
-        if any(keyword in name for keyword in blocked_name_keywords):
+        if self._name_has_lodging_brand(name):
+            return True
+        if self._name_has_service_noise(name):
             return True
         if any(keyword in raw_category for keyword in blocked_category_keywords):
             return True

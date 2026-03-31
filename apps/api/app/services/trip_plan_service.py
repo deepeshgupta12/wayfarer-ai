@@ -97,6 +97,91 @@ tripadvisor_client = TripadvisorClient()
 
 settings = get_settings()
 
+_TRIP_PLACE_CATEGORIES = {
+    "neighborhood",
+    "district",
+    "market",
+    "park",
+    "museum",
+    "temple",
+    "restaurant",
+    "attraction",
+    "place",
+    "riverfront",
+}
+
+_TRIP_NOISE_KEYWORDS = [
+    "hotel",
+    "hostel",
+    "resort",
+    "apartment",
+    "apartments",
+    "inn",
+    "guest house",
+    "guesthouse",
+    "suite",
+    "suites",
+    "villa",
+    "airport transfer",
+    "transfer",
+    "taxi",
+    "cab",
+    "shuttle",
+    "tour",
+    "ticket",
+    "activity",
+    "operator",
+    "travel agency",
+    "booking",
+    "airport",
+    "massage",
+    "spa",
+    "wellness centre",
+    "wellness center",
+    "beauty salon",
+    "clinic",
+    "marriott",
+    "hilton",
+    "hyatt",
+    "ritz",
+    "ritz-carlton",
+    "four seasons",
+    "corinthia",
+    "regency",
+    "intercontinental",
+    "holiday inn",
+    "ibis",
+    "novotel",
+    "westin",
+    "sheraton",
+]
+
+
+def _trip_candidate_blob(result: object) -> str:
+    return " ".join(
+        [
+            str(getattr(result, "name", "") or ""),
+            str(getattr(result, "city", "") or ""),
+            str(getattr(result, "country", "") or ""),
+            str(getattr(result, "category", "") or ""),
+        ]
+    ).strip().lower()
+
+
+def _is_trip_candidate_noise(result: object) -> bool:
+    category = _trip_candidate_category(getattr(result, "category", ""))
+    blob = _trip_candidate_blob(result)
+
+    if category in {"service", "hotel"}:
+        return True
+
+    return any(keyword in blob for keyword in _TRIP_NOISE_KEYWORDS)
+
+
+def _is_trip_place_candidate(result: object) -> bool:
+    category = _trip_candidate_category(getattr(result, "category", ""))
+    return category in _TRIP_PLACE_CATEGORIES and not _is_trip_candidate_noise(result)
+
 
 def _get_persona_defaults(db: Session, traveller_id: str) -> dict[str, object]:
     persona = db.get(TravellerPersonaRecord, traveller_id)
@@ -535,22 +620,32 @@ def _scoped_trip_candidate_results(
     safe_results = [
         result
         for result in results
-        if _trip_candidate_category(getattr(result, "category", "")) not in {"service", "hotel"}
+        if not _is_trip_candidate_noise(result)
     ]
     if not safe_results:
         safe_results = list(results)
 
     if keep_root_destination:
-        return safe_results
+        place_like_results = [
+            result
+            for result in safe_results
+            if _is_trip_place_candidate(result)
+        ]
+        return place_like_results or safe_results
 
-    non_root_results = [
+    non_root_place_results = [
         result
         for result in safe_results
         if getattr(result, "name", "").strip().lower() != destination_lower
         and _trip_candidate_category(getattr(result, "category", "")) not in {"city", "region", "country"}
+        and _is_trip_place_candidate(result)
     ]
 
-    return non_root_results or safe_results
+    if non_root_place_results:
+        return non_root_place_results
+
+    place_like_results = [result for result in safe_results if _is_trip_place_candidate(result)]
+    return place_like_results or safe_results
 
 
 def _get_trip_review_bundle_for_result(result: object) -> dict[str, object]:
@@ -619,7 +714,7 @@ def _build_candidate_places(
     scoped_results = _scoped_trip_candidate_results(
         destination,
         list(results),
-        keep_root_destination=True,
+        keep_root_destination=False,
     )[:8]
     allowed_location_ids = {result.location_id for result in scoped_results}
 
