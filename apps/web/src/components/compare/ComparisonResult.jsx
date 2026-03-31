@@ -5,22 +5,36 @@ import {
   Route,
   Scale,
   ChevronRight,
-  Camera,
   ArrowRight,
-  Image as ImageIcon,
   CheckCircle2,
+  Sparkles,
 } from 'lucide-react';
 
-function HeroImage({ side }) {
+function getInitials(name) {
+  return String(name || '')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((item) => item[0]?.toUpperCase())
+    .join('');
+}
+
+function HeroImage({ side, isWinner = false }) {
   const [failed, setFailed] = useState(false);
   const photo = side?.hero_photos?.[0]?.image_url;
+  const initials = getInitials(side?.name);
+  const tone = isWinner
+    ? 'from-accent/30 via-sunset/20 to-lavender/20'
+    : 'from-ocean/20 via-secondary to-sage/15';
 
   if (!photo || failed) {
     return (
-      <div className="h-44 rounded-2xl bg-secondary border border-border flex items-center justify-center text-muted-foreground">
-        <div className="flex flex-col items-center gap-2">
-          <ImageIcon className="w-6 h-6" />
-          <div className="text-xs">No hero image available</div>
+      <div className={`h-44 rounded-2xl bg-gradient-to-br ${tone} border border-border flex items-end p-5`}>
+        <div>
+          <div className="text-3xl font-serif font-semibold text-foreground/90">{initials || 'WF'}</div>
+          <div className="text-sm text-muted-foreground mt-1">
+            {side?.city}, {side?.country}
+          </div>
         </div>
       </div>
     );
@@ -122,7 +136,7 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
             <div
               key={side?.name || branch}
               className={`rounded-2xl border p-5 ${
-                isWinner ? 'border-accent/30 bg-accent/5' : 'border-border bg-card'
+                isWinner ? 'border-accent/30 bg-accent/5 shadow-sm' : 'border-border bg-card'
               }`}
             >
               <div className="flex items-start justify-between gap-3 mb-4">
@@ -134,16 +148,24 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
                   <p className="text-sm text-muted-foreground mt-1">{side?.tagline}</p>
                 </div>
 
-                <div
-                  className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                    isWinner ? 'bg-accent text-accent-foreground' : 'bg-secondary text-secondary-foreground'
-                  }`}
-                >
-                  Score {side?.weighted_score}
+                <div className="text-right">
+                  <div
+                    className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                      isWinner ? 'bg-accent text-accent-foreground' : 'bg-secondary text-secondary-foreground'
+                    }`}
+                  >
+                    Score {side?.weighted_score}
+                  </div>
+                  {isWinner ? (
+                    <div className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent">
+                      <Trophy className="w-3 h-3" />
+                      Best current fit
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
-              <HeroImage side={side} />
+              <HeroImage side={side} isWinner={isWinner} />
 
               <div className="mt-4 space-y-3">
                 <div className="text-sm">
@@ -198,7 +220,7 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
           <div>
             <h3 className="font-semibold text-lg">What matters most in this decision</h3>
             <p className="text-sm text-muted-foreground">
-              These are the clearest differentiators, ranked to make the choice feel more decisive and less raw-data heavy.
+              These are the clearest differentiators, ranked to make the choice feel more decisive.
             </p>
           </div>
         </div>
@@ -309,7 +331,7 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
             <div>
               <h3 className="font-semibold">You’d also love</h3>
               <p className="text-sm text-muted-foreground">
-                Nearby alternatives to keep in mind if you want a second branch later.
+                Strong secondary branches if you want to keep another option alive.
               </p>
             </div>
           </div>
@@ -317,6 +339,7 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
           <div className="grid gap-4 md:grid-cols-2">
             {data.youd_also_love.slice(0, 4).map((item) => {
               const photo = item?.photos?.[0]?.image_url;
+              const initials = getInitials(item?.name);
 
               return (
                 <div key={item.location_id} className="rounded-xl border border-border overflow-hidden bg-background">
@@ -324,8 +347,13 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
                     {photo ? (
                       <img src={photo} alt={item.name} className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-                        <ImageIcon className="w-5 h-5" />
+                      <div className="w-full h-full bg-gradient-to-br from-ocean/20 via-secondary to-lavender/15 flex items-end p-4">
+                        <div>
+                          <div className="text-2xl font-serif font-semibold text-foreground/90">{initials || 'WF'}</div>
+                          <div className="text-xs text-muted-foreground mt-1">
+                            {item.city}, {item.country}
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -343,7 +371,12 @@ export default function ComparisonResult({ data, onPlanDestination, durationDays
                       </div>
                     </div>
 
-                    <p className="text-xs text-muted-foreground mt-3">{item.reason}</p>
+                    <div className="mt-3 flex items-center gap-2 text-[11px] text-accent font-medium">
+                      <Sparkles className="w-3 h-3" />
+                      {item.match_score}% alternative fit
+                    </div>
+
+                    <p className="text-xs text-muted-foreground mt-2">{item.reason}</p>
                   </div>
                 </div>
               );

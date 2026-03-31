@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Star, Heart, Sparkles, Image as ImageIcon, Map } from 'lucide-react';
+import { Star, Heart, Sparkles, Map } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 function getPrimaryPhoto({ photos = [], image }) {
@@ -7,6 +7,30 @@ function getPrimaryPhoto({ photos = [], image }) {
     return photos[0]?.image_url || null;
   }
   return image || null;
+}
+
+function getVisualFallbackTone(typeLabel, isGem) {
+  const label = String(typeLabel || '').toLowerCase();
+
+  if (isGem) {
+    return 'from-accent/25 via-sunset/20 to-lavender/25';
+  }
+  if (label.includes('destination')) {
+    return 'from-ocean/20 via-accent/10 to-sage/20';
+  }
+  if (label.includes('alternative')) {
+    return 'from-lavender/20 via-ocean/10 to-accent/15';
+  }
+  return 'from-accent/15 via-secondary to-sage/15';
+}
+
+function getInitials(name) {
+  return String(name || '')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((item) => item[0]?.toUpperCase())
+    .join('');
 }
 
 export default function DestinationCard({
@@ -31,6 +55,8 @@ export default function DestinationCard({
 
   const primaryImage = getPrimaryPhoto({ photos, image });
   const locationLabel = useMemo(() => subtitle || country || city || '', [subtitle, country, city]);
+  const fallbackTone = getVisualFallbackTone(typeLabel, isGem);
+  const initials = getInitials(name);
 
   if (compact) {
     return (
@@ -48,10 +74,10 @@ export default function DestinationCard({
               onError={() => setImageFailed(true)}
             />
           ) : (
-            <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-              <div className="flex flex-col items-center gap-2">
-                <ImageIcon className="w-5 h-5" />
-                <span className="text-[11px]">Image unavailable</span>
+            <div className={`w-full h-full bg-gradient-to-br ${fallbackTone} flex items-end p-4`}>
+              <div>
+                <div className="text-2xl font-serif font-semibold text-foreground/90">{initials || 'WF'}</div>
+                <div className="text-xs text-muted-foreground mt-1">{locationLabel || typeLabel}</div>
               </div>
             </div>
           )}
@@ -112,10 +138,10 @@ export default function DestinationCard({
             onError={() => setImageFailed(true)}
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-muted-foreground">
-            <div className="flex flex-col items-center gap-2">
-              <ImageIcon className="w-7 h-7" />
-              <span className="text-xs">Image unavailable</span>
+          <div className={`w-full h-full bg-gradient-to-br ${fallbackTone} flex items-end p-5`}>
+            <div>
+              <div className="text-3xl font-serif font-semibold text-foreground/90">{initials || 'WF'}</div>
+              <div className="text-sm text-muted-foreground mt-1">{locationLabel || typeLabel}</div>
             </div>
           </div>
         )}

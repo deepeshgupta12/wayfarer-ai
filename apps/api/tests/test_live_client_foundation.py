@@ -19,7 +19,8 @@ def test_google_places_client_context_returns_expected_shape_without_live_keys()
     assert "suggested_areas" in result
     assert "freshness_note" in result
     assert isinstance(result["suggested_areas"], list)
-    assert len(result["suggested_areas"]) >= 1
+    assert result["suggested_areas"] == []
+    assert "not configured" in result["freshness_note"].lower()
 
 
 def test_google_places_area_filter_rejects_hotel_like_names() -> None:

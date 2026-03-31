@@ -321,7 +321,13 @@ class GooglePlacesClient:
 
     def get_destination_context(self, destination: str) -> dict[str, object]:
         if not self.settings.google_places_api_key_configured:
-            return self._stub_destination_context(destination)
+            return {
+                "suggested_areas": [],
+                "freshness_note": (
+                    "Google Places live neighborhood enrichment is unavailable because "
+                    "the live API key is not configured."
+                ),
+            }
 
         try:
             live_context = self._live_destination_context(destination)
@@ -333,18 +339,19 @@ class GooglePlacesClient:
             return {
                 "suggested_areas": [],
                 "freshness_note": (
-                    "Google Places is configured, but no sufficiently strong live neighborhood candidates "
-                    "were returned for this destination."
+                    "Google Places is configured, but no sufficiently strong live neighborhood "
+                    "candidates were returned for this destination."
                 ),
             }
         except Exception:
             return {
                 "suggested_areas": [],
                 "freshness_note": (
-                    "Google Places live neighborhood enrichment is temporarily unavailable for this destination."
+                    "Google Places live neighborhood enrichment is temporarily unavailable "
+                    "for this destination."
                 ),
             }
-        
+
     def _build_stub_nearby_catalog(self) -> dict[str, list[dict[str, object]]]:
         return {
             "kyoto": [
@@ -816,7 +823,7 @@ class GooglePlacesClient:
         if open_now_only:
             parsed = [item for item in parsed if item.get("open_now") is not False]
         return parsed[:limit]
-    
+
     def get_place_freshness(
         self,
         *,
@@ -825,51 +832,17 @@ class GooglePlacesClient:
         city: str | None,
         country: str | None,
     ) -> dict[str, object]:
-        catalog = self._build_stub_nearby_catalog()
+        freshness_source = (
+            "live_unavailable"
+            if not self.settings.google_places_api_key_configured
+            else "live_partial"
+        )
 
-        if location_id and "closed" in location_id.lower():
-            return {
-                "location_id": location_id,
-                "name": name,
-                "city": city,
-                "country": country,
-                "operational_status": "temporarily_closed",
-                "open_now": False,
-                "quality_risk_score": 0.2,
-                "quality_flags": [],
-                "estimated_visit_minutes": 60,
-                "freshness_source": "synthetic_closed_signal",
-                "summary": "Recent place freshness indicates the place appears temporarily closed.",
-            }
-
-        if not self.settings.google_places_api_key_configured:
-            for city_items in catalog.values():
-                for item in city_items:
-                    if location_id and str(item.get("location_id")) == location_id:
-                        quality_flags: list[str] = []
-                        quality_risk_score = 0.15
-
-                        vibe_tags = [str(tag).lower() for tag in list(item.get("vibe_tags") or [])]
-                        if "nightlife" in vibe_tags:
-                            quality_flags.append("peak_time_variability")
-                            quality_risk_score = max(quality_risk_score, 0.35)
-                        if "market" in str(item.get("category") or "").lower():
-                            quality_flags.append("crowd_spike_risk")
-                            quality_risk_score = max(quality_risk_score, 0.4)
-
-                        return {
-                            "location_id": location_id,
-                            "name": item.get("name"),
-                            "city": item.get("city"),
-                            "country": item.get("country"),
-                            "operational_status": "open",
-                            "open_now": item.get("open_now"),
-                            "quality_risk_score": round(quality_risk_score, 2),
-                            "quality_flags": quality_flags,
-                            "estimated_visit_minutes": 60 if item.get("category") in {"market", "park"} else 90,
-                            "freshness_source": "stub",
-                            "summary": "Place freshness was re-evaluated using the current place metadata layer.",
-                        }
+        summary = (
+            "Live freshness checks are unavailable because Google Places is not configured."
+            if freshness_source == "live_unavailable"
+            else "Only partial live freshness metadata is available for this place right now."
+        )
 
         return {
             "location_id": location_id,
@@ -878,11 +851,11 @@ class GooglePlacesClient:
             "country": country,
             "operational_status": "unknown",
             "open_now": None,
-            "quality_risk_score": 0.25,
+            "quality_risk_score": 0.0,
             "quality_flags": ["limited_live_metadata"],
-            "estimated_visit_minutes": 90,
-            "freshness_source": "fallback",
-            "summary": "Only partial freshness metadata is available for this place right now.",
+            "estimated_visit_minutes": 75,
+            "freshness_source": freshness_source,
+            "summary": summary,
         }
 
     def _build_stub_place_photo_catalog(self) -> dict[str, list[dict[str, object]]]:
@@ -1356,15 +1329,7 @@ class GooglePlacesClient:
         open_now_only: bool = False,
     ) -> list[dict[str, object]]:
         if not self.settings.google_places_api_key_configured:
-            return self._stub_nearby_places(
-                latitude=latitude,
-                longitude=longitude,
-                city=city,
-                query=query,
-                radius_meters=radius_meters,
-                limit=limit,
-                open_now_only=open_now_only,
-            )
+            return []
 
         try:
             live_results = self._live_nearby_places(
@@ -1377,17 +1342,6 @@ class GooglePlacesClient:
                 limit=limit,
                 open_now_only=open_now_only,
             )
-            if live_results:
-                return live_results
+            return live_results or []
         except Exception:
-            pass
-
-        return self._stub_nearby_places(
-            latitude=latitude,
-            longitude=longitude,
-            city=city,
-            query=query,
-            radius_meters=radius_meters,
-            limit=limit,
-            open_now_only=open_now_only,
-        )
+            return []
