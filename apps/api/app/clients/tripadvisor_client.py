@@ -1150,17 +1150,8 @@ class TripadvisorClient:
         query: str,
         live_results: list[DestinationSearchResult],
     ) -> list[DestinationSearchResult]:
-        stub_results = self._get_destination_specific_stub_results(query)
-        merged: list[DestinationSearchResult] = []
-        seen_ids: set[str] = set()
-
-        for result in live_results + stub_results:
-            if result.location_id in seen_ids:
-                continue
-            seen_ids.add(result.location_id)
-            merged.append(result)
-
-        return merged
+        _ = query
+        return list(live_results)
 
     def search_locations(
         self,
@@ -1178,13 +1169,10 @@ class TripadvisorClient:
             try:
                 live_results = self._live_search_locations(query)
                 if live_results:
-                    if len(live_results) < 4:
-                        return self._merge_live_with_destination_stub_results(query, live_results)
                     return live_results
+                return []
             except Exception:
-                pass
-
-            return self._get_destination_specific_stub_results(query)
+                return []
 
         return self._cache_or_compute(
             "tripadvisor_search_results",
@@ -1211,9 +1199,14 @@ class TripadvisorClient:
             try:
                 live_results = self.search_locations(destination)
                 if not live_results:
-                    return stub_bundle
+                    return {
+                        "location_id": f"live_{destination.strip().lower().replace(' ', '_')}",
+                        "location_name": destination,
+                        "reviews": [],
+                        "source": "live_unavailable",
+                    }
 
-                preferred = []
+                preferred: list[DestinationSearchResult] = []
                 for item in live_results:
                     normalized_category = self._normalized(item.category)
                     if normalized_category in {"service", "hotel"}:
@@ -1221,23 +1214,44 @@ class TripadvisorClient:
                     preferred.append(item)
 
                 if not preferred:
-                    return stub_bundle
+                    return {
+                        "location_id": f"live_{destination.strip().lower().replace(' ', '_')}",
+                        "location_name": destination,
+                        "reviews": [],
+                        "source": "live_unavailable",
+                    }
 
                 if category:
                     category_lower = self._normalized(category)
-                    matching_category = [item for item in preferred if self._normalized(item.category) == category_lower]
+                    matching_category = [
+                        item for item in preferred if self._normalized(item.category) == category_lower
+                    ]
                     if matching_category:
                         preferred = matching_category
 
                 resolved_location_id = preferred[0].location_id
                 destination = preferred[0].name
             except Exception:
-                return stub_bundle
+                return {
+                    "location_id": f"live_{destination.strip().lower().replace(' ', '_')}",
+                    "location_name": destination,
+                    "reviews": [],
+                    "source": "live_unavailable",
+                }
 
         def _load() -> dict[str, object]:
-            live_reviews = self._live_location_reviews(resolved_location_id)
+            try:
+                live_reviews = self._live_location_reviews(resolved_location_id)
+            except Exception:
+                live_reviews = []
+
             if len(live_reviews) < self.settings.tripadvisor_min_live_reviews:
-                return stub_bundle
+                return {
+                    "location_id": resolved_location_id,
+                    "location_name": destination,
+                    "reviews": live_reviews,
+                    "source": "live_insufficient",
+                }
 
             return {
                 "location_id": resolved_location_id,
@@ -1257,4 +1271,9 @@ class TripadvisorClient:
                 _load,
             )
         except Exception:
-            return stub_bundle
+            return {
+                "location_id": resolved_location_id or f"live_{destination.strip().lower().replace(' ', '_')}",
+                "location_name": destination,
+                "reviews": [],
+                "source": "live_unavailable",
+            }

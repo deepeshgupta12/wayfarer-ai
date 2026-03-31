@@ -324,9 +324,26 @@ class GooglePlacesClient:
             return self._stub_destination_context(destination)
 
         try:
-            return self._live_destination_context(destination)
+            live_context = self._live_destination_context(destination)
+            suggested_areas = list(live_context.get("suggested_areas") or [])
+
+            if suggested_areas:
+                return live_context
+
+            return {
+                "suggested_areas": [],
+                "freshness_note": (
+                    "Google Places is configured, but no sufficiently strong live neighborhood candidates "
+                    "were returned for this destination."
+                ),
+            }
         except Exception:
-            return self._stub_destination_context(destination)
+            return {
+                "suggested_areas": [],
+                "freshness_note": (
+                    "Google Places live neighborhood enrichment is temporarily unavailable for this destination."
+                ),
+            }
         
     def _build_stub_nearby_catalog(self) -> dict[str, list[dict[str, object]]]:
         return {
@@ -821,37 +838,38 @@ class GooglePlacesClient:
                 "quality_risk_score": 0.2,
                 "quality_flags": [],
                 "estimated_visit_minutes": 60,
-                "freshness_source": "stub",
+                "freshness_source": "synthetic_closed_signal",
                 "summary": "Recent place freshness indicates the place appears temporarily closed.",
             }
 
-        for city_items in catalog.values():
-            for item in city_items:
-                if location_id and str(item.get("location_id")) == location_id:
-                    quality_flags: list[str] = []
-                    quality_risk_score = 0.15
+        if not self.settings.google_places_api_key_configured:
+            for city_items in catalog.values():
+                for item in city_items:
+                    if location_id and str(item.get("location_id")) == location_id:
+                        quality_flags: list[str] = []
+                        quality_risk_score = 0.15
 
-                    vibe_tags = [str(tag).lower() for tag in list(item.get("vibe_tags") or [])]
-                    if "nightlife" in vibe_tags:
-                        quality_flags.append("peak_time_variability")
-                        quality_risk_score = max(quality_risk_score, 0.35)
-                    if "market" in str(item.get("category") or "").lower():
-                        quality_flags.append("crowd_spike_risk")
-                        quality_risk_score = max(quality_risk_score, 0.4)
+                        vibe_tags = [str(tag).lower() for tag in list(item.get("vibe_tags") or [])]
+                        if "nightlife" in vibe_tags:
+                            quality_flags.append("peak_time_variability")
+                            quality_risk_score = max(quality_risk_score, 0.35)
+                        if "market" in str(item.get("category") or "").lower():
+                            quality_flags.append("crowd_spike_risk")
+                            quality_risk_score = max(quality_risk_score, 0.4)
 
-                    return {
-                        "location_id": location_id,
-                        "name": item.get("name"),
-                        "city": item.get("city"),
-                        "country": item.get("country"),
-                        "operational_status": "open",
-                        "open_now": item.get("open_now"),
-                        "quality_risk_score": round(quality_risk_score, 2),
-                        "quality_flags": quality_flags,
-                        "estimated_visit_minutes": 60 if item.get("category") in {"market", "park"} else 90,
-                        "freshness_source": "stub",
-                        "summary": "Place freshness was re-evaluated using the current place metadata layer.",
-                    }
+                        return {
+                            "location_id": location_id,
+                            "name": item.get("name"),
+                            "city": item.get("city"),
+                            "country": item.get("country"),
+                            "operational_status": "open",
+                            "open_now": item.get("open_now"),
+                            "quality_risk_score": round(quality_risk_score, 2),
+                            "quality_flags": quality_flags,
+                            "estimated_visit_minutes": 60 if item.get("category") in {"market", "park"} else 90,
+                            "freshness_source": "stub",
+                            "summary": "Place freshness was re-evaluated using the current place metadata layer.",
+                        }
 
         return {
             "location_id": location_id,

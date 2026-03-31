@@ -11,6 +11,7 @@ from app.models.live_runtime import ActiveTripContextRecord
 from app.models.proactive_alert import ProactiveAlertRecord
 from app.models.saved_trip import SavedTripRecord, TripSignalRecord
 from app.models.traveller_memory import TravellerMemoryRecord
+from app.schemas.destination import PlacePhotoAsset
 from app.schemas.live_runtime import (
     ProactiveAlertListResponse,
     ProactiveAlertResolutionRequest,
@@ -101,15 +102,20 @@ def _enrich_alert_alternative_with_visuals(
         limit=settings.photo_preview_limit,
     )
 
-    photos = payload.get("photos") or []
+    photos = [
+        PlacePhotoAsset(**photo)
+        for photo in list(payload.get("photos") or [])
+    ]
     payload["visual_signal"] = build_visual_runtime_signal(
-        photos=[photo for photo in []] if False else [
-            # convert dicts back into PlacePhotoAsset-compatible shape lazily in consumer-facing payload
-        ],
+        photos=photos,
         place_name=str(payload.get("name") or "place"),
     )
+    payload["summary_line"] = str(
+        payload.get("why_alternative")
+        or payload.get("message")
+        or "Recommended as a proactive fallback for this alert."
+    )
     return payload
-
 
 def _get_days_to_check(
     saved_trip: SavedTripRecord,
