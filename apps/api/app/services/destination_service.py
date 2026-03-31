@@ -1116,15 +1116,38 @@ def discover_hidden_gems(
         payload.destination,
         list(reranked_results),
         keep_root_destination=False,
-    )[:8]
+    )
 
-    scoped = list(reranked_results[:8])
-    review_counts = [int(item.review_count) for item in scoped if int(item.review_count) > 0]
+    place_like_categories = {
+        "market",
+        "park",
+        "museum",
+        "temple",
+        "attraction",
+        "restaurant",
+        "place",
+        "riverfront",
+        "neighborhood",
+        "district",
+    }
+
+    curated_pool = [
+        item
+        for item in scoped
+        if _destination_category(getattr(item, "category", "")) in place_like_categories
+    ]
+
+    if not curated_pool:
+        curated_pool = list(scoped)
+
+    curated_pool = curated_pool[:8]
+
+    review_counts = [int(item.review_count) for item in curated_pool if int(item.review_count) > 0]
     median_review_count = median(review_counts) if review_counts else 1000
 
     scored_rows: list[tuple[float, HiddenGemRecommendation]] = []
 
-    for place in scoped:
+    for place in curated_pool:
         persona_relevance_score = _compute_persona_relevance_for_place(
             db=db,
             traveller_id=payload.traveller_id,
@@ -1141,7 +1164,7 @@ def discover_hidden_gems(
             persona_relevance_score=persona_relevance_score,
         )
 
-        gem_score = (float(place.rating) * 10.0)
+        gem_score = float(place.rating) * 10.0
         gem_score += 8.0 if underrated_signal else 1.5
         gem_score -= min(float(place.review_count) / 2500.0, 8.0)
         gem_score += (persona_relevance_score or 0.0) * 14.0
@@ -1173,7 +1196,6 @@ def discover_hidden_gems(
         )
 
         recommendation = HiddenGemRecommendation(**recommendation_payload)
-
         scored_rows.append((recommendation.gem_score, recommendation))
 
     scored_rows.sort(key=lambda item: item[0], reverse=True)
