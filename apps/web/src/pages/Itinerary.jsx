@@ -14,11 +14,14 @@ import {
   Layers,
   Route,
   Camera,
+  Gem,
+  Loader2,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import LoadingState from '../components/ui/LoadingState';
 import ActivityCard from '../components/cards/ActivityCard';
+import PlaceCard from '../components/cards/PlaceCard';
 import {
   createTripSignal,
   getCurrentTripVersion,
@@ -28,7 +31,9 @@ import {
   listSavedTrips,
   listTripSignals,
   listTripVersions,
+  orchestrateLiveRuntime,
   restoreTripVersion,
+  writeLiveRuntimeAction,
 } from '@/api/wayfarerApi';
 import { getOrCreateTravellerId } from '@/lib/travellerProfile';
 import {
@@ -82,10 +87,10 @@ function normalizeDayActivities(trip, day) {
         slot.slot_type === 'lunch'
           ? 'food'
           : slot.slot_type === 'evening'
-          ? 'nightlife'
-          : slot.slot_type === 'afternoon'
-          ? 'nature'
-          : 'culture',
+            ? 'nightlife'
+            : slot.slot_type === 'afternoon'
+              ? 'nature'
+              : 'culture',
       location: slot.assigned_place_name || day.title,
       reason: slot.rationale,
       fallbackNames: slot.fallback_candidate_names || [],
@@ -148,9 +153,32 @@ function buildSignalStats(trip, signals) {
   ];
 }
 
+function buildGemContextPatch(trip, day) {
+  const firstSlot = safeArray(day?.slots)[0];
+
+  return {
+    trip_status: trip?.status || 'planning',
+    intent_hint: 'hidden gem',
+    transport_mode: 'walk',
+    available_minutes: 90,
+    current_day_number: day?.day_number || 1,
+    current_slot_type: firstSlot?.slot_type || 'afternoon',
+    current_place_name: day?.title || trip?.destination || 'Current itinerary context',
+    current_city: trip?.destination || null,
+    current_country: null,
+    context_payload: {
+      trigger_surface: 'itinerary_day_hidden_gems',
+      day_title: day?.title || null,
+    },
+  };
+}
+
 export default function Itinerary() {
   const [expandedDay, setExpandedDay] = useState(0);
   const [alertsRunning, setAlertsRunning] = useState(false);
+  const [gemLoadingDay, setGemLoadingDay] = useState(null);
+  const [gemErrorByDay, setGemErrorByDay] = useState({});
+  const [gemsByDay, setGemsByDay] = useState({});
   const [searchParams] = useSearchParams();
   const travellerId = getOrCreateTravellerId();
   const tripId = searchParams.get('trip');
@@ -264,6 +292,59 @@ export default function Itinerary() {
     await Promise.all([refetchTrip(), refetchVersions(), refetchCurrentVersion()]);
   };
 
+  const loadHiddenGemsForDay = async (day) => {
+    if (!trip?.trip_id || !day?.day_number) return;
+
+    setGemLoadingDay(day.day_number);
+    setGemErrorByDay((prev) => ({ ...prev, [day.day_number]: '' }));
+
+    try {
+      const response = await orchestrateLiveRuntime({
+        traveller_id: trip.traveller_id,
+        trip_id: trip.trip_id,
+        planning_session_id: trip.planning_session_id,
+        source_surface: 'itinerary_page',
+        message: 'What underrated place in this area fits my vibe?',
+        context_patch: buildGemContextPatch(trip, day),
+      });
+
+      const gems = safeArray(response?.run?.final_output?.gems);
+      setGemsByDay((prev) => ({ ...prev, [day.day_number]: gems }));
+    } catch (error) {
+      setGemErrorByDay((prev) => ({
+        ...prev,
+        [day.day_number]: error?.message || 'Unable to load hidden gems right now.',
+      }));
+    } finally {
+      setGemLoadingDay(null);
+    }
+  };
+
+  const handleGemAction = async (day, gem, actionType) => {
+    if (!trip?.trip_id || !gem?.location_id) return;
+
+    const slotType = safeArray(day?.slots)[0]?.slot_type || 'afternoon';
+
+    await writeLiveRuntimeAction({
+      traveller_id: trip.traveller_id,
+      trip_id: trip.trip_id,
+      planning_session_id: trip.planning_session_id,
+      action_type: actionType,
+      location_id: gem.location_id,
+      day_number: day.day_number,
+      slot_type: slotType,
+      source_surface: 'itinerary_page',
+      payload: {
+        name: gem.name,
+        category: gem.category,
+        city: gem.city,
+        gem_score: gem.gem_score,
+      },
+    });
+
+    await refetchSignals();
+  };
+
   if (resolvingTripId || tripLoading) {
     return <LoadingState message="Loading itinerary..." />;
   }
@@ -341,6 +422,9 @@ export default function Itinerary() {
             <Bell className="h-4 w-4 text-accent" />
             {openAlerts.length} active alert{openAlerts.length === 1 ? '' : 's'}
           </div>
+          <div className="mt-2 text-xs text-muted-foreground">
+            Wayfarer’s proactive monitor runs as a pseudo-scheduled check loop on top of your active itinerary and surfaces fallback-ready risks before they break the plan.
+          </div>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {openAlerts.slice(0, 4).map((alert) => (
               <div key={alert.alert_id} className="rounded-xl border border-border bg-card p-3">
@@ -357,6 +441,9 @@ export default function Itinerary() {
           {itinerary.map((day, index) => {
             const activities = normalizeDayActivities(trip, day);
             const isOpen = expandedDay === index;
+            const dayGems = safeArray(gemsByDay[day.day_number]);
+            const gemError = gemErrorByDay[day.day_number] || '';
+            const gemLoading = gemLoadingDay === day.day_number;
 
             return (
               <motion.div
@@ -409,6 +496,70 @@ export default function Itinerary() {
                         onExpand={() => {}}
                       />
                     ))}
+
+                    <div className="mt-4 rounded-2xl border border-border bg-background p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2 text-sm font-medium">
+                            <Gem className="h-4 w-4 text-accent" />
+                            Hidden gems for Day {day.day_number}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            Pull underrated options with clear rationale from the live-runtime gem agent for this day context.
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => loadHiddenGemsForDay(day)}
+                          disabled={gemLoading}
+                          className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-xs font-medium hover:border-accent/30 disabled:opacity-50"
+                        >
+                          {gemLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Gem className="h-3.5 w-3.5" />}
+                          {dayGems.length ? 'Refresh gems' : 'Find hidden gems'}
+                        </button>
+                      </div>
+
+                      {gemError ? (
+                        <div className="mt-3 rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                          {gemError}
+                        </div>
+                      ) : null}
+
+                      {dayGems.length ? (
+                        <div className="mt-4 grid gap-3">
+                          {dayGems.map((gem, gemIndex) => (
+                            <PlaceCard
+                              key={gem.location_id || `${gem.name}-${gemIndex}`}
+                              name={gem.name}
+                              category={gem.category}
+                              rating={gem.rating}
+                              description={gem.gem_reason || gem.why_hidden_gem || gem.review_summary}
+                              reason={(safeArray(gem.fit_reasons)).slice(0, 3).join(' • ')}
+                              photos={gem.photos || []}
+                              tags={gem.traveller_interests || gem.fit_reasons || []}
+                              isGem
+                              showSaveButton={false}
+                              trailing={
+                                <div className="flex gap-1">
+                                  <button
+                                    onClick={() => handleGemAction(day, gem, 'gem_saved')}
+                                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/15"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={() => handleGemAction(day, gem, 'gem_skipped')}
+                                    className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium bg-secondary text-muted-foreground hover:text-foreground"
+                                  >
+                                    Skip
+                                  </button>
+                                </div>
+                              }
+                            />
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 ) : null}
               </motion.div>

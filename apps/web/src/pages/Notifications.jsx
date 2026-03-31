@@ -10,9 +10,11 @@ import {
   Loader2,
   RefreshCw,
   XCircle,
+  Route,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import EmptyState from '../components/ui/EmptyState';
+import PlaceCard from '../components/cards/PlaceCard';
 import {
   inspectProactiveAlerts,
   listProactiveAlerts,
@@ -38,6 +40,34 @@ const severityStyles = {
 
 function getActiveTrip(trips = []) {
   return trips.find((trip) => ['active', 'upcoming', 'planning'].includes(trip.status)) || trips[0] || null;
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function buildEvidenceLines(alert) {
+  return safeArray(alert?.evidence).slice(0, 3).map((item, index) => {
+    if (item?.type === 'recent_signal') {
+      return `Recent signal: ${item.signal_type || 'unknown signal'}`;
+    }
+    if (item?.type === 'freshness_status') {
+      return `Freshness: ${item.operational_status || 'unknown'}${item.open_now === false ? ' • not open now' : ''}`;
+    }
+    if (item?.type === 'time_window_check') {
+      return `Time window: ${item.available_minutes || 0} min available vs ${item.estimated_visit_minutes || 0} min estimated`;
+    }
+    if (item?.type === 'quality_risk') {
+      return `Quality risk: ${item.quality_risk_score || 0}${safeArray(item.quality_flags).length ? ` • ${safeArray(item.quality_flags).join(', ')}` : ''}`;
+    }
+    if (item?.type === 'fallback_check') {
+      return `Fallback coverage: ${item.slot_alternative_count || 0} slot alternatives, ${item.fallback_candidate_count || 0} fallback candidates`;
+    }
+    if (item?.type === 'slot_state') {
+      return item.detail || 'Slot state issue detected';
+    }
+    return item?.detail || `Evidence ${index + 1}`;
+  });
 }
 
 export default function Notifications() {
@@ -93,17 +123,16 @@ export default function Notifications() {
     }
   };
 
-  const resolveAlert = async (alertId, status) => {
+  const updateAlertStatus = async (alertId, status, options = {}) => {
     setActionState((prev) => ({ ...prev, [alertId]: status }));
     try {
       await resolveProactiveAlert(alertId, {
         status,
         source_surface: 'notifications_page',
         resolution_reason:
-          status === 'resolved'
-            ? 'Resolved from notifications page'
-            : 'Ignored from notifications page',
-        payload: {},
+          options.resolution_reason ||
+          (status === 'resolved' ? 'Resolved from notifications page' : 'Ignored from notifications page'),
+        payload: options.payload || {},
       });
       await refetch();
     } catch (error) {
@@ -115,6 +144,18 @@ export default function Notifications() {
         return next;
       });
     }
+  };
+
+  const adaptAlert = async (alert, alternative) => {
+    await updateAlertStatus(alert.alert_id, 'resolved', {
+      resolution_reason: 'Adapted using suggested alternative',
+      payload: {
+        action: 'adapt',
+        selected_alternative_id: alternative.location_id,
+        selected_alternative_name: alternative.name,
+        selected_alternative_source: alternative.source || 'alert_alternative',
+      },
+    });
   };
 
   return (
@@ -136,6 +177,16 @@ export default function Notifications() {
         </button>
       </motion.div>
 
+      <div className="rounded-2xl border border-border bg-card p-4 mb-6">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <Route className="w-4 h-4 text-accent" />
+          Pseudo-scheduled monitoring model
+        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          These alerts are generated from a proactive monitoring loop layered on top of your active itinerary. Wayfarer checks closure risk, timing conflicts, quality drift, and fallback gaps before the traveller runs into them manually.
+        </p>
+      </div>
+
       {errorMessage ? (
         <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive mb-6">
           {errorMessage}
@@ -151,10 +202,12 @@ export default function Notifications() {
           description="Run a proactive inspection to check for closure risks, timing issues, and freshness changes in your active itinerary."
         />
       ) : (
-        <div className="space-y-3">
+        <div className="space-y-4">
           {alerts.map((alert, index) => {
             const Icon = typeIcons[alert.alert_type] || Bell;
             const isBusy = Boolean(actionState[alert.alert_id]);
+            const evidenceLines = buildEvidenceLines(alert);
+
             return (
               <motion.div
                 key={alert.alert_id}
@@ -167,6 +220,7 @@ export default function Notifications() {
                   <div className="w-10 h-10 rounded-xl bg-card flex items-center justify-center border border-border/60">
                     <Icon className="w-4 h-4" />
                   </div>
+
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-semibold text-sm">{alert.title}</h3>
@@ -188,15 +242,45 @@ export default function Notifications() {
                       </div>
                     ) : null}
 
-                    {alert.alternatives?.length ? (
+                    {evidenceLines.length ? (
                       <div className="mt-3 rounded-xl bg-card/80 border border-border/60 p-3">
-                        <div className="text-xs font-medium mb-2">Alternatives</div>
-                        <div className="space-y-2">
-                          {alert.alternatives.slice(0, 3).map((item) => (
-                            <div key={item.location_id || item.name} className="text-xs text-muted-foreground">
-                              <span className="font-medium text-foreground">{item.name}</span>
-                              {item.why_alternative ? <span> — {item.why_alternative}</span> : null}
+                        <div className="text-xs font-medium mb-2">Why this was flagged</div>
+                        <div className="space-y-1">
+                          {evidenceLines.map((line) => (
+                            <div key={line} className="text-xs text-muted-foreground">
+                              • {line}
                             </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {safeArray(alert.alternatives).length ? (
+                      <div className="mt-4">
+                        <div className="text-xs font-medium mb-3">Suggested alternatives</div>
+                        <div className="space-y-3">
+                          {safeArray(alert.alternatives).slice(0, 3).map((item) => (
+                            <PlaceCard
+                              key={item.location_id || item.name}
+                              name={item.name}
+                              category={item.category}
+                              rating={item.rating}
+                              description={item.summary_line || item.why_alternative || 'Suggested as a proactive fallback.'}
+                              reason={item.why_alternative}
+                              photos={item.photos || []}
+                              tags={item.visual_signal?.top_tags?.map((tag) => tag.tag) || []}
+                              showSaveButton={false}
+                              trailing={
+                                <button
+                                  onClick={() => adaptAlert(alert, item)}
+                                  disabled={isBusy}
+                                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
+                                >
+                                  {isBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Route className="w-3 h-3" />}
+                                  Adapt
+                                </button>
+                              }
+                            />
                           ))}
                         </div>
                       </div>
@@ -204,7 +288,7 @@ export default function Notifications() {
 
                     <div className="flex gap-2 mt-4 flex-wrap">
                       <button
-                        onClick={() => resolveAlert(alert.alert_id, 'resolved')}
+                        onClick={() => updateAlertStatus(alert.alert_id, 'resolved')}
                         disabled={isBusy}
                         className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
                       >
@@ -212,7 +296,7 @@ export default function Notifications() {
                         Resolve
                       </button>
                       <button
-                        onClick={() => resolveAlert(alert.alert_id, 'ignored')}
+                        onClick={() => updateAlertStatus(alert.alert_id, 'ignored')}
                         disabled={isBusy}
                         className="inline-flex items-center gap-1 rounded-lg px-3 py-2 text-xs font-medium bg-secondary text-muted-foreground hover:text-foreground disabled:opacity-50"
                       >
