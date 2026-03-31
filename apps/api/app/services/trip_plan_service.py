@@ -625,27 +625,54 @@ def _scoped_trip_candidate_results(
     if not safe_results:
         safe_results = list(results)
 
-    if keep_root_destination:
-        place_like_results = [
-            result
-            for result in safe_results
-            if _is_trip_place_candidate(result)
-        ]
-        return place_like_results or safe_results
+    root_destination_matches = [
+        result
+        for result in safe_results
+        if getattr(result, "name", "").strip().lower() == destination_lower
+        and _trip_candidate_category(getattr(result, "category", "")) in {"city", "region", "country"}
+    ]
+
+    place_like_results = [
+        result
+        for result in safe_results
+        if _is_trip_place_candidate(result)
+    ]
 
     non_root_place_results = [
         result
-        for result in safe_results
+        for result in place_like_results
         if getattr(result, "name", "").strip().lower() != destination_lower
-        and _trip_candidate_category(getattr(result, "category", "")) not in {"city", "region", "country"}
-        and _is_trip_place_candidate(result)
     ]
 
-    if non_root_place_results:
+    if keep_root_destination:
+        if len(place_like_results) >= 4:
+            return place_like_results
+        if root_destination_matches:
+            return [*place_like_results, *root_destination_matches]
+        return place_like_results or safe_results
+
+    if len(non_root_place_results) >= 4:
         return non_root_place_results
 
-    place_like_results = [result for result in safe_results if _is_trip_place_candidate(result)]
-    return place_like_results or safe_results
+    if len(place_like_results) >= 4:
+        return place_like_results
+
+    if root_destination_matches:
+        merged: list[object] = []
+        seen_ids: set[str] = set()
+
+        for result in [*non_root_place_results, *place_like_results, *root_destination_matches]:
+            location_id = str(getattr(result, "location_id", "") or "").strip().lower()
+            name = str(getattr(result, "name", "") or "").strip().lower()
+            dedupe_key = location_id or name
+            if not dedupe_key or dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+            merged.append(result)
+
+        return merged
+
+    return non_root_place_results or place_like_results or safe_results
 
 
 def _get_trip_review_bundle_for_result(result: object) -> dict[str, object]:
