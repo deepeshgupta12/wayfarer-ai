@@ -2,9 +2,19 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000
 
 async function parseJsonResponse(response) {
   const contentType = response.headers.get('content-type') || '';
+  const isJson = contentType.includes('application/json');
 
-  if (!contentType.includes('application/json')) {
+  if (!isJson) {
     const text = await response.text();
+
+    if (!response.ok) {
+      throw new Error(text || 'Wayfarer API request failed.');
+    }
+
+    if (!text || !text.trim()) {
+      return null;
+    }
+
     throw new Error(text || 'Expected JSON response from Wayfarer API.');
   }
 
@@ -66,6 +76,10 @@ async function parseNdjsonStream(response, onEvent) {
         onEvent(parsed);
       }
 
+      if (parsed?.type === 'error') {
+        throw new Error(parsed?.message || 'Wayfarer streaming request failed.');
+      }
+
       if (parsed?.type === 'final' && parsed?.payload) {
         finalPayload = parsed.payload;
       } else if (parsed?.payload && !parsed?.type) {
@@ -84,6 +98,10 @@ async function parseNdjsonStream(response, onEvent) {
         onEvent(parsed);
       }
 
+      if (parsed?.type === 'error') {
+        throw new Error(parsed?.message || 'Wayfarer streaming request failed.');
+      }
+
       if (parsed?.type === 'final' && parsed?.payload) {
         finalPayload = parsed.payload;
       } else if (parsed?.payload && !parsed?.type) {
@@ -91,8 +109,10 @@ async function parseNdjsonStream(response, onEvent) {
       } else if (parsed?.result) {
         finalPayload = parsed.result;
       }
-    } catch {
-      // ignore trailing partial line
+    } catch (error) {
+      if (error instanceof Error && error.message !== 'Unexpected end of JSON input') {
+        throw error;
+      }
     }
   }
 

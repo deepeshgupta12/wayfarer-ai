@@ -9,7 +9,6 @@ import {
   Gem,
   Zap,
   Users,
-  Loader2,
   Sparkles,
   CheckCircle2,
   XCircle,
@@ -215,6 +214,8 @@ export default function Nearby() {
   const recommendations = result?.recommendations || result?.alternatives || result?.gems || [];
   const walkingAlternatives = result?.walking_alternatives || [];
   const fallbacks = result?.fallbacks || [];
+  const hasRenderableResults =
+    recommendations.length > 0 || walkingAlternatives.length > 0 || fallbacks.length > 0;
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 lg:py-10">
@@ -287,6 +288,12 @@ export default function Nearby() {
             </div>
             {result.message ? <p className="text-sm text-muted-foreground mt-2">{result.message}</p> : null}
           </div>
+
+          {!hasRenderableResults ? (
+            <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
+              No live recommendations were returned for this mode right now. Try another mode, move a bit, or run the same request again.
+            </div>
+          ) : null}
 
           {recommendations.length ? (
             <section>

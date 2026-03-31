@@ -1,4 +1,5 @@
 from app.clients.tripadvisor_client import TripadvisorClient
+from apps.api.app.schemas.destination import DestinationSearchResult
 
 
 def test_tripadvisor_search_filters_service_and_hotel_results(monkeypatch) -> None:
@@ -130,3 +131,58 @@ def test_tripadvisor_location_photos_are_parsed_and_limited(monkeypatch) -> None
     assert photos[0]["photo_id"] == "photo_1"
     assert photos[0]["source"] == "tripadvisor"
     assert photos[0]["image_url"] == "https://example.com/photo1.jpg"
+
+def test_tripadvisor_search_does_not_merge_stub_results_when_live_key_is_configured(monkeypatch) -> None:
+    client = TripadvisorClient()
+    client.settings.tripadvisor_api_key = "live_key_for_test"
+
+    def fake_live_search_locations(query: str) -> list[DestinationSearchResult]:
+        assert query == "Kyoto"
+        return [
+            DestinationSearchResult(
+                location_id="live_kyoto_001",
+                name="Kyoto",
+                city="Kyoto",
+                country="Japan",
+                category="city",
+                rating=4.7,
+                review_count=12000,
+            )
+        ]
+
+    monkeypatch.setattr(client, "_live_search_locations", fake_live_search_locations)
+
+    results = client.search_locations("Kyoto")
+
+    assert len(results) == 1
+    assert results[0].location_id == "live_kyoto_001"
+
+def test_tripadvisor_reviews_do_not_fall_back_to_stub_bundle_when_live_key_is_configured(monkeypatch) -> None:
+    client = TripadvisorClient()
+    client.settings.tripadvisor_api_key = "live_key_for_test"
+
+    def fake_search_locations(*args, **kwargs):
+        return [
+            DestinationSearchResult(
+                location_id="live_kyoto_001",
+                name="Kyoto",
+                city="Kyoto",
+                country="Japan",
+                category="city",
+                rating=4.7,
+                review_count=12000,
+            )
+        ]
+
+    def fake_live_location_reviews(location_id: str) -> list[dict[str, object]]:
+        assert location_id == "live_kyoto_001"
+        return []
+
+    monkeypatch.setattr(client, "search_locations", fake_search_locations)
+    monkeypatch.setattr(client, "_live_location_reviews", fake_live_location_reviews)
+
+    bundle = client.get_destination_reviews("Kyoto")
+
+    assert bundle["location_id"] == "live_kyoto_001"
+    assert bundle["source"] == "live_insufficient"
+    assert bundle["reviews"] == []
