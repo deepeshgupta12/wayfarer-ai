@@ -563,6 +563,40 @@ def _get_trip_review_bundle_for_result(result: object) -> dict[str, object]:
     except TypeError:
         return tripadvisor_client.get_destination_reviews(getattr(result, "name"))
 
+def _augment_trip_candidate_results_if_too_thin(
+    destination: str,
+    results: list[object],
+    minimum_candidates: int = 4,
+) -> list[object]:
+    safe_results = list(results or [])
+    scoped_non_root = _scoped_trip_candidate_results(
+        destination,
+        safe_results,
+        keep_root_destination=False,
+    )
+
+    if len(safe_results) >= minimum_candidates and len(scoped_non_root) >= 2:
+        return safe_results
+
+    fallback_results = tripadvisor_client._get_destination_specific_stub_results(destination)
+
+    merged: list[object] = []
+    seen_keys: set[str] = set()
+
+    for result in [*safe_results, *fallback_results]:
+        location_id = str(getattr(result, "location_id", "") or "").strip().lower()
+        name = str(getattr(result, "name", "") or "").strip().lower()
+        city = str(getattr(result, "city", "") or "").strip().lower()
+
+        dedupe_key = location_id or f"{name}:{city}"
+        if not dedupe_key or dedupe_key in seen_keys:
+            continue
+
+        seen_keys.add(dedupe_key)
+        merged.append(result)
+
+    return merged
+
 
 def _build_candidate_places(
     db: Session,
@@ -577,6 +611,10 @@ def _build_candidate_places(
         query=destination,
         traveller_type=parsed_constraints.group_type,
         interests=list(parsed_constraints.interests or []),
+    )
+    results = _augment_trip_candidate_results_if_too_thin(
+        destination,
+        list(results),
     )
     scoped_results = _scoped_trip_candidate_results(
         destination,

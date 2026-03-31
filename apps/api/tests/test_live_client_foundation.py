@@ -11,8 +11,10 @@ def test_tripadvisor_client_search_returns_results_without_live_keys() -> None:
     assert "Kyoto" in results[0].name
 
 
-def test_google_places_client_context_returns_expected_shape_without_live_keys() -> None:
+def test_google_places_client_context_returns_expected_shape_without_live_keys(monkeypatch) -> None:
     client = GooglePlacesClient()
+
+    monkeypatch.setattr(client.settings, "google_places_api_key", "")
 
     result = client.get_destination_context("Kyoto")
 

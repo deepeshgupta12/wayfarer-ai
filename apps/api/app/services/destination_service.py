@@ -83,6 +83,41 @@ def _derive_suggested_areas_from_search_results(
 
     return derived
 
+def _augment_destination_results_if_too_thin(
+    destination: str,
+    results: list[Any],
+    min_results: int = 4,
+) -> list[Any]:
+    safe_results = list(results or [])
+    derived_areas = _derive_suggested_areas_from_search_results(
+        safe_results,
+        destination,
+        limit=min_results,
+    )
+
+    if len(safe_results) >= min_results and derived_areas:
+        return safe_results
+
+    stub_results = tripadvisor_client._get_destination_specific_stub_results(destination)
+
+    merged: list[Any] = []
+    seen_keys: set[str] = set()
+
+    for result in [*safe_results, *stub_results]:
+        location_id = str(getattr(result, "location_id", "") or "").strip().lower()
+        name = str(getattr(result, "name", "") or "").strip().lower()
+        city = str(getattr(result, "city", "") or "").strip().lower()
+
+        dedupe_key = location_id or f"{name}:{city}"
+        if not dedupe_key or dedupe_key in seen_keys:
+            continue
+
+        seen_keys.add(dedupe_key)
+        merged.append(result)
+
+    return merged
+
+
 def _destination_category(value: str | None) -> str:
     return str(value or "").strip().lower()
 
@@ -1501,6 +1536,10 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         query=payload.destination,
         traveller_type=payload.traveller_type,
         interests=payload.interests,
+    )
+    primary_results = _augment_destination_results_if_too_thin(
+        payload.destination,
+        primary_results,
     )
 
     context = google_places_client.get_destination_context(payload.destination)
