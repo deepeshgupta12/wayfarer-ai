@@ -49,6 +49,40 @@ google_places_client = GooglePlacesClient()
 def _photo_context_tags_from_interests(interests: list[str]) -> list[str]:
     return [interest.strip().lower() for interest in interests[:3] if interest.strip()]
 
+def _derive_suggested_areas_from_search_results(
+    results: list[Any],
+    destination: str,
+    limit: int = 4,
+) -> list[str]:
+    destination_lower = destination.strip().lower()
+    area_like_categories = {"neighborhood", "district", "quarter", "ward"}
+
+    derived: list[str] = []
+    seen: set[str] = set()
+
+    for result in results:
+        name = str(getattr(result, "name", "") or "").strip()
+        category = _destination_category(getattr(result, "category", ""))
+
+        if not name:
+            continue
+        if name.lower() == destination_lower:
+            continue
+        if category not in area_like_categories:
+            continue
+
+        key = name.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        derived.append(name)
+
+        if len(derived) >= limit:
+            break
+
+    return derived
+
 def _destination_category(value: str | None) -> str:
     return str(value or "").strip().lower()
 
@@ -803,6 +837,12 @@ def _build_comparison_side(
         reviews=list(review_bundle["reviews"]),
     )
     context = google_places_client.get_destination_context(primary.name)
+    suggested_areas = list(context.get("suggested_areas") or [])
+    if not suggested_areas:
+        suggested_areas = _derive_suggested_areas_from_search_results(
+            search_results,
+            primary.name,
+        )
 
     persona_relevance: float | None = None
     if traveller_id:
@@ -829,7 +869,7 @@ def _build_comparison_side(
         best_for=_comparison_best_for(primary.name, traveller_type, interests),
         review_summary=review_analysis.quick_verdict,
         review_authenticity=review_analysis.authenticity_label,
-        suggested_areas=list(context["suggested_areas"]),
+        suggested_areas=suggested_areas,
         weighted_score=_weighted_destination_score(
             primary.name,
             traveller_type,
@@ -1457,6 +1497,12 @@ def _build_hidden_gems_for_guide(
         db.close()
 
 def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuideResponse:
+    primary_results = tripadvisor_client.search_locations(
+        query=payload.destination,
+        traveller_type=payload.traveller_type,
+        interests=payload.interests,
+    )
+
     context = google_places_client.get_destination_context(payload.destination)
     review_bundle = tripadvisor_client.get_destination_reviews(payload.destination)
     review_analysis = analyze_review_bundle(
@@ -1466,20 +1512,22 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
     )
 
     interests_text = ", ".join(payload.interests) if payload.interests else "general exploration"
-    suggested_areas = list(context["suggested_areas"])
+
+    suggested_areas = list(context.get("suggested_areas") or [])
+    if not suggested_areas:
+        suggested_areas = _derive_suggested_areas_from_search_results(
+            primary_results,
+            payload.destination,
+        )
+
     area_cards = [_build_area_card(area, payload.destination) for area in suggested_areas]
     review_insight = _build_review_insight(
         review_summary=review_analysis.quick_verdict,
         review_signals=review_analysis.themes,
         authenticity=review_analysis.authenticity_label,
     )
-    
+
     featured_photos: list[PlacePhotoAsset] = []
-    primary_results = tripadvisor_client.search_locations(
-        query=payload.destination,
-        traveller_type=payload.traveller_type,
-        interests=payload.interests,
-    )
     if primary_results:
         primary = primary_results[0]
         local_db = get_db_session()
@@ -1514,6 +1562,12 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         "Use live freshness checks before locking specific places or timings.",
     ]
 
+    if suggested_areas:
+        highlights.insert(
+            1,
+            f"Prioritize areas like {', '.join(suggested_areas[:3])} to keep the trip more destination-specific."
+        )
+
     reasoning = [
         f"This recommendation was shaped around a {payload.traveller_type} travel context.",
         f"{payload.duration_days} days gives enough room for a paced destination overview.",
@@ -1526,6 +1580,11 @@ def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuid
         reasoning.insert(
             1,
             "Traveller-specific persona embedding signals were used to improve downstream destination fit.",
+        )
+
+    if not context.get("suggested_areas") and suggested_areas:
+        reasoning.append(
+            "Area suggestions were safely backfilled from destination search entities because live neighborhood enrichment did not return enough high-confidence results."
         )
 
     return DestinationGuideResponse(

@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Star, MapPin, Bookmark, Image as ImageIcon, Gem } from 'lucide-react';
+import { Star, MapPin, Bookmark, Gem } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 function getPrimaryPhoto({ photos = [], image }) {
@@ -20,6 +20,31 @@ function getTagsFromPhotos(photos = []) {
   });
 
   return Array.from(tagSet);
+}
+
+function getFallbackTone(category, isGem) {
+  const normalized = String(category || '').toLowerCase();
+
+  if (isGem) return 'from-accent/25 via-sunset/20 to-lavender/25';
+  if (normalized === 'market' || normalized === 'restaurant' || normalized === 'cafe') {
+    return 'from-sunset/20 via-accent/10 to-ocean/15';
+  }
+  if (normalized === 'park' || normalized === 'nature') {
+    return 'from-sage/25 via-ocean/10 to-accent/10';
+  }
+  if (normalized === 'district' || normalized === 'neighborhood' || normalized === 'city') {
+    return 'from-ocean/20 via-lavender/10 to-accent/10';
+  }
+  return 'from-secondary via-accent/10 to-sage/10';
+}
+
+function getInitials(name) {
+  return String(name || '')
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((item) => item[0]?.toUpperCase())
+    .join('');
 }
 
 export default function PlaceCard({
@@ -61,6 +86,8 @@ export default function PlaceCard({
 
   const normalizedCategory = category === 'suggested area' ? 'area' : category;
   const primaryImage = getPrimaryPhoto({ photos, image });
+  const fallbackTone = getFallbackTone(normalizedCategory, isGem);
+  const initials = getInitials(name);
 
   const derivedTags = useMemo(() => {
     if (Array.isArray(tags) && tags.length > 0) return tags.slice(0, 4);
@@ -90,10 +117,10 @@ export default function PlaceCard({
             ) : null}
           </div>
         ) : (
-          <div className="w-24 h-24 rounded-lg bg-secondary flex items-center justify-center flex-shrink-0 text-muted-foreground">
-            <div className="flex flex-col items-center gap-1">
-              <ImageIcon className="w-5 h-5" />
-              <span className="text-[10px]">No image</span>
+          <div className={`w-24 h-24 rounded-lg bg-gradient-to-br ${fallbackTone} flex items-end p-2 flex-shrink-0`}>
+            <div className="min-w-0">
+              <div className="text-lg font-serif font-semibold text-foreground/90">{initials || 'WF'}</div>
+              <div className="text-[10px] text-muted-foreground truncate">{normalizedCategory || 'place'}</div>
             </div>
           </div>
         )}

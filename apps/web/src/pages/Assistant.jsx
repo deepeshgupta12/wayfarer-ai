@@ -264,11 +264,25 @@ function buildAssistantMessageFromGuide(result, contentOverride = null) {
 }
 
 function buildAssistantMessageFromComparison(result) {
+  const scoreA = result?.destination_a?.weighted_score || 0;
+  const scoreB = result?.destination_b?.weighted_score || 0;
+
+  const winner =
+    Math.abs(scoreA - scoreB) < 0.15
+      ? null
+      : scoreA >= scoreB
+      ? result?.destination_a?.name
+      : result?.destination_b?.name;
+
+  const opening = winner
+    ? `${winner} comes out ahead for this decision.`
+    : `${result?.destination_a?.name} and ${result?.destination_b?.name} are very closely matched.`;
+
   return {
     id: createMessageId(),
     role: 'assistant',
     type: 'destination_comparison',
-    content: result.verdict,
+    content: `${opening} I’ve framed the trade-offs so you can move directly into planning instead of reading a raw comparison dump.`,
     comparison: result,
     chips: result.next_step_suggestions || [],
     timestamp: new Date().toISOString(),
@@ -286,14 +300,27 @@ function buildAssistantMessageFromLiveRuntime(orchestration, savedTrip = null) {
     [];
 
   const alerts = finalOutput.alerts || [];
+  const alertCount = alerts.length;
+  const recommendationCount = recommendations.length;
+
+  let opening = finalOutput.message;
+  if (!opening) {
+    if (finalOutput.agent === 'gem_agent') {
+      opening = `I found ${recommendationCount} underrated options that fit your active trip context.`;
+    } else if (finalOutput.agent === 'live_replan_agent') {
+      opening = `I found ${recommendationCount} better-fit alternatives for the disruption in your active trip.`;
+    } else if (finalOutput.agent === 'proactive_monitor_agent') {
+      opening = `I checked your active itinerary and found ${alertCount} issue${alertCount === 1 ? '' : 's'} worth reviewing.`;
+    } else {
+      opening = `I found ${recommendationCount} context-aware options for your active trip right now.`;
+    }
+  }
 
   return {
     id: createMessageId(),
     role: 'assistant',
     type: 'live_runtime',
-    content:
-      finalOutput.message ||
-      'I routed this through the live runtime and surfaced context-aware recommendations for your active trip.',
+    content: opening,
     liveRuntime: finalOutput,
     savedTrip,
     places: recommendations.map((item) => ({
@@ -385,11 +412,13 @@ function buildAssistantMessageFromUpdatedTripPlan(result, followupText, savedTri
 function buildAssistantMessageFromEnrichedTripPlan(result, savedTrip, followupText = null, contentOverride = null) {
   const dayCount = result.itinerary_skeleton?.length || 0;
   const candidateCount = result.candidate_places?.length || 0;
+  const destination = result?.parsed_constraints?.destination || 'your destination';
+
   const content =
     contentOverride ||
     (followupText
-      ? `I regenerated your itinerary after "${followupText}" and now have ${candidateCount} candidate places across ${dayCount} days.`
-      : `I enriched your planning session into a first draft slot-based itinerary with ${candidateCount} candidate places across ${dayCount} days.`);
+      ? `I reworked your ${destination} itinerary after "${followupText}" and kept the same planning session active. You now have ${candidateCount} candidate places structured across ${dayCount} days.`
+      : `I turned your ${destination} brief into a slot-based itinerary. You now have ${candidateCount} candidate places structured across ${dayCount} days, with routing and pacing logic already attached.`);
 
   return {
     id: createMessageId(),
