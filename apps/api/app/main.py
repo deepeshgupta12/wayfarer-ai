@@ -1,7 +1,11 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.routes.assistant import router as assistant_router
 from app.api.routes.destinations import router as destinations_router
@@ -19,6 +23,8 @@ from app.api.routes.traveller_memory import (
 from app.api.routes.trip_plan import router as trip_plan_router
 from app.api.routes.trips import router as trips_router
 from app.core.config import get_settings
+from app.core.rate_limiter import limiter
+from app.core.scheduler import start_scheduler, stop_scheduler
 from app.db.session import create_db_tables
 
 settings = get_settings()
@@ -40,7 +46,11 @@ def _resolve_frontend_cors_origins() -> list[str]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     create_db_tables()
-    yield
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
 
 
 app = FastAPI(
@@ -49,6 +59,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Rate limiting — registers the limiter state and 429 error handler.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

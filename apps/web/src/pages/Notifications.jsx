@@ -19,9 +19,10 @@ import {
   inspectProactiveAlerts,
   listProactiveAlerts,
   listSavedTrips,
+  refreshTravellerPersonaFromMemory,
   resolveProactiveAlert,
 } from '@/api/wayfarerApi';
-import { getOrCreateTravellerId } from '@/lib/travellerProfile';
+import { getOrCreateTravellerId, replaceTravellerPersona } from '@/lib/travellerProfile';
 import { cacheSavedTrips, getCachedSavedTrips } from '@/lib/tripStorage';
 
 const typeIcons = {
@@ -135,6 +136,10 @@ export default function Notifications() {
         payload: options.payload || {},
       });
       await refetch();
+      // Fire-and-forget persona refresh — alert resolution signals travel preference data.
+      refreshTravellerPersonaFromMemory(travellerId)
+        .then((updated) => { if (updated) replaceTravellerPersona(updated); })
+        .catch(() => {});
     } catch (error) {
       setErrorMessage(error?.message || 'Unable to update alert status right now.');
     } finally {

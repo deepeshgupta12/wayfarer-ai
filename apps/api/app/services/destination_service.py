@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 from collections.abc import Generator
@@ -7,6 +8,7 @@ from statistics import median
 
 from sqlalchemy.orm import Session
 
+from app.clients.redis_client import cache_get, cache_set
 from app.core.config import get_settings
 from app.schemas.destination import DestinationSearchResult, PlacePhotoAsset
 from app.services.photo_intelligence_service import enrich_place_payload_with_ranked_photos
@@ -197,7 +199,19 @@ def _augment_destination_results_if_too_thin(
     if len(safe_results) >= min_results and derived_areas:
         return safe_results
 
+    # Only fall back to stub data for destinations that actually have stubs.
+    # For unknown destinations, return live results as-is rather than injecting
+    # fixture data from a different city.
     stub_results = tripadvisor_client._get_destination_specific_stub_results(destination)
+    destination_lower = destination.strip().lower()
+    stub_is_relevant = any(
+        str(getattr(r, "city", "") or "").strip().lower() == destination_lower
+        or str(getattr(r, "name", "") or "").strip().lower() == destination_lower
+        for r in stub_results
+    )
+
+    if not stub_is_relevant:
+        return safe_results
 
     merged: list[Any] = []
     seen_keys: set[str] = set()
@@ -1627,7 +1641,45 @@ def _build_hidden_gems_for_guide(
     finally:
         db.close()
 
-def build_destination_guide(payload: DestinationGuideRequest) -> DestinationGuideResponse:
+def _guide_cache_key(payload: "DestinationGuideRequest") -> str:
+    """Stable cache key based on the inputs that determine guide content."""
+    raw = "|".join([
+        payload.destination.lower().strip(),
+        payload.traveller_type or "solo",
+        str(payload.duration_days or 3),
+        ",".join(sorted(payload.interests or [])),
+        payload.pace_preference or "balanced",
+        payload.budget or "midrange",
+    ])
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return f"destination_guide:{digest}"
+
+
+_GUIDE_CACHE_TTL = 3600  # 1 hour
+
+
+def build_destination_guide(payload: "DestinationGuideRequest") -> "DestinationGuideResponse":
+    # Serve from Redis cache when available to reduce LLM + API call costs.
+    cache_key = _guide_cache_key(payload)
+    cached = cache_get(cache_key)
+    if cached is not None:
+        try:
+            return DestinationGuideResponse(**cached)
+        except Exception:
+            pass  # Cache miss on schema mismatch — proceed to rebuild
+
+    result = _build_destination_guide_uncached(payload)
+
+    # Persist to cache (fire-and-forget; failures are silently ignored).
+    try:
+        cache_set(cache_key, result.model_dump(), ttl_seconds=_GUIDE_CACHE_TTL)
+    except Exception:
+        pass
+
+    return result
+
+
+def _build_destination_guide_uncached(payload: "DestinationGuideRequest") -> "DestinationGuideResponse":
     primary_results = tripadvisor_client.search_locations(
         query=payload.destination,
         traveller_type=payload.traveller_type,

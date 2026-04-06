@@ -4,6 +4,7 @@ import { queryClientInstance } from '@/lib/query-client';
 import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { AuthProvider } from '@/lib/AuthContext';
+import ErrorBoundary from '@/components/ui/ErrorBoundary';
 
 import Landing from './pages/Landing';
 import Onboarding from './pages/Onboarding';
@@ -23,22 +24,24 @@ function App() {
     <AuthProvider>
       <QueryClientProvider client={queryClientInstance}>
         <Router>
-          <Routes>
-            <Route path="/" element={<Landing />} />
-            <Route path="/onboarding" element={<Onboarding />} />
-            <Route element={<AppLayout />}>
-              <Route path="/discover" element={<Discover />} />
-              <Route path="/assistant" element={<Assistant />} />
-              <Route path="/plan" element={<Plan />} />
-              <Route path="/itinerary" element={<Itinerary />} />
-              <Route path="/trips" element={<Trips />} />
-              <Route path="/nearby" element={<Nearby />} />
-              <Route path="/compare" element={<Compare />} />
-              <Route path="/notifications" element={<Notifications />} />
-              <Route path="/profile" element={<Profile />} />
-            </Route>
-            <Route path="*" element={<PageNotFound />} />
-          </Routes>
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Landing />} />
+              <Route path="/onboarding" element={<Onboarding />} />
+              <Route element={<AppLayout />}>
+                <Route path="/discover" element={<ErrorBoundary><Discover /></ErrorBoundary>} />
+                <Route path="/assistant" element={<ErrorBoundary><Assistant /></ErrorBoundary>} />
+                <Route path="/plan" element={<ErrorBoundary><Plan /></ErrorBoundary>} />
+                <Route path="/itinerary" element={<ErrorBoundary><Itinerary /></ErrorBoundary>} />
+                <Route path="/trips" element={<ErrorBoundary><Trips /></ErrorBoundary>} />
+                <Route path="/nearby" element={<ErrorBoundary><Nearby /></ErrorBoundary>} />
+                <Route path="/compare" element={<ErrorBoundary><Compare /></ErrorBoundary>} />
+                <Route path="/notifications" element={<ErrorBoundary><Notifications /></ErrorBoundary>} />
+                <Route path="/profile" element={<ErrorBoundary><Profile /></ErrorBoundary>} />
+              </Route>
+              <Route path="*" element={<PageNotFound />} />
+            </Routes>
+          </ErrorBoundary>
         </Router>
         <Toaster />
       </QueryClientProvider>

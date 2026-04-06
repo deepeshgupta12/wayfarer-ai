@@ -29,5 +29,5 @@ def health_detailed() -> dict[str, object]:
         "environment": settings.app_env,
         "version": settings.app_version,
         "services": infra_status,
-        "cors_origins": settings.frontend_cors_origins,
+        # CORS origins omitted — exposing allowed origins leaks network topology.
     }

@@ -8,8 +8,12 @@ from statistics import median
 from typing import Any, TypedDict
 from uuid import uuid4
 
+import logging as _logging
+
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+
+_ckpt_logger = _logging.getLogger(__name__)
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
@@ -44,7 +48,37 @@ from app.services.nearby_discovery_service import discover_context_aware_nearby_
 from app.services.proactive_notification_service import inspect_active_trip_alerts
 from app.services.persona_embedding_service import calculate_persona_relevance_score
 
-_CHECKPOINTER = MemorySaver()
+def _build_checkpointer():
+    """Return a PostgresSaver if available, otherwise fall back to MemorySaver.
+
+    PostgresSaver persists graph state across restarts so conversation
+    threading survives API process recycling.  If the checkpoint package is
+    not installed or the database is unreachable at startup, we fall back
+    silently to the in-memory saver so the service remains functional.
+    """
+    try:
+        import psycopg  # noqa: PLC0415
+        from langgraph.checkpoint.postgres import PostgresSaver  # noqa: PLC0415
+        from app.core.config import get_settings  # noqa: PLC0415
+
+        raw_url = get_settings().database_url.replace(
+            "postgresql+psycopg://", "postgresql://"
+        )
+        conn = psycopg.connect(raw_url, autocommit=True)
+        cp = PostgresSaver(conn)
+        cp.setup()
+        _ckpt_logger.info("LangGraph checkpointer: PostgresSaver initialised.")
+        return cp
+    except Exception as exc:  # pragma: no cover
+        _ckpt_logger.warning(
+            "LangGraph checkpointer: PostgresSaver unavailable (%s). "
+            "Falling back to MemorySaver — graph state will not persist across restarts.",
+            exc,
+        )
+        return MemorySaver()
+
+
+_CHECKPOINTER = _build_checkpointer()
 _MAX_NEARBY_RESULTS = 5
 _MAX_GEM_RESULTS = 5
 settings = get_settings()

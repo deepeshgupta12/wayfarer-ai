@@ -10,6 +10,8 @@ import {
   GitBranch,
   Bell,
   RefreshCw,
+  Save,
+  Trash2,
   Heart,
   Layers,
   Route,
@@ -17,13 +19,15 @@ import {
   Gem,
   Loader2,
 } from 'lucide-react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import LoadingState from '../components/ui/LoadingState';
 import ActivityCard from '../components/cards/ActivityCard';
 import PlaceCard from '../components/cards/PlaceCard';
 import {
   createTripSignal,
+  createTripVersionSnapshot,
+  deleteSavedTrip,
   getCurrentTripVersion,
   getSavedTrip,
   inspectProactiveAlerts,
@@ -32,10 +36,12 @@ import {
   listTripSignals,
   listTripVersions,
   orchestrateLiveRuntime,
+  refreshTravellerPersonaFromMemory,
+  replaceTripPlanSlot,
   restoreTripVersion,
   writeLiveRuntimeAction,
 } from '@/api/wayfarerApi';
-import { getOrCreateTravellerId } from '@/lib/travellerProfile';
+import { getOrCreateTravellerId, replaceTravellerPersona } from '@/lib/travellerProfile';
 import {
   cacheSavedTrip,
   cacheSavedTrips,
@@ -176,6 +182,9 @@ function buildGemContextPatch(trip, day) {
 export default function Itinerary() {
   const [expandedDay, setExpandedDay] = useState(0);
   const [alertsRunning, setAlertsRunning] = useState(false);
+  const [isSavingVersion, setIsSavingVersion] = useState(false);
+  const [isDeletingTrip, setIsDeletingTrip] = useState(false);
+  const navigate = useNavigate();
   const [gemLoadingDay, setGemLoadingDay] = useState(null);
   const [gemErrorByDay, setGemErrorByDay] = useState({});
   const [gemsByDay, setGemsByDay] = useState({});
@@ -263,22 +272,54 @@ export default function Itinerary() {
     }
   };
 
-  const saveSlot = async (activity) => {
-    if (!trip?.trip_id || !activity?.assignedLocationId) return;
+  // Core slot-save: writes a preference signal + updates the itinerary skeleton.
+  // `activity`   — the current slot descriptor (has dayNumber, slotType, etc.)
+  // `overrideAlt` — when the user picks from the alternatives panel, this object
+  //                 carries the chosen alternative's location_id and name so the
+  //                 replace call uses the right place instead of the current slot.
+  const saveSlot = async (activity, overrideAlt = null) => {
+    const locationId = overrideAlt?.location_id || activity?.assignedLocationId;
+    const placeName = overrideAlt?.name || overrideAlt?.place_name || activity?.name;
+    if (!trip?.trip_id || !locationId) return;
 
+    // Write the signal (tracks the preference in memory)
     await createTripSignal(trip.trip_id, {
       signal_type: 'selected_place',
-      location_id: activity.assignedLocationId,
+      location_id: locationId,
       day_number: activity.dayNumber,
       slot_type: activity.slotType,
       payload: {
-        name: activity.name,
+        name: placeName,
         city: trip.destination,
-        category: activity.type,
+        category: overrideAlt?.category || activity.type,
       },
     });
 
+    // Update the itinerary skeleton so the slot change is reflected in the plan
+    if (trip?.planning_session_id) {
+      try {
+        await replaceTripPlanSlot(trip.planning_session_id, {
+          day_number: activity.dayNumber,
+          slot_type: activity.slotType,
+          new_location_id: locationId,
+          new_place_name: placeName,
+          source_surface: 'itinerary_page',
+          replacement_reason: overrideAlt ? 'user_selected_alternative' : 'user_selected_from_itinerary',
+        });
+        await refetchTrip();
+      } catch {
+        // Signal already written — swallow slot-update error gracefully
+      }
+    }
+
     await refetchSignals();
+
+    // Refresh persona in the background so future recommendations stay current.
+    // Fire-and-forget — failures should not block the UI.
+    const travellerId = getOrCreateTravellerId();
+    refreshTravellerPersonaFromMemory(travellerId)
+      .then((updated) => { if (updated) replaceTravellerPersona(updated); })
+      .catch(() => {});
   };
 
   const restoreVersion = async (versionId) => {
@@ -290,6 +331,39 @@ export default function Itinerary() {
     });
 
     await Promise.all([refetchTrip(), refetchVersions(), refetchCurrentVersion()]);
+  };
+
+  const saveVersion = async () => {
+    if (!trip?.trip_id || isSavingVersion) return;
+    setIsSavingVersion(true);
+    try {
+      const nextVersionNumber = (currentVersion?.version_number || 0) + 1;
+      await createTripVersionSnapshot(trip.trip_id, {
+        snapshot_reason: 'manual_checkpoint',
+        branch_label: `v${nextVersionNumber}`,
+        source_surface: 'itinerary_page',
+      });
+      await Promise.all([refetchVersions(), refetchCurrentVersion()]);
+    } catch {
+      // Silently swallow — version creation is a convenience feature
+    } finally {
+      setIsSavingVersion(false);
+    }
+  };
+
+  const handleDeleteTrip = async () => {
+    if (!trip?.trip_id || isDeletingTrip) return;
+    const confirmed = window.confirm(
+      `Delete "${trip.title || trip.destination}"? This cannot be undone.`
+    );
+    if (!confirmed) return;
+    setIsDeletingTrip(true);
+    try {
+      await deleteSavedTrip(trip.trip_id);
+      navigate('/trips');
+    } catch {
+      setIsDeletingTrip(false);
+    }
   };
 
   const loadHiddenGemsForDay = async (day) => {
@@ -391,14 +465,32 @@ export default function Itinerary() {
           </div>
         </div>
 
-        <button
-          onClick={runInspection}
-          disabled={alertsRunning}
-          className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:border-accent/30 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${alertsRunning ? 'animate-spin' : ''}`} />
-          Run proactive check
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={saveVersion}
+            disabled={isSavingVersion}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:border-sage/30 disabled:opacity-50"
+          >
+            <Save className={`h-4 w-4 ${isSavingVersion ? 'opacity-50' : ''}`} />
+            {isSavingVersion ? 'Saving…' : 'Save version'}
+          </button>
+          <button
+            onClick={runInspection}
+            disabled={alertsRunning}
+            className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:border-accent/30 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${alertsRunning ? 'animate-spin' : ''}`} />
+            Run proactive check
+          </button>
+          <button
+            onClick={handleDeleteTrip}
+            disabled={isDeletingTrip}
+            className="inline-flex items-center gap-2 rounded-xl border border-destructive/30 bg-card px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/5 disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            {isDeletingTrip ? 'Deleting…' : 'Delete trip'}
+          </button>
+        </div>
       </div>
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -488,11 +580,16 @@ export default function Itinerary() {
                         image={activity.image}
                         index={activityIndex}
                         fallbackNames={activity.fallbackNames}
+                        alternatives={activity.alternatives}
                         replacementStatus={activity.replacementStatus}
                         slotType={activity.slotType}
                         continuityNote={activity.continuityNote}
                         movementNote={activity.movementNote}
-                        onSwap={() => saveSlot(activity)}
+                        onSwap={(alt) =>
+                          alt && alt.location_id
+                            ? saveSlot(activity, alt)
+                            : saveSlot(activity)
+                        }
                         onExpand={() => {}}
                       />
                     ))}

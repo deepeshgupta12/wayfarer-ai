@@ -136,6 +136,25 @@ async function sendGet(path) {
   return parseJsonResponse(response);
 }
 
+async function sendPatch(path, payload) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonResponse(response);
+}
+
+async function sendDelete(path) {
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: 'DELETE' });
+  if (response.status === 204) return null;
+  return parseJsonResponse(response);
+}
+
+export async function getTravellerPersonaFromApi(travellerId) {
+  return sendGet(`/persona/${encodeURIComponent(travellerId)}`);
+}
+
 export async function initializeAndSavePersona(payload) {
   return sendJson('/persona/initialize-and-save', payload);
 }
@@ -308,6 +327,21 @@ export async function listTripSignals(tripId, limit = 100) {
 
 export async function createTripSignal(tripId, payload) {
   return sendJson(`/trips/${encodeURIComponent(tripId)}/signals`, payload);
+}
+
+export async function updateTripStatus(tripId, status, sourceSurface = 'trip_card') {
+  return sendPatch(`/trips/${encodeURIComponent(tripId)}/status`, {
+    status,
+    source_surface: sourceSurface,
+  });
+}
+
+export async function deleteSavedTrip(tripId) {
+  return sendDelete(`/trips/${encodeURIComponent(tripId)}`);
+}
+
+export async function deleteTravellerPersona(travellerId) {
+  return sendDelete(`/persona/${encodeURIComponent(travellerId)}`);
 }
 
 export async function createTravellerMemory(payload) {

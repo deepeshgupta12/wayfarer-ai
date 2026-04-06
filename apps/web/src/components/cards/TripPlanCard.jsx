@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   MapPin,
@@ -10,9 +11,11 @@ import {
   Route,
   Sparkles,
   Bookmark,
+  CheckCircle2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import moment from 'moment';
+import { updateTripStatus } from '@/api/wayfarerApi';
 
 const statusColors = {
   planning: 'bg-secondary text-secondary-foreground',
@@ -221,11 +224,30 @@ function buildMetaRows(trip, variant) {
   ];
 }
 
-export default function TripPlanCard({ trip, variant = 'workspace' }) {
+export default function TripPlanCard({ trip, variant = 'workspace', onStatusChange }) {
+  const [isMarkingComplete, setIsMarkingComplete] = useState(false);
+  const [localStatus, setLocalStatus] = useState(trip?.status || 'planning');
+
   const image = getPreferredPhoto(trip, variant);
-  const summary = getTripSummary(trip, variant);
+  const summary = getTripSummary({ ...trip, status: localStatus }, variant);
   const metaRows = buildMetaRows(trip, variant);
-  const statusClass = statusColors[trip?.status] || 'bg-secondary text-muted-foreground';
+  const statusClass = statusColors[localStatus] || 'bg-secondary text-muted-foreground';
+
+  async function handleMarkComplete(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isMarkingComplete || localStatus === 'completed') return;
+    setIsMarkingComplete(true);
+    try {
+      await updateTripStatus(trip.trip_id, 'completed', 'trip_card');
+      setLocalStatus('completed');
+      if (onStatusChange) onStatusChange(trip.trip_id, 'completed');
+    } catch {
+      // Silently swallow — the status badge will stay unchanged
+    } finally {
+      setIsMarkingComplete(false);
+    }
+  }
 
   return (
     <Link to={`/itinerary?trip=${trip.trip_id}`}>
@@ -343,6 +365,18 @@ export default function TripPlanCard({ trip, variant = 'workspace' }) {
                 </span>
               );
             })}
+
+            {variant === 'workspace' && localStatus !== 'completed' && (
+              <button
+                type="button"
+                onClick={handleMarkComplete}
+                disabled={isMarkingComplete}
+                className="ml-auto inline-flex items-center gap-1 rounded-full bg-sage-light px-2.5 py-1 text-[10px] font-semibold text-sage transition-opacity hover:opacity-75 disabled:opacity-50"
+              >
+                <CheckCircle2 className="h-3 w-3" />
+                {isMarkingComplete ? 'Saving…' : 'Mark complete'}
+              </button>
+            )}
           </div>
         </div>
       </motion.div>

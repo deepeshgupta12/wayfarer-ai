@@ -1,7 +1,6 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { Compass, Map, Briefcase, Navigation, User, MessageCircle, Bell, Sparkles } from 'lucide-react';
-import { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const navItems = [
@@ -14,12 +13,7 @@ const navItems = [
 
 export default function AppLayout() {
   const location = useLocation();
-  const [unreadCount, setUnreadCount] = useState(3);
-  const [user, setUser] = useState(null);
-
-  useEffect(() => {
-    base44.auth.me().then(setUser).catch(() => {});
-  }, []);
+  const [unreadCount] = useState(3);
 
   return (
     <div className="min-h-screen bg-background">

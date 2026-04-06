@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from collections import Counter
 
 from sqlalchemy import desc
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.clients.google_places_client import GooglePlacesClient
@@ -202,14 +204,12 @@ def _upsert_place_photo(
     source = str(sanitized_photo.get("source") or "google_places")
     image_url = str(sanitized_photo.get("image_url") or "").strip()
 
-    record = (
-        db.query(PlacePhotoRecord)
-        .filter(PlacePhotoRecord.photo_id == photo_id)
-        .first()
-    )
+    now = datetime.now(timezone.utc)
+    provider_payload = {"provider_payload": dict(photo)}
 
-    if record is None:
-        record = PlacePhotoRecord(
+    stmt = (
+        pg_insert(PlacePhotoRecord)
+        .values(
             photo_id=photo_id,
             location_id=resolved_location_id,
             image_url=image_url,
@@ -221,27 +221,36 @@ def _upsert_place_photo(
             tags=tags,
             scene_type=scene_type,
             quality_score=quality_score,
-            photo_metadata={
-                "provider_payload": dict(photo),
+            metadata=provider_payload,
+            created_at=now,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["photo_id"],
+            set_={
+                "location_id": resolved_location_id,
+                "image_url": image_url,
+                "source": source,
+                "width": width,
+                "height": height,
+                "aspect_ratio": _safe_aspect_ratio(width, height),
+                "caption": caption,
+                "tags": tags,
+                "scene_type": scene_type,
+                "quality_score": quality_score,
+                "metadata": provider_payload,
+                "updated_at": now,
             },
         )
-        db.add(record)
-    else:
-        record.location_id = resolved_location_id
-        record.image_url = image_url or record.image_url
-        record.source = source or record.source
-        record.width = width
-        record.height = height
-        record.aspect_ratio = _safe_aspect_ratio(width, height)
-        record.caption = caption
-        record.tags = tags
-        record.scene_type = scene_type
-        record.quality_score = quality_score
-        record.photo_metadata = {
-            "provider_payload": dict(photo),
-        }
+    )
+    db.execute(stmt)
+    db.flush()
 
-    return record
+    return (
+        db.query(PlacePhotoRecord)
+        .filter(PlacePhotoRecord.photo_id == photo_id)
+        .first()
+    )
 
 def _merge_provider_photos(
     primary: list[dict[str, Any]],

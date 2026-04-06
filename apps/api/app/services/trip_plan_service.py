@@ -47,20 +47,35 @@ from app.services.persona_embedding_service import calculate_persona_relevance_s
 from app.services.review_intelligence_service import analyze_review_bundle
 ALLOWED_INTERESTS = ["food", "culture", "adventure", "nature", "luxury", "nightlife", "wellness"]
 DESTINATION_HINTS = [
-    "tokyo",
-    "kyoto",
-    "lisbon",
-    "prague",
-    "budapest",
-    "barcelona",
-    "rome",
-    "paris",
-    "london",
-    "bangkok",
-    "bali",
-    "singapore",
-    "amsterdam",
-    "seoul",
+    # East Asia
+    "tokyo", "kyoto", "osaka", "hiroshima", "nara", "sapporo", "fukuoka",
+    "seoul", "busan", "jeju", "taipei", "hong kong", "beijing", "shanghai",
+    # Southeast Asia
+    "bangkok", "bali", "ubud", "singapore", "kuala lumpur", "hanoi",
+    "ho chi minh city", "saigon", "hoi an", "chiang mai", "luang prabang",
+    "siem reap", "phnom penh", "yangon", "manila", "cebu",
+    # South Asia
+    "mumbai", "delhi", "new delhi", "jaipur", "goa", "varanasi", "agra",
+    "colombo", "kathmandu",
+    # Europe — Western
+    "paris", "london", "barcelona", "madrid", "lisbon", "porto", "amsterdam",
+    "brussels", "rome", "milan", "florence", "venice", "naples", "athens",
+    "dubrovnik", "split", "vienna", "salzburg", "zurich", "geneva",
+    "copenhagen", "stockholm", "oslo", "helsinki", "reykjavik",
+    # Europe — Central & Eastern
+    "prague", "budapest", "warsaw", "krakow", "berlin", "munich", "hamburg",
+    "sofia", "bucharest", "riga", "tallinn", "vilnius", "bratislava", "zagreb",
+    # Middle East & Africa
+    "dubai", "abu dhabi", "istanbul", "marrakech", "cairo", "cape town",
+    "nairobi", "casablanca", "tel aviv", "amman", "doha",
+    # Americas
+    "new york", "los angeles", "san francisco", "chicago", "miami", "boston",
+    "new orleans", "las vegas", "seattle", "washington dc", "toronto",
+    "montreal", "vancouver", "mexico city", "cancun", "havana",
+    "buenos aires", "rio de janeiro", "sao paulo", "bogota", "lima", "cartagena",
+    "medellín", "medellin",
+    # Oceania
+    "sydney", "melbourne", "brisbane", "auckland", "queenstown",
 ]
 
 INTEREST_KEYWORDS: dict[str, list[str]] = {
@@ -2681,6 +2696,32 @@ def get_saved_trip_summary(
 ) -> SavedTripSummaryResponse:
     record = _get_saved_trip_record_or_raise(db, trip_id)
     return _build_saved_trip_response(record)
+
+
+def update_trip_status(
+    db: Session,
+    trip_id: str,
+    new_status: str,
+) -> SavedTripSummaryResponse:
+    """Update the status of a saved trip (e.g. planning → completed)."""
+    record = _get_saved_trip_record_or_raise(db, trip_id)
+    record.status = new_status
+    db.commit()
+    db.refresh(record)
+    return _build_saved_trip_response(record)
+
+
+def delete_saved_trip(
+    db: Session,
+    trip_id: str,
+) -> None:
+    """Hard-delete a saved trip and its related signals and versions."""
+    record = _get_saved_trip_record_or_raise(db, trip_id)
+    # Cascade deletes for signals and versions
+    db.query(TripSignalRecord).filter(TripSignalRecord.trip_id == trip_id).delete()
+    db.query(ItineraryVersionRecord).filter(ItineraryVersionRecord.trip_id == trip_id).delete()
+    db.delete(record)
+    db.commit()
 
 
 def list_trip_versions(

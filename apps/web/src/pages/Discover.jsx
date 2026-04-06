@@ -39,13 +39,50 @@ const PLACE_LIKE_CATEGORIES = new Set([
   'riverfront',
 ]);
 
+// Maps persona signals to a primary seed destination.
 function deriveSearchSeed(persona) {
-  if (!persona?.signals?.interests?.length) return 'Kyoto';
-  const interests = persona.signals.interests;
-  if (interests.includes('food') && interests.includes('culture')) return 'Kyoto';
+  const interests = persona?.signals?.interests || [];
+  const pace = persona?.signals?.pace_preference || 'balanced';
+  const style = persona?.signals?.travel_style || 'midrange';
+  const group = persona?.signals?.group_type || 'solo';
+
+  if (interests.includes('adventure') && interests.includes('nature')) return 'Queenstown';
+  if (interests.includes('wellness') && pace === 'relaxed') return 'Ubud';
+  if (interests.includes('luxury') || style === 'luxury') return 'Dubai';
+  if (interests.includes('nightlife') && group === 'friends') return 'Barcelona';
   if (interests.includes('nightlife')) return 'Lisbon';
+  if (interests.includes('food') && interests.includes('culture') && group === 'couple') return 'Rome';
+  if (interests.includes('food') && interests.includes('culture')) return 'Kyoto';
+  if (interests.includes('culture') && interests.includes('adventure')) return 'Istanbul';
+  if (interests.includes('nature') && group === 'family') return 'Sydney';
   if (interests.includes('nature')) return 'Prague';
+  if (group === 'family') return 'Singapore';
+  if (group === 'couple') return 'Paris';
+  if (style === 'budget') return 'Bangkok';
   return 'Tokyo';
+}
+
+// Returns a complementary second seed that differs from the primary.
+// Keeps guide cards diverse without hammering unrelated hardcodes.
+function deriveSecondSeed(persona, primarySeed) {
+  const interests = persona?.signals?.interests || [];
+  const group = persona?.signals?.group_type || 'solo';
+  const style = persona?.signals?.travel_style || 'midrange';
+
+  const CANDIDATES = [
+    interests.includes('food') ? 'Tokyo' : null,
+    interests.includes('culture') ? 'Lisbon' : null,
+    interests.includes('adventure') ? 'Medellin' : null,
+    interests.includes('nature') ? 'Queenstown' : null,
+    group === 'couple' ? 'Kyoto' : null,
+    group === 'family' ? 'Amsterdam' : null,
+    style === 'budget' ? 'Hanoi' : null,
+    'Seoul',
+    'Barcelona',
+    'Cape Town',
+  ].filter(Boolean);
+
+  return CANDIDATES.find((c) => c !== primarySeed) || 'Seoul';
 }
 
 function normalizeCategory(value) {
@@ -158,7 +195,9 @@ export default function Discover() {
     async function loadGuides() {
       setIsLoadingGuides(true);
 
-      const seeds = Array.from(new Set([seededQuery, 'Kyoto', 'Tokyo', 'Lisbon'])).slice(0, 4);
+      const primarySeed = seededQuery || deriveSearchSeed(persona);
+      const secondSeed = deriveSecondSeed(persona, primarySeed);
+      const seeds = Array.from(new Set([primarySeed, secondSeed])).slice(0, 2);
 
       try {
         const guides = await Promise.all(
