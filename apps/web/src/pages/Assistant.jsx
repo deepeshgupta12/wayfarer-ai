@@ -41,7 +41,52 @@ const suggestedChips = [
   'Replace Day 2 with something less hectic',
 ];
 
-const KNOWN_DESTINATIONS = ['Tokyo', 'Kyoto', 'Lisbon', 'Prague', 'Budapest'];
+// Broad destination list — matches what the backend DESTINATION_HINTS covers.
+// Used for client-side extraction before the orchestrator classifies intent.
+const KNOWN_DESTINATIONS = [
+  // East Asia
+  'Tokyo', 'Kyoto', 'Osaka', 'Hiroshima', 'Nara', 'Sapporo', 'Fukuoka',
+  'Seoul', 'Busan', 'Jeju', 'Taipei', 'Hong Kong', 'Beijing', 'Shanghai',
+  // Southeast Asia
+  'Bangkok', 'Bali', 'Ubud', 'Singapore', 'Kuala Lumpur', 'Hanoi',
+  'Ho Chi Minh City', 'Saigon', 'Hoi An', 'Chiang Mai', 'Luang Prabang',
+  'Siem Reap', 'Manila', 'Cebu',
+  // South Asia
+  'Mumbai', 'Delhi', 'Jaipur', 'Goa', 'Varanasi', 'Agra', 'Colombo', 'Kathmandu',
+  // Europe — Western
+  'Paris', 'London', 'Barcelona', 'Madrid', 'Lisbon', 'Porto', 'Amsterdam',
+  'Brussels', 'Rome', 'Milan', 'Florence', 'Venice', 'Naples', 'Athens',
+  'Dubrovnik', 'Split', 'Vienna', 'Salzburg', 'Zurich', 'Geneva',
+  'Copenhagen', 'Stockholm', 'Oslo', 'Helsinki', 'Reykjavik',
+  // Europe — Central & Eastern
+  'Prague', 'Budapest', 'Warsaw', 'Krakow', 'Berlin', 'Munich', 'Hamburg',
+  'Sofia', 'Bucharest', 'Riga', 'Tallinn', 'Vilnius', 'Bratislava', 'Zagreb',
+  // Middle East & Africa
+  'Dubai', 'Abu Dhabi', 'Istanbul', 'Marrakech', 'Cairo', 'Cape Town',
+  'Nairobi', 'Tel Aviv', 'Amman', 'Doha',
+  // Americas
+  'New York', 'Los Angeles', 'San Francisco', 'Chicago', 'Miami', 'Boston',
+  'New Orleans', 'Las Vegas', 'Seattle', 'Washington DC', 'Toronto',
+  'Montreal', 'Vancouver', 'Mexico City', 'Cancun', 'Havana',
+  'Buenos Aires', 'Rio de Janeiro', 'Bogota', 'Lima', 'Cartagena', 'Medellin',
+  // Oceania
+  'Sydney', 'Melbourne', 'Brisbane', 'Auckland', 'Queenstown',
+];
+
+// Default destination derived from persona when no city is found in the message.
+function personaDefaultDestination(persona) {
+  const interests = persona?.signals?.interests || [];
+  const group = persona?.signals?.group_type || 'solo';
+  const style = persona?.signals?.travel_style || 'midrange';
+  if (interests.includes('food') && interests.includes('culture')) return 'Kyoto';
+  if (interests.includes('adventure') && interests.includes('nature')) return 'Queenstown';
+  if (interests.includes('nightlife')) return 'Lisbon';
+  if (interests.includes('culture')) return 'Prague';
+  if (group === 'couple') return 'Paris';
+  if (group === 'family') return 'Singapore';
+  if (style === 'budget') return 'Bangkok';
+  return 'Tokyo';
+}
 
 function createMessageId() {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -50,12 +95,9 @@ function createMessageId() {
 function deriveGuidePayload(rawInput, persona) {
   const normalized = rawInput.toLowerCase();
 
-  let destination = 'Kyoto';
-  if (normalized.includes('lisbon')) destination = 'Lisbon';
-  else if (normalized.includes('prague')) destination = 'Prague';
-  else if (normalized.includes('kyoto')) destination = 'Kyoto';
-  else if (normalized.includes('tokyo')) destination = 'Tokyo';
-  else if (normalized.includes('budapest')) destination = 'Budapest';
+  // Scan the known destination list so we're not restricted to 5 cities.
+  const matched = KNOWN_DESTINATIONS.find((d) => normalized.includes(d.toLowerCase()));
+  const destination = matched || personaDefaultDestination(persona);
 
   const durationMatch = normalized.match(/(\d+)\s*days?/);
   const durationDays = durationMatch ? Number(durationMatch[1]) : 3;
@@ -409,7 +451,7 @@ function buildAssistantMessageFromUpdatedTripPlan(result, followupText, savedTri
   };
 }
 
-function buildAssistantMessageFromEnrichedTripPlan(result, savedTrip, followupText = null, contentOverride = null) {
+function buildAssistantMessageFromEnrichedTripPlan(result, savedTrip, followupText = null, contentOverride = null, similarPlaces = []) {
   const dayCount = result.itinerary_skeleton?.length || 0;
   const candidateCount = result.candidate_places?.length || 0;
   const destination = result?.parsed_constraints?.destination || 'your destination';
@@ -427,6 +469,7 @@ function buildAssistantMessageFromEnrichedTripPlan(result, savedTrip, followupTe
     content,
     planningSession: result,
     savedTrip,
+    similarPlaces: similarPlaces || [],
     chips: [
       'Make it more relaxed',
       'Make it food + culture',
@@ -832,21 +875,32 @@ export default function Assistant() {
             },
           });
 
-          const indexed = await indexDestinationPlaces({
-            destination: enrichedResult.parsed_constraints.destination,
-            traveller_type: enrichedResult.parsed_constraints.group_type,
-            interests: enrichedResult.parsed_constraints.interests || [],
+          // Show indexing status — user sees feedback while background indexing runs.
+          updateMessageById(streamingMessageId, {
+            content: 'Indexing destination places to surface similar spots…',
           });
 
-          if (indexed?.items?.length > 0) {
-            const firstCandidateId = enrichedResult.candidate_places?.[0]?.location_id;
-            if (firstCandidateId) {
-              await getSimilarPlaces({
-                source_location_id: firstCandidateId,
-                top_k: 3,
-                city_filter: enrichedResult.parsed_constraints.destination,
-              });
+          let similarPlaces = [];
+          try {
+            const indexed = await indexDestinationPlaces({
+              destination: enrichedResult.parsed_constraints.destination,
+              traveller_type: enrichedResult.parsed_constraints.group_type,
+              interests: enrichedResult.parsed_constraints.interests || [],
+            });
+
+            if (indexed?.items?.length > 0) {
+              const firstCandidateId = enrichedResult.candidate_places?.[0]?.location_id;
+              if (firstCandidateId) {
+                const similar = await getSimilarPlaces({
+                  source_location_id: firstCandidateId,
+                  top_k: 4,
+                  city_filter: enrichedResult.parsed_constraints.destination,
+                });
+                similarPlaces = similar?.matches || [];
+              }
             }
+          } catch {
+            // similar places are optional — don't block the itinerary render
           }
 
           const savedTrip = await ensureSavedTripForPlan(enrichedResult);
@@ -863,7 +917,7 @@ export default function Assistant() {
 
           updateMessageById(
             streamingMessageId,
-            buildAssistantMessageFromEnrichedTripPlan(enrichedResult, freshTrip)
+            buildAssistantMessageFromEnrichedTripPlan(enrichedResult, freshTrip, null, null, similarPlaces)
           );
         }
 
@@ -1682,6 +1736,37 @@ function MessageBubble({ message, onChipClick, onSavePlace, onSkipAlternative })
             onSavePlace={onSavePlace}
             onSkipAlternative={onSkipAlternative}
           />
+        ) : null}
+
+        {message.type === 'trip_plan_enriched' && message.similarPlaces?.length > 0 ? (
+          <div className="mt-4 rounded-2xl border border-border bg-card p-4 space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              You might also like
+            </div>
+            <div className="space-y-2">
+              {message.similarPlaces.map((place, i) => (
+                <div
+                  key={place.location_id || i}
+                  className="rounded-xl border border-border bg-background px-3 py-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">{place.name}</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {place.city}{place.country ? `, ${place.country}` : ''} · {place.category}
+                      </div>
+                      {place.why_similar ? (
+                        <div className="mt-1 text-xs text-muted-foreground">{place.why_similar}</div>
+                      ) : null}
+                    </div>
+                    <div className="text-[11px] font-medium text-accent flex-shrink-0">
+                      {Math.round((place.similarity_score || 0) * 100)}% match
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         ) : null}
 
         {message.type === 'destination_comparison' ? (

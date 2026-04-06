@@ -10,3 +10,6 @@ httpx==0.28.1
 pytest==8.4.2
 langgraph==1.1.3
 langchain-core==1.2.22
+langgraph-checkpoint-postgres==2.0.13
+slowapi==0.1.9
+apscheduler==3.10.4

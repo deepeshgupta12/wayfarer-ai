@@ -20,7 +20,7 @@ class AssistantTurnContext(BaseModel):
 
 
 class AssistantOrchestrateRequest(BaseModel):
-    message: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1, max_length=2000)
     context: AssistantTurnContext = Field(default_factory=AssistantTurnContext)
     source_surface: str = Field(default="assistant")
     stream: bool = Field(default=False)

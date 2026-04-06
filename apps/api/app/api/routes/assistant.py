@@ -1,15 +1,18 @@
 from collections.abc import Generator
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
-from app.db.session import get_db_session
+from app.core.rate_limiter import limiter
+from app.db.session import get_db, get_db_session
 from app.schemas.assistant import AssistantOrchestrateRequest, AssistantOrchestrateResponse
 from app.services.assistant_service import orchestrate_assistant_request, stream_assistant_request
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
 
+# Streaming helper cannot use Depends — it's a plain generator, not a FastAPI endpoint.
 def _stream_with_db_close(
     payload: AssistantOrchestrateRequest,
 ) -> Generator[str, None, None]:
@@ -21,18 +24,19 @@ def _stream_with_db_close(
 
 
 @router.post("/orchestrate", response_model=AssistantOrchestrateResponse)
+@limiter.limit("20/minute")
 def orchestrate_assistant(
+    request: Request,
     payload: AssistantOrchestrateRequest,
+    db: Session = Depends(get_db),
 ) -> AssistantOrchestrateResponse:
-    db = get_db_session()
-    try:
-        return orchestrate_assistant_request(db, payload)
-    finally:
-        db.close()
+    return orchestrate_assistant_request(db, payload)
 
 
 @router.post("/orchestrate/stream")
+@limiter.limit("20/minute")
 def orchestrate_assistant_stream(
+    request: Request,
     payload: AssistantOrchestrateRequest,
 ) -> StreamingResponse:
     return StreamingResponse(

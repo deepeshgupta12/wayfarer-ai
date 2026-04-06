@@ -388,10 +388,18 @@ def analyze_review_bundle(
     location_id: str,
     location_name: str,
     reviews: list[dict[str, object]],
+    db: Session | None = None,
 ) -> ReviewIntelligenceOutput:
+    """Analyse a bundle of reviews, using a cache-layer DB record when available.
+
+    Accepts an optional *db* session so callers that already have one open can
+    avoid creating a second session.  When *db* is None, a new session is opened
+    and closed here.
+    """
+    owned_db = db is None
     local_db: Session | None = None
     try:
-        local_db = get_db_session()
+        local_db = get_db_session() if owned_db else db
         persisted = get_or_refresh_review_intelligence(
             db=local_db,
             location_id=location_id,
@@ -414,7 +422,7 @@ def analyze_review_bundle(
             reviews=reviews,
         )
     finally:
-        if local_db is not None:
+        if owned_db and local_db is not None:
             local_db.close()
 
 

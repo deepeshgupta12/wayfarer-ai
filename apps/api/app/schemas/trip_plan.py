@@ -297,6 +297,11 @@ class TripSignalListResponse(BaseModel):
     total: int
     items: list[TripSignalResponse]
 
+
+class TripStatusUpdateRequest(BaseModel):
+    status: str = Field(..., pattern=r"^(planning|active|completed|archived)$")
+    source_surface: str = Field(default="trip_card")
+
 TripCandidatePlace.model_rebuild()
 TripAlternativeSuggestion.model_rebuild()
 TripPlanResponse.model_rebuild()

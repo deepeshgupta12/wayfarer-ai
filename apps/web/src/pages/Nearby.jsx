@@ -20,10 +20,11 @@ import LoadingState from '../components/ui/LoadingState';
 import {
   listSavedTrips,
   orchestrateLiveRuntime,
+  refreshTravellerPersonaFromMemory,
   upsertLiveRuntimeContext,
   writeLiveRuntimeAction,
 } from '@/api/wayfarerApi';
-import { getOrCreateTravellerId, getTravellerPersona } from '@/lib/travellerProfile';
+import { getOrCreateTravellerId, getTravellerPersona, replaceTravellerPersona } from '@/lib/travellerProfile';
 import { cacheSavedTrip, cacheSavedTrips, getCachedSavedTrips } from '@/lib/tripStorage';
 
 const quickModes = [
@@ -102,9 +103,30 @@ function getGeoLocation() {
   });
 }
 
-function buildContext(mode, position, trip, persona) {
+// Reverse geocode GPS coordinates to a city name using the free Nominatim API.
+// Falls back to null on failure so callers can use the trip destination instead.
+async function resolveGpsCity(lat, lon) {
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`,
+      { headers: { 'Accept-Language': 'en' } }
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    const address = data?.address || {};
+    // Prefer city, then town, then village, then county
+    return address.city || address.town || address.village || address.county || null;
+  } catch {
+    return null;
+  }
+}
+
+function buildContext(mode, position, trip, persona, resolvedCity = null) {
   const itineraryFirstDay = trip?.itinerary_skeleton?.[0];
   const firstSlot = itineraryFirstDay?.slots?.find((slot) => slot?.slot_type === mode.slot_type) || itineraryFirstDay?.slots?.[0];
+  // Use GPS-resolved city when available so recommendations match the user's
+  // physical location rather than the trip's stored destination.
+  const currentCity = resolvedCity || trip?.destination || null;
 
   return {
     traveller_id: trip.traveller_id,
@@ -124,8 +146,8 @@ function buildContext(mode, position, trip, persona) {
     },
     local_time_iso: new Date().toISOString(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    current_place_name: trip?.destination || 'Current location',
-    current_city: trip?.destination || null,
+    current_place_name: currentCity || 'Current location',
+    current_city: currentCity,
     current_country: null,
     context_payload: {
       traveller_style: persona?.signals?.travel_style || 'midrange',
@@ -170,7 +192,14 @@ export default function Nearby() {
       const position = await getGeoLocation();
       setLocationGranted(true);
 
-      const contextPayload = buildContext(mode, position, activeTrip, persona);
+      // Resolve GPS to a city name so recommendations match the user's physical
+      // location, not the trip's stored destination.
+      const resolvedCity = await resolveGpsCity(
+        position.coords.latitude,
+        position.coords.longitude
+      );
+
+      const contextPayload = buildContext(mode, position, activeTrip, persona, resolvedCity);
       await upsertLiveRuntimeContext(contextPayload);
 
       const response = await orchestrateLiveRuntime({
@@ -209,6 +238,11 @@ export default function Nearby() {
         ...payload,
       },
     });
+
+    // Fire-and-forget persona refresh so taste signals are captured in memory.
+    refreshTravellerPersonaFromMemory(travellerId)
+      .then((updated) => { if (updated) replaceTravellerPersona(updated); })
+      .catch(() => {});
   };
 
   const recommendations = result?.recommendations || result?.alternatives || result?.gems || [];

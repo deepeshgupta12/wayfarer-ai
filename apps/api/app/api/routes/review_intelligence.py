@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
-from app.db.session import get_db_session
+from app.db.session import get_db
 from app.schemas.review_intelligence import (
     ReviewIntelligenceOutput,
     ReviewIntelligencePersistedOutput,
@@ -25,23 +26,17 @@ def analyze_review_intelligence(
 @router.post("/analyze-and-save", response_model=ReviewIntelligencePersistedOutput)
 def analyze_and_save_review_intelligence(
     payload: ReviewIntelligenceRequest,
+    db: Session = Depends(get_db),
 ) -> ReviewIntelligencePersistedOutput:
-    db = get_db_session()
-    try:
-        return analyze_and_persist_reviews(db, payload)
-    finally:
-        db.close()
+    return analyze_and_persist_reviews(db, payload)
 
 
 @router.get("/{location_id}", response_model=ReviewIntelligencePersistedOutput)
 def get_saved_review_intelligence(
     location_id: str,
+    db: Session = Depends(get_db),
 ) -> ReviewIntelligencePersistedOutput:
-    db = get_db_session()
-    try:
-        result = get_persisted_review_intelligence(db, location_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Review intelligence not found")
-        return result
-    finally:
-        db.close()
+    result = get_persisted_review_intelligence(db, location_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Review intelligence not found")
+    return result

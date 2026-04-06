@@ -1,7 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
-from app.db.session import get_db_session
+from app.db.session import get_db
 from app.schemas.destination import (
     DestinationComparisonRequest,
     DestinationComparisonResponse,
@@ -45,25 +46,22 @@ def generate_destination_guide(
 ) -> DestinationGuideResponse:
     return build_destination_guide(payload)
 
+
 @router.post("/gems", response_model=HiddenGemDiscoveryResponse)
 def discover_destination_hidden_gems(
     payload: HiddenGemDiscoveryRequest,
+    db: Session = Depends(get_db),
 ) -> HiddenGemDiscoveryResponse:
-    db = get_db_session()
-    try:
-        return discover_hidden_gems(db, payload)
-    finally:
-        db.close()
+    return discover_hidden_gems(db, payload)
+
 
 @router.post("/nearby", response_model=NearbyDiscoveryResponse)
 def discover_nearby_places(
     payload: NearbyDiscoveryRequest,
+    db: Session = Depends(get_db),
 ) -> NearbyDiscoveryResponse:
-    db = get_db_session()
-    try:
-        return discover_context_aware_nearby_places(db, payload)
-    finally:
-        db.close()
+    return discover_context_aware_nearby_places(db, payload)
+
 
 @router.post("/guide/stream")
 def generate_destination_guide_stream(
@@ -85,20 +83,14 @@ def compare_destination_pair(
 @router.post("/places/index", response_model=DestinationPlaceIndexResponse)
 def create_destination_place_index(
     payload: DestinationPlaceIndexRequest,
+    db: Session = Depends(get_db),
 ) -> DestinationPlaceIndexResponse:
-    db = get_db_session()
-    try:
-        return index_destination_places(db, payload)
-    finally:
-        db.close()
+    return index_destination_places(db, payload)
 
 
 @router.post("/places/similar", response_model=SimilarPlaceResponse)
 def get_destination_place_similarity(
     payload: SimilarPlaceRequest,
+    db: Session = Depends(get_db),
 ) -> SimilarPlaceResponse:
-    db = get_db_session()
-    try:
-        return get_similar_places(db, payload)
-    finally:
-        db.close()
+    return get_similar_places(db, payload)

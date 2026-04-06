@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from threading import Lock
 
 from sqlalchemy import create_engine, inspect, text
@@ -320,3 +321,19 @@ def ensure_runtime_schema_ready() -> None:
 def get_db_session() -> Session:
     ensure_runtime_schema_ready()
     return SessionLocal()
+
+
+def get_db() -> Generator[Session, None, None]:
+    """FastAPI dependency that yields a DB session and always closes it.
+
+    Usage::
+
+        @router.get("/example")
+        def my_endpoint(db: Session = Depends(get_db)) -> ...:
+            ...
+    """
+    db = get_db_session()
+    try:
+        yield db
+    finally:
+        db.close()
